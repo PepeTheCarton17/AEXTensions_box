@@ -475,7 +475,6 @@ fn generate_kotlin_filters(class_name: &str, pkg_slug: &str, lang: &str) -> Stri
     let filter_header = i18n.filter_header;
     let filter_audio_title = i18n.filter_audio_title;
     let filter_genre_title = i18n.filter_genre_title;
-    let filter_genre_blacklist_title = i18n.filter_genre_blacklist_title;
     let audio_entries = i18n.filter_audio_entries.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
 
     let genres_list = i18n.genres.iter()
