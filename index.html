@@ -61,8 +61,8 @@
       Diagnóstico & API
     </button>
     <button data-tab="tab-settings" class="tab-btn px-4 py-2.5 text-xs font-medium flex items-center gap-2 border-b-2 border-transparent text-slate-400 hover:text-slate-200 whitespace-nowrap">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-      Descargas & Versión
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>
+      Ajustes & Version
     </button>
   </nav>
 
@@ -266,6 +266,50 @@
 
     <!-- TAB 5: DESCARGAS, VERSIONES & AJUSTES -->
     <section id="tab-settings" class="tab-pane hidden space-y-6">
+
+      <!-- Global Settings (Language & Repo) -->
+      <div class="bg-surface-900 border border-surface-800 rounded-2xl p-5 shadow-xl space-y-4">
+        <h3 class="text-sm font-semibold text-slate-100 flex items-center gap-2">
+          <svg class="w-4 h-4 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>Ajustes Generales</span>
+        </h3>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Language Selector -->
+          <div class="space-y-1.5">
+            <label for="settings-lang" class="text-xs text-slate-400 font-medium flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"/></svg>
+              <span>Idioma de Extensiones Generadas</span>
+            </label>
+            <select id="settings-lang" class="w-full bg-surface-950 border border-surface-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-brand-500">
+              <option value="es" selected>Espanol (es) - Predeterminado</option>
+              <option value="en">English (en)</option>
+              <option value="pt-br">Portugues (pt-br)</option>
+              <option value="fr">Francais (fr)</option>
+              <option value="de">Deutsch (de)</option>
+              <option value="it">Italiano (it)</option>
+              <option value="all">Multi / Todos (all)</option>
+            </select>
+            <p class="text-[10px] text-slate-500">Define el idioma predeterminado para filtros, preferencias y nombres de generos en las extensiones que generes.</p>
+          </div>
+
+          <!-- Default Repository -->
+          <div class="space-y-1.5">
+            <label for="settings-default-repo" class="text-xs text-slate-400 font-medium flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+              <span>Repositorio GitHub Predeterminado</span>
+            </label>
+            <input type="text" id="settings-default-repo" placeholder="nekoyomi-extensions-es (dejar vacio para auto-generar)" class="w-full bg-surface-950 border border-surface-800 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono">
+            <p class="text-[10px] text-slate-500">Nombre del repositorio en GitHub donde se suben las extensiones en modo "Repositorio". Dejalo vacio para que AEXT cree uno automaticamente con el nombre del sitio.</p>
+          </div>
+        </div>
+
+        <button id="btn-save-settings" class="px-4 py-2 rounded-xl text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-brand-500/20 transition-all flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+          <span>Guardar Ajustes</span>
+        </button>
+      </div>
+
       <!-- Release Version Breakdown Table -->
       <div class="bg-surface-900 border border-surface-800 rounded-2xl p-5 shadow-xl space-y-4">
         <div class="flex items-center justify-between">
@@ -290,7 +334,7 @@
               <tr class="hover:bg-surface-850/50">
                 <td class="p-3 font-sans font-semibold text-slate-200 flex items-center gap-2">
                   <svg class="w-4 h-4 text-sky-400" fill="currentColor" viewBox="0 0 24 24"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.901-1.799"/></svg>
-                  <span>Windows (PC)</span>
+                  <span>Windows (PC) Setup</span>
                 </td>
                 <td class="p-3 text-indigo-300">AEXT-v1.0.0-windows-x64-setup.exe</td>
                 <td class="p-3 text-slate-400">x86_64 (64-bit)</td>
@@ -300,11 +344,33 @@
               </tr>
               <tr class="hover:bg-surface-850/50">
                 <td class="p-3 font-sans font-semibold text-slate-200 flex items-center gap-2">
+                  <svg class="w-4 h-4 text-sky-400" fill="currentColor" viewBox="0 0 24 24"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.901-1.799"/></svg>
+                  <span>Windows (PC) MSI</span>
+                </td>
+                <td class="p-3 text-indigo-300">AEXT-v1.0.0-windows-x64.msi</td>
+                <td class="p-3 text-slate-400">x86_64 (Corporativo / SCCM)</td>
+                <td class="p-3 text-right">
+                  <a href="https://github.com/PepeTheCarton17/AEXTensions_box/releases" target="_blank" class="px-2.5 py-1 rounded bg-surface-800 hover:bg-surface-700 text-brand-300 border border-surface-700 transition-all">Releases</a>
+                </td>
+              </tr>
+              <tr class="hover:bg-surface-850/50">
+                <td class="p-3 font-sans font-semibold text-slate-200 flex items-center gap-2">
                   <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                  <span>Linux (PC)</span>
+                  <span>Linux (PC) AppImage</span>
                 </td>
                 <td class="p-3 text-indigo-300">AEXT-v1.0.0-linux-x86_64.AppImage</td>
-                <td class="p-3 text-slate-400">x86_64 / amd64</td>
+                <td class="p-3 text-slate-400">x86_64 (Portable)</td>
+                <td class="p-3 text-right">
+                  <a href="https://github.com/PepeTheCarton17/AEXTensions_box/releases" target="_blank" class="px-2.5 py-1 rounded bg-surface-800 hover:bg-surface-700 text-brand-300 border border-surface-700 transition-all">Releases</a>
+                </td>
+              </tr>
+              <tr class="hover:bg-surface-850/50">
+                <td class="p-3 font-sans font-semibold text-slate-200 flex items-center gap-2">
+                  <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                  <span>Linux (PC) Debian</span>
+                </td>
+                <td class="p-3 text-indigo-300">AEXT-v1.0.0-linux-amd64.deb</td>
+                <td class="p-3 text-slate-400">x86_64 (apt / dpkg)</td>
                 <td class="p-3 text-right">
                   <a href="https://github.com/PepeTheCarton17/AEXTensions_box/releases" target="_blank" class="px-2.5 py-1 rounded bg-surface-800 hover:bg-surface-700 text-brand-300 border border-surface-700 transition-all">Releases</a>
                 </td>
@@ -380,9 +446,22 @@
           </div>
         </label>
 
-        <div id="github-repo-extra-fields" class="hidden pt-2 space-y-2">
-          <label class="text-[11px] text-slate-400 block">Nombre del repositorio GitHub (opcional):</label>
-          <input type="text" id="input-custom-repo-name" placeholder="nekoyomi-extensions-es" class="w-full bg-surface-950 border border-surface-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono">
+        <div id="github-repo-extra-fields" class="hidden pt-2 space-y-3 border-t border-surface-800">
+          <div class="space-y-1.5">
+            <label class="text-[11px] text-slate-300 font-semibold block flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5 text-indigo-400" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+              Repositorio de destino en GitHub
+            </label>
+            <input type="text" id="input-custom-repo-name" placeholder="nekoyomi-extensions-es (dejar vacio para crear automaticamente)" class="w-full bg-surface-950 border border-surface-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono">
+            <p class="text-[10px] text-slate-500 leading-relaxed">
+              Escribe el nombre del repositorio donde se subira la extension. Si no existe, AEXT lo creara automaticamente.<br>
+              Si dejas este campo vacio, se creara un repositorio con el nombre del sitio analizado.
+            </p>
+          </div>
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" id="check-private-repo" class="rounded bg-surface-800 border-surface-700 text-brand-600 focus:ring-brand-500">
+            <span class="text-[11px] text-slate-400">Repositorio privado (no visible en tu perfil publico)</span>
+          </label>
         </div>
       </div>
 

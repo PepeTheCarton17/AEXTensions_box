@@ -134,6 +134,11 @@ const elements = {
 
   // Settings
   btnCheckUpdates: document.getElementById('btn-check-updates'),
+  btnSaveSettings: document.getElementById('btn-save-settings'),
+  settingsLang: document.getElementById('settings-lang'),
+  settingsDefaultRepo: document.getElementById('settings-default-repo'),
+  selectExtLang: document.getElementById('select-extension-lang'),
+  checkPrivateRepo: document.getElementById('check-private-repo'),
 };
 
 // ==================== LOGGING UTILITIES ====================
@@ -396,6 +401,11 @@ document.querySelectorAll('input[name="gen-mode"]').forEach(radio => {
   radio.addEventListener('change', (e) => {
     if (e.target.value === 'github') {
       elements.githubRepoExtraFields.classList.remove('hidden');
+      // Pre-fill from saved settings if empty
+      if (!elements.inputCustomRepoName.value.trim()) {
+        const savedRepo = localStorage.getItem('aext_default_repo') || '';
+        elements.inputCustomRepoName.value = savedRepo;
+      }
     } else {
       elements.githubRepoExtraFields.classList.add('hidden');
     }
@@ -405,7 +415,10 @@ document.querySelectorAll('input[name="gen-mode"]').forEach(radio => {
 elements.btnConfirmGenMode.addEventListener('click', async () => {
   const urls = getEnteredUrls();
   const selectedMode = document.querySelector('input[name="gen-mode"]:checked').value;
-  const customRepoName = elements.inputCustomRepoName.value.trim() || null;
+  const customRepoName = elements.inputCustomRepoName.value.trim()
+    || localStorage.getItem('aext_default_repo')?.trim()
+    || null;
+  const isPrivate = elements.checkPrivateRepo?.checked || false;
 
   elements.modalGenMode.classList.add('hidden');
   elements.modalGenMode.classList.remove('flex');
@@ -426,7 +439,7 @@ elements.btnConfirmGenMode.addEventListener('click', async () => {
       urls: urls,
       mode: selectedMode,
       repo_name: customRepoName,
-      private_repo: false,
+      private_repo: isPrivate,
       custom_name: null,
       lang: selectedLang,
       nsfw: false
@@ -661,6 +674,45 @@ if (elements.btnApplyAiPatch) {
     } catch (e) {
       alert(`JSON inválido: ${e.message}`);
     }
+  });
+}
+
+// ==================== SETTINGS SYNC ====================
+// Sync language selector between Generator tab and Settings tab
+if (elements.settingsLang && elements.selectExtLang) {
+  // Load saved language from localStorage
+  const savedLang = localStorage.getItem('aext_lang') || 'es';
+  elements.settingsLang.value = savedLang;
+  elements.selectExtLang.value = savedLang;
+
+  elements.settingsLang.addEventListener('change', () => {
+    elements.selectExtLang.value = elements.settingsLang.value;
+  });
+  elements.selectExtLang.addEventListener('change', () => {
+    elements.settingsLang.value = elements.selectExtLang.value;
+  });
+}
+
+// Load saved default repo
+if (elements.settingsDefaultRepo) {
+  const savedRepo = localStorage.getItem('aext_default_repo') || '';
+  elements.settingsDefaultRepo.value = savedRepo;
+}
+
+// Save settings button
+if (elements.btnSaveSettings) {
+  elements.btnSaveSettings.addEventListener('click', () => {
+    const lang = elements.settingsLang?.value || 'es';
+    const repo = elements.settingsDefaultRepo?.value?.trim() || '';
+
+    localStorage.setItem('aext_lang', lang);
+    localStorage.setItem('aext_default_repo', repo);
+
+    // Sync generator lang selector
+    if (elements.selectExtLang) elements.selectExtLang.value = lang;
+
+    appendTerminalLog('SUCCESS', `Ajustes guardados: idioma=${lang}, repo=${repo || '(auto-generar)'}`);
+    alert('Ajustes guardados correctamente.');
   });
 }
 
