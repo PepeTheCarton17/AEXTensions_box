@@ -1,15 +1,13 @@
-name: AEXT Multiplatform Build (Desktop & Android)
+name: AEXT Multiplatform Release (Desktop & Android)
 
 on:
   push:
-    branches: [main]
-  pull_request:
     branches: [main]
   workflow_dispatch:
 
 jobs:
   build-desktop:
-    name: Build Desktop (Windows & Ubuntu)
+    name: Build Desktop (${{ matrix.platform }})
     runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -29,7 +27,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Ubuntu Webkit & GTK dependencies
+      - name: Install Linux Dependencies
         if: matrix.platform == 'ubuntu-latest'
         run: |
           sudo apt-get update
@@ -38,19 +36,33 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Frontend
-        run: npm run build
+      - name: Build Desktop App
+        run: npm run tauri build
 
-      - name: Build Tauri Desktop Binary
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Rename and Prepare Windows Artifacts
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          mkdir -p release_dist
+          Get-ChildItem -Path src-tauri/target/release/bundle/nsis/*.exe | ForEach-Object {
+            Copy-Item $_.FullName "release_dist/AEXT-v1.0.0-windows-x64-setup.exe"
+          }
+          Get-ChildItem -Path src-tauri/target/release/bundle/msi/*.msi | ForEach-Object {
+            Copy-Item $_.FullName "release_dist/AEXT-v1.0.0-windows-x64.msi"
+          }
+
+      - name: Rename and Prepare Linux Artifacts
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          mkdir -p release_dist
+          find src-tauri/target/release/bundle/appimage -name "*.AppImage" -exec cp {} release_dist/AEXT-v1.0.0-linux-x86_64.AppImage \; || true
+          find src-tauri/target/release/bundle/deb -name "*.deb" -exec cp {} release_dist/AEXT-v1.0.0-linux-amd64.deb \; || true
+
+      - name: Upload Desktop Artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tagName: v__VERSION__
-          releaseName: 'AEXT v__VERSION__'
-          releaseBody: 'Release de AEXT generada automáticamente.'
-          releaseDraft: true
-          prerelease: false
+          name: AEXT-Desktop-${{ matrix.platform }}
+          path: release_dist/*
 
   build-android:
     name: Build Android APK
@@ -71,12 +83,10 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Setup NDK
+      - name: Setup Android NDK
         run: |
-          ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125"
 
       - name: Install Rust stable & Android targets
         uses: dtolnay/rust-toolchain@stable
@@ -86,12 +96,23 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Frontend
-        run: npm run build
-
       - name: Init and Build Android APK
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.1.10909125
         run: |
           npx tauri android init || true
           npx tauri android build --apk || true
+
+      - name: Rename and Prepare Android APK
+        run: |
+          mkdir -p release_dist
+          find src-tauri/gen/android -name "*universal*.apk" -exec cp {} release_dist/AEXT-v1.0.0-android-universal.apk \; || true
+          find src-tauri/gen/android -name "*arm64*.apk" -exec cp {} release_dist/AEXT-v1.0.0-android-arm64-v8a.apk \; || true
+          # Fallback si no hay subcarpetas específicas
+          find src-tauri/gen/android -name "*.apk" -exec cp {} release_dist/AEXT-v1.0.0-android-app.apk \; || true
+
+      - name: Upload Android Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AEXT-Android-APK
+          path: release_dist/*

@@ -59,6 +59,7 @@ pub struct LogEntry {
 pub struct SystemStatus {
     pub app_version: String,
     pub api_port: u16,
+    pub mcp_endpoint: String,
     pub is_mobile: bool,
     pub os: String,
     pub active_extensions_count: usize,
@@ -74,4 +75,38 @@ pub struct ExtractorTestResult {
     pub quality: Option<String>,
     pub headers: Vec<(String, String)>,
     pub error: Option<String>,
+}
+
+// ==================== MCP & AI ASSISTANCE MODELS ====================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpToolCallRequest {
+    pub method: String,
+    pub params: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpToolCallResponse {
+    pub success: bool,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiDiagnosticReport {
+    pub app_version: String,
+    pub platform: String,
+    pub recent_logs: Vec<LogEntry>,
+    pub failed_sites: Vec<String>,
+    pub system_info: SystemStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiPatchRequest {
+    pub pkg_id: String,
+    pub custom_card_selector: Option<String>,
+    pub custom_title_selector: Option<String>,
+    pub custom_next_selector: Option<String>,
+    pub custom_video_code: Option<String>,
+    pub custom_headers: Option<Vec<(String, String)>>,
 }

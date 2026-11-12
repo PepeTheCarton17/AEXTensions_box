@@ -360,6 +360,7 @@ pub async fn get_system_status(state: State<'_, AppState>) -> Result<SystemStatu
     Ok(SystemStatus {
         app_version: "1.0.0".to_string(),
         api_port: 45731,
+        mcp_endpoint: "http://localhost:45731/mcp".to_string(),
         is_mobile: cfg!(target_os = "android"),
         os: std::env::consts::OS.to_string(),
         active_extensions_count: ext_count,

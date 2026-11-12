@@ -125,6 +125,13 @@ const elements = {
   btnTestStream: document.getElementById('btn-test-stream'),
   testStreamResult: document.getElementById('test-stream-result'),
 
+  // AI & MCP Assistance
+  btnCopyMcpConfig: document.getElementById('btn-copy-mcp-config'),
+  btnGenAiDiag: document.getElementById('btn-generate-ai-diagnostic'),
+  btnCopyLogsAi: document.getElementById('btn-copy-logs-ai'),
+  inputAiPatch: document.getElementById('input-ai-patch'),
+  btnApplyAiPatch: document.getElementById('btn-apply-ai-patch'),
+
   // Settings
   btnCheckUpdates: document.getElementById('btn-check-updates'),
 };
@@ -585,6 +592,75 @@ elements.btnTestStream.addEventListener('click', async () => {
     elements.testStreamResult.innerHTML = `<div class="text-rose-400">Error: ${e}</div>`;
   }
 });
+
+// ==================== AI ASSISTANCE & MCP EVENTS ====================
+if (elements.btnCopyMcpConfig) {
+  elements.btnCopyMcpConfig.addEventListener('click', () => {
+    const config = {
+      mcpServers: {
+        aext: {
+          url: "http://localhost:45731/mcp"
+        }
+      }
+    };
+    navigator.clipboard.writeText(JSON.stringify(config, null, 2));
+    alert('¡Configuración MCP copiada al portapapeles!\nPégala en tu cliente de IA (Claude Desktop, Antigravity o Cursor) en la sección mcpServers.');
+  });
+}
+
+if (elements.btnCopyLogsAi) {
+  elements.btnCopyLogsAi.addEventListener('click', async () => {
+    try {
+      const logs = await invokeBackend('get_system_logs') || [];
+      const text = logs.map(l => `[${l.timestamp}] [${l.level}] ${l.message}`).join('\n');
+      navigator.clipboard.writeText(`LOGS AEXT:\n${text}`);
+      alert('¡Logs de terminal copiados para compartir con tu IA!');
+    } catch (e) {
+      alert('Error copiando logs');
+    }
+  });
+}
+
+if (elements.btnGenAiDiag) {
+  elements.btnGenAiDiag.addEventListener('click', async () => {
+    try {
+      const res = await fetch('http://localhost:45731/api/ai/diagnostics');
+      const diag = await res.json();
+      navigator.clipboard.writeText(JSON.stringify(diag, null, 2));
+      alert('¡Reporte completo de diagnóstico generado y copiado al portapapeles en JSON!\nPuedes enviárselo directamente a tu IA para que diagnostique y repare la extensión.');
+    } catch (e) {
+      alert('No se pudo generar el reporte de diagnóstico del servidor API embebido');
+    }
+  });
+}
+
+if (elements.btnApplyAiPatch) {
+  elements.btnApplyAiPatch.addEventListener('click', async () => {
+    const val = elements.inputAiPatch.value.trim();
+    if (!val) {
+      alert('Ingresa el JSON del parche de IA');
+      return;
+    }
+    try {
+      const patch = JSON.parse(val);
+      const res = await fetch('http://localhost:45731/api/ai/patch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        appendTerminalLog('SUCCESS', `Parche de IA aplicado con éxito a ${patch.pkg_id} (Nueva versión: ${data.version})`);
+        alert(`¡Parche de IA aplicado exitosamente!\nExtensión actualizada a la versión ${data.version}`);
+        loadExtensions();
+      } else {
+        alert(`Error aplicando parche: ${data.error}`);
+      }
+    } catch (e) {
+      alert(`JSON inválido: ${e.message}`);
+    }
+  });
+}
 
 // ==================== CHECK UPDATES ====================
 elements.btnCheckUpdates.addEventListener('click', async () => {
