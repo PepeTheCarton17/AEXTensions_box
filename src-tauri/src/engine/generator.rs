@@ -15,11 +15,14 @@ pub struct ExtensionBundle {
 pub struct ExtensionGenerator;
 
 impl ExtensionGenerator {
-    pub fn generate(analysis: &AnalysisResult, custom_name: Option<&str>) -> ExtensionBundle {
+    pub fn generate(analysis: &AnalysisResult, custom_name: Option<&str>, target_lang: Option<&str>) -> ExtensionBundle {
         let raw_name = custom_name.unwrap_or(&analysis.name);
         let safe_name = sanitize_class_name(raw_name);
         let pkg_slug = safe_name.to_lowercase();
-        let lang = &analysis.lang;
+        let lang = target_lang
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(if !analysis.lang.is_empty() { &analysis.lang } else { "es" });
         let class_name = safe_name.clone();
         let pkg_id = format!("eu.kanade.tachiyomi.animeextension.{}.{}", lang, pkg_slug);
 
@@ -55,12 +58,130 @@ impl ExtensionGenerator {
             pkg_id,
             class_name,
             name: safe_name,
-            lang: lang.clone(),
+            lang: lang.to_string(),
             ext_type: analysis.ext_type.clone(),
             version: "16.1".to_string(),
             version_code: 1,
             files,
         }
+    }
+}
+
+struct I18nData {
+    pref_audio_title: &'static str,
+    pref_audio_entries: &'static [&'static str],
+    pref_quality_title: &'static str,
+    pref_server_blacklist_title: &'static str,
+    pref_server_blacklist_summary: &'static str,
+    pref_genre_blacklist_title: &'static str,
+    pref_genre_blacklist_summary: &'static str,
+    filter_header: &'static str,
+    filter_audio_title: &'static str,
+    filter_audio_entries: &'static [&'static str],
+    filter_genre_title: &'static str,
+    filter_genre_blacklist_title: &'static str,
+    genres: &'static [(&'static str, &'static str)],
+}
+
+fn get_i18n(lang: &str) -> I18nData {
+    match lang.to_lowercase().as_str() {
+        "en" => I18nData {
+            pref_audio_title: "Preferred Audio (SUB / DUB)",
+            pref_audio_entries: &["Show All", "Prioritize Subbed", "Prioritize Dubbed (DUB)"],
+            pref_quality_title: "Preferred Quality",
+            pref_server_blacklist_title: "Server Blacklist (Hide)",
+            pref_server_blacklist_summary: "Disable servers in player (e.g. Zilla)",
+            pref_genre_blacklist_title: "Genre Blacklist (# - Hide)",
+            pref_genre_blacklist_summary: "Permanently hide anime with these genres or tags (#) in catalog",
+            filter_header: "Search & Catalog Filters",
+            filter_audio_title: "Audio / Dubbing",
+            filter_audio_entries: &["All", "Subtitled (SUB)", "Dubbed (DUB)"],
+            filter_genre_title: "Genre (#)",
+            filter_genre_blacklist_title: "Genre Blacklist (# - Exclude)",
+            genres: &[
+                ("Action", "action"),
+                ("Adventure", "adventure"),
+                ("Sci-Fi", "sci-fi"),
+                ("Comedy", "comedy"),
+                ("Sports", "sports"),
+                ("Drama", "drama"),
+                ("Ecchi", "ecchi"),
+                ("Fantasy", "fantasy"),
+                ("Gore", "gore"),
+                ("Harem", "harem"),
+                ("Isekai", "isekai"),
+                ("Mecha", "mecha"),
+                ("Romance", "romance"),
+                ("Shounen", "shounen"),
+                ("Supernatural", "supernatural"),
+                ("Horror", "horror"),
+            ],
+        },
+        "pt-br" | "pt" => I18nData {
+            pref_audio_title: "Áudio Preferido (LEG / DUB)",
+            pref_audio_entries: &["Mostrar Todos", "Priorizar Legendado", "Priorizar Dublado (DUB)"],
+            pref_quality_title: "Qualidade Preferida",
+            pref_server_blacklist_title: "Lista Negra de Servidores (Ocultar)",
+            pref_server_blacklist_summary: "Desative servidores no reprodutor (ex. Zilla)",
+            pref_genre_blacklist_title: "Lista Negra de Gêneros (# - Ocultar)",
+            pref_genre_blacklist_summary: "Oculta permanentemente animes com estes gêneros (#) no catálogo",
+            filter_header: "Filtros de busca e catálogo",
+            filter_audio_title: "Áudio / Dublagem",
+            filter_audio_entries: &["Todos", "Legendado (LEG)", "Dublado (DUB)"],
+            filter_genre_title: "Gênero (#)",
+            filter_genre_blacklist_title: "Lista Negra de Gêneros (# - Excluir)",
+            genres: &[
+                ("Ação", "acao"),
+                ("Aventura", "aventura"),
+                ("Ficção Científica", "ficcao-cientifica"),
+                ("Comédia", "comedia"),
+                ("Esportes", "esportes"),
+                ("Drama", "drama"),
+                ("Ecchi", "ecchi"),
+                ("Fantasia", "fantasia"),
+                ("Gore", "gore"),
+                ("Harém", "harem"),
+                ("Isekai", "isekai"),
+                ("Mecha", "mecha"),
+                ("Romance", "romance"),
+                ("Shounen", "shounen"),
+                ("Sobrenatural", "sobrenatural"),
+                ("Terror", "terror"),
+            ],
+        },
+        _ => I18nData {
+            pref_audio_title: "Audio Preferido (SUB / DUB)",
+            pref_audio_entries: &["Mostrar Todos", "Priorizar Subtitulado", "Priorizar Doblaje (DUB)"],
+            pref_quality_title: "Calidad Preferida",
+            pref_server_blacklist_title: "Lista Negra de Servidores (Ocultar)",
+            pref_server_blacklist_summary: "Desactiva servidores en el reproductor (ej. Zilla)",
+            pref_genre_blacklist_title: "Lista Negra de Géneros (# - Ocultar)",
+            pref_genre_blacklist_summary: "Oculta permanentemente animes con estos géneros (#) en el catálogo",
+            filter_header: "Filtros de búsqueda y catálogo",
+            filter_audio_title: "Audio / Doblaje",
+            filter_audio_entries: &["Todos", "Subtitulado (SUB)", "Doblado (DUB)"],
+            filter_genre_title: "Género (#)",
+            filter_genre_blacklist_title: "Lista Negra de Géneros (# - Excluir)",
+            genres: &[
+                ("Acción", "accion"),
+                ("Aventura", "aventura"),
+                ("Ciencia Ficción", "ciencia-ficcion"),
+                ("Comedia", "comedia"),
+                ("Deportes", "deportes"),
+                ("Drama", "drama"),
+                ("Ecchi", "ecchi"),
+                ("Fantasía", "fantasia"),
+                ("Gore", "gore"),
+                ("Harem", "harem"),
+                ("Isekai", "isekai"),
+                ("Mecha", "mecha"),
+                ("Romance", "romance"),
+                ("Sci-Fi", "sci-fi"),
+                ("Shounen", "shounen"),
+                ("Sobrenatural", "sobrenatural"),
+                ("Terror", "terror"),
+            ],
+        },
     }
 }
 
@@ -87,15 +208,28 @@ fn generate_kotlin_source(analysis: &AnalysisResult, class_name: &str, pkg_slug:
     let card_sel = &analysis.card_selector;
     let title_sel = &analysis.title_selector;
     let next_sel = &analysis.next_page_selector;
+    let i18n = get_i18n(lang);
+
+    let pref_audio_title = i18n.pref_audio_title;
+    let pref_audio_entries = i18n.pref_audio_entries.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
+    let pref_server_blacklist_title = i18n.pref_server_blacklist_title;
+    let pref_server_blacklist_summary = i18n.pref_server_blacklist_summary;
+    let pref_genre_blacklist_title = i18n.pref_genre_blacklist_title;
+    let pref_genre_blacklist_summary = i18n.pref_genre_blacklist_summary;
+
+    let genre_entries = i18n.genres.iter().map(|(g, _)| format!("\"{}\"", g)).collect::<Vec<_>>().join(", ");
+    let genre_values = i18n.genres.iter().map(|(_, v)| format!("\"{}\"", v)).collect::<Vec<_>>().join(", ");
 
     format!(r#"package eu.kanade.tachiyomi.animeextension.{lang}.{pkg_slug}
 
 import android.app.Application
 import android.content.SharedPreferences
 import androidx.preference.ListPreference
+import androidx.preference.MultiSelectListPreference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
+import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
@@ -147,6 +281,9 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
 
     override fun popularAnimeNextPageSelector(): String = "{next_sel}"
 
+    override fun popularAnimeParse(response: Response): AnimesPage =
+        filterBlacklistedAnimes(super.popularAnimeParse(response))
+
     // ============================== LATEST UPDATES ==============================
     override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/recientes?page=$page", headers)
 
@@ -156,10 +293,23 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
 
     override fun latestUpdatesNextPageSelector(): String = "{next_sel}"
 
+    override fun latestUpdatesParse(response: Response): AnimesPage =
+        filterBlacklistedAnimes(super.latestUpdatesParse(response))
+
     // ============================== SEARCH ANIME ==============================
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {{
-        val url = if (query.isNotBlank()) {{
-            "$baseUrl/animes?search=$query&page=$page"
+        val cleanQuery = query.trim()
+        val audioFilter = filters.filterIsInstance<{class_name}Filters.AudioFilter>().firstOrNull()
+        val isDubSelected = audioFilter?.let {{ it.vals[it.state].second == "dub" }} ?: false
+
+        val finalQuery = when {{
+            isDubSelected && cleanQuery.isNotBlank() -> "$cleanQuery latino"
+            isDubSelected -> "latino"
+            else -> cleanQuery
+        }}
+
+        val url = if (finalQuery.isNotBlank()) {{
+            "$baseUrl/animes?search=$finalQuery&page=$page"
         }} else {{
             "$baseUrl/animes?page=$page"
         }}
@@ -171,6 +321,23 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
     override fun searchAnimeFromElement(element: Element): SAnime = popularAnimeFromElement(element)
 
     override fun searchAnimeNextPageSelector(): String = "{next_sel}"
+
+    override fun searchAnimeParse(response: Response): AnimesPage =
+        filterBlacklistedAnimes(super.searchAnimeParse(response))
+
+    private fun filterBlacklistedAnimes(page: AnimesPage): AnimesPage {{
+        val blacklistedGenres = preferences.getStringSet("genre_blacklist", emptySet()) ?: emptySet()
+        if (blacklistedGenres.isEmpty()) return page
+
+        val filtered = page.animes.filterNot {{ anime ->
+            val titleLower = anime.title.lowercase()
+            val genreLower = anime.genre?.lowercase() ?: ""
+            blacklistedGenres.any {{ bg ->
+                bg.isNotEmpty() && (titleLower.contains(bg) || genreLower.contains(bg))
+            }}
+        }}
+        return AnimesPage(filtered, page.hasNextPage)
+    }}
 
     // ============================== DETAILS ==============================
     override fun animeDetailsParse(document: Document): SAnime = SAnime.create().apply {{
@@ -198,30 +365,42 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
         val document = response.asJsoup()
         val videoList = mutableListOf<Video>()
 
-        // 1. Selector de Calidad y Doblaje (SUB vs DUB)
-        val preferDub = preferences.getString("preferred_audio", "all")
+        // Lista Negra de servidores configurada por el usuario
+        val blacklist = preferences.getStringSet("server_blacklist", emptySet()) ?: emptySet()
 
-        // 2. Extracción de servidores
+        // Extracción de servidores desde iframes
         val iframeElements = document.select("iframe[src]")
         for (iframe in iframeElements) {{
             val src = iframe.attr("abs:src")
             when {{
                 src.contains("mp4upload.com") -> {{
-                    videoList.add(Video(src, "[SUB] MP4Upload", src, headers))
+                    if (!blacklist.contains("mp4upload")) {{
+                        videoList.add(Video(src, "[SUB] MP4Upload", src, headers))
+                    }}
                 }}
                 src.contains("voe.sx") -> {{
-                    videoList.add(Video(src, "[SUB] Voe", src, headers))
+                    if (!blacklist.contains("voe")) {{
+                        videoList.add(Video(src, "[SUB] Voe", src, headers))
+                    }}
                 }}
                 src.contains("player.zilla-networks.com") -> {{
-                    val zHeaders = headersBuilder()
-                        .set("Referer", "$baseUrl/")
-                        .set("Origin", baseUrl)
-                        .set("Sec-Fetch-Mode", "cors")
-                        .build()
-                    videoList.add(Video(src, "[SUB] Zilla HLS", src, zHeaders))
+                    if (!blacklist.contains("zilla")) {{
+                        val zHeaders = Headers.Builder()
+                            .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                            .set("Referer", src)
+                            .set("Origin", "https://player.zilla-networks.com")
+                            .set("Sec-Fetch-Mode", "cors")
+                            .set("Sec-Fetch-Site", "same-origin")
+                            .set("Sec-Fetch-Dest", "empty")
+                            .set("Accept", "*/*")
+                            .build()
+                        videoList.add(Video(src, "[SUB] Zilla HLS", src, zHeaders))
+                    }}
                 }}
                 else -> {{
-                    videoList.add(Video(src, "Server Direct", src, headers))
+                    if (!blacklist.contains("direct")) {{
+                        videoList.add(Video(src, "Server Direct", src, headers))
+                    }}
                 }}
             }}
         }}
@@ -237,13 +416,33 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
     override fun setupPreferenceScreen(screen: PreferenceScreen) {{
         val audioPref = ListPreference(screen.context).apply {{
             key = "preferred_audio"
-            title = "Audio Preferido (SUB / DUB)"
-            entries = arrayOf("Mostrar Todos", "Priorizar Subtitulado", "Priorizar Doblaje (DUB)")
+            title = "{pref_audio_title}"
+            entries = arrayOf({pref_audio_entries})
             entryValues = arrayOf("all", "sub", "dub")
             setDefaultValue("all")
             summary = "%s"
         }}
         screen.addPreference(audioPref)
+
+        val serverBlacklistPref = MultiSelectListPreference(screen.context).apply {{
+            key = "server_blacklist"
+            title = "{pref_server_blacklist_title}"
+            entries = arrayOf("MP4Upload", "Voe", "Zilla (HLS)", "Directos")
+            entryValues = arrayOf("mp4upload", "voe", "zilla", "direct")
+            setDefaultValue(emptySet<String>())
+            summary = "{pref_server_blacklist_summary}"
+        }}
+        screen.addPreference(serverBlacklistPref)
+
+        val genreBlacklistPref = MultiSelectListPreference(screen.context).apply {{
+            key = "genre_blacklist"
+            title = "{pref_genre_blacklist_title}"
+            entries = arrayOf({genre_entries})
+            entryValues = arrayOf({genre_values})
+            setDefaultValue(emptySet<String>())
+            summary = "{pref_genre_blacklist_summary}"
+        }}
+        screen.addPreference(genreBlacklistPref)
     }}
 
     private fun sortVideos(videos: List<Video>): List<Video> {{
@@ -263,6 +462,18 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
 }
 
 fn generate_kotlin_filters(class_name: &str, pkg_slug: &str, lang: &str) -> String {
+    let i18n = get_i18n(lang);
+    let filter_header = i18n.filter_header;
+    let filter_audio_title = i18n.filter_audio_title;
+    let filter_genre_title = i18n.filter_genre_title;
+    let filter_genre_blacklist_title = i18n.filter_genre_blacklist_title;
+    let audio_entries = i18n.filter_audio_entries.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
+
+    let genres_list = i18n.genres.iter()
+        .map(|(name, id)| format!("        Genre(\"{}\", \"{}\")", name, id))
+        .collect::<Vec<_>>()
+        .join(",\n");
+
     format!(r#"package eu.kanade.tachiyomi.animeextension.{lang}.{pkg_slug}
 
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
@@ -271,32 +482,33 @@ import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 object {class_name}Filters {{
     class Header(name: String) : AnimeFilter.Header(name)
 
-    class Genre(val id: String, name: String)
+    class Genre(val name: String, val id: String)
     class GenreFilter(name: String, val genres: List<Genre>) :
-        AnimeFilter.Select<String>(name, genres.map {{ it.id }}.toTypedArray())
+        AnimeFilter.Select<String>(name, genres.map {{ it.name }}.toTypedArray())
 
-    class StateFilter(name: String, val states: Array<Pair<String, String>>) :
-        AnimeFilter.Select<String>(name, states.map {{ it.second }}.toTypedArray())
+    class BlacklistGenreFilter(name: String, val genres: List<Genre>) :
+        AnimeFilter.Select<String>(name, genres.map {{ it.name }}.toTypedArray())
 
-    class SortFilter(name: String, val orders: Array<Pair<String, String>>) :
-        AnimeFilter.Select<String>(name, orders.map {{ it.second }}.toTypedArray())
+    class AudioFilter : AnimeFilter.Select<String>(
+        "{filter_audio_title}",
+        arrayOf({audio_entries})
+    ) {{
+        val vals = arrayOf(
+            Pair("all", ""),
+            Pair("sub", "sub"),
+            Pair("dub", "dub")
+        )
+    }}
 
     val DEFAULT_GENRES = listOf(
-        Genre("Todos", "Todos"),
-        Genre("Acción", "accion"),
-        Genre("Aventura", "aventura"),
-        Genre("Comedia", "comedia"),
-        Genre("Drama", "drama"),
-        Genre("Fantasía", "fantasia"),
-        Genre("Romance", "romance"),
-        Genre("Sci-Fi", "sci-fi"),
-        Genre("Shounen", "shounen"),
-        Genre("Sobrenatural", "sobrenatural")
+{genres_list}
     )
 
     fun getFilterList(): AnimeFilterList = AnimeFilterList(
-        Header("Filtros avanzados de {class_name}"),
-        GenreFilter("Género", DEFAULT_GENRES)
+        Header("{filter_header}"),
+        AudioFilter(),
+        GenreFilter("{filter_genre_title}", DEFAULT_GENRES),
+        BlacklistGenreFilter("{filter_genre_blacklist_title}", DEFAULT_GENRES)
     )
 }}
 "#)

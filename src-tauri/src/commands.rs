@@ -129,7 +129,7 @@ pub async fn generate_extensions(
 
         // 2. Generar código Kotlin y configuración de extensión
         state.add_log("INFO", &format!("Generando código Kotlin y manifiesto para {}", analysis.name)).await;
-        let bundle = ExtensionGenerator::generate(&analysis, request.custom_name.as_deref());
+        let bundle = ExtensionGenerator::generate(&analysis, request.custom_name.as_deref(), request.lang.as_deref());
 
         // 3. Manejar según el modo (Local vs GitHub)
         let mut ext_item = ExtensionItem {

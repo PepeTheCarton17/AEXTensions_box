@@ -88,7 +88,19 @@
           </div>
 
           <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
-            <div class="flex items-center gap-4 text-xs text-slate-400">
+            <div class="flex flex-wrap items-center gap-4 text-xs text-slate-400">
+              <div class="flex items-center gap-1.5">
+                <label for="select-extension-lang" class="text-xs text-slate-400 font-medium">Idioma:</label>
+                <select id="select-extension-lang" class="bg-surface-950 border border-surface-800 rounded-lg px-2.5 py-1 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-brand-500 font-medium">
+                  <option value="es" selected>Español (es)</option>
+                  <option value="en">English (en)</option>
+                  <option value="pt-br">Português (pt-br)</option>
+                  <option value="fr">Français (fr)</option>
+                  <option value="de">Deutsch (de)</option>
+                  <option value="it">Italiano (it)</option>
+                  <option value="all">Multi / Todos (all)</option>
+                </select>
+              </div>
               <label class="flex items-center gap-1.5 cursor-pointer">
                 <input type="checkbox" id="check-auto-detect-dub" checked class="rounded bg-surface-800 border-surface-700 text-brand-600 focus:ring-brand-500">
                 <span>Separar SUB / DUB</span>
@@ -277,7 +289,8 @@
             <tbody class="divide-y divide-surface-800/60 font-mono text-slate-300">
               <tr class="hover:bg-surface-850/50">
                 <td class="p-3 font-sans font-semibold text-slate-200 flex items-center gap-2">
-                  <span>🪟 Windows (PC)</span>
+                  <svg class="w-4 h-4 text-sky-400" fill="currentColor" viewBox="0 0 24 24"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.901-1.799"/></svg>
+                  <span>Windows (PC)</span>
                 </td>
                 <td class="p-3 text-indigo-300">AEXT-v1.0.0-windows-x64-setup.exe</td>
                 <td class="p-3 text-slate-400">x86_64 (64-bit)</td>
@@ -287,7 +300,8 @@
               </tr>
               <tr class="hover:bg-surface-850/50">
                 <td class="p-3 font-sans font-semibold text-slate-200 flex items-center gap-2">
-                  <span>🐧 Linux (PC)</span>
+                  <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                  <span>Linux (PC)</span>
                 </td>
                 <td class="p-3 text-indigo-300">AEXT-v1.0.0-linux-x86_64.AppImage</td>
                 <td class="p-3 text-slate-400">x86_64 / amd64</td>
@@ -297,7 +311,8 @@
               </tr>
               <tr class="hover:bg-surface-850/50">
                 <td class="p-3 font-sans font-semibold text-slate-200 flex items-center gap-2">
-                  <span>📱 Android (Mobile)</span>
+                  <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                  <span>Android (Mobile)</span>
                 </td>
                 <td class="p-3 text-emerald-300 font-bold">AEXT-v1.0.0-android-universal.apk</td>
                 <td class="p-3 text-slate-400">arm64-v8a / universal</td>
@@ -346,7 +361,10 @@
         <label class="flex items-start gap-3 p-3.5 rounded-xl border border-surface-700 bg-surface-950/60 hover:bg-surface-850 hover:border-brand-500/50 cursor-pointer transition-all">
           <input type="radio" name="gen-mode" value="local" checked class="mt-1 text-brand-600 focus:ring-brand-500">
           <div>
-            <span class="block text-xs font-semibold text-slate-200">📦 Solo Instalar Localmente</span>
+            <span class="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+              <svg class="w-4 h-4 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+              <span>Solo Instalar Localmente</span>
+            </span>
             <span class="block text-[11px] text-slate-400 mt-0.5">Genera el código y paquete directo en el dispositivo. No requiere cuenta ni token de GitHub. Ideal para pruebas rápidas y uso personal.</span>
           </div>
         </label>
@@ -354,7 +372,10 @@
         <label class="flex items-start gap-3 p-3.5 rounded-xl border border-surface-700 bg-surface-950/60 hover:bg-surface-850 hover:border-brand-500/50 cursor-pointer transition-all">
           <input type="radio" name="gen-mode" value="github" class="mt-1 text-brand-600 focus:ring-brand-500">
           <div>
-            <span class="block text-xs font-semibold text-slate-200">🚀 Generar Repositorio en GitHub</span>
+            <span class="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+              <svg class="w-4 h-4 text-indigo-400" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+              <span>Generar Repositorio en GitHub</span>
+            </span>
             <span class="block text-[11px] text-slate-400 mt-0.5">Crea el repositorio con GitHub Actions, firma determinista, genera repo.json y publica el APK a gh-pages para instalar y actualizar en Nekoyomi.</span>
           </div>
         </label>

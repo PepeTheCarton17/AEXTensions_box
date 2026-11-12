@@ -7,6 +7,7 @@ pub mod state;
 
 use crate::state::AppState;
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let state = AppState::new();
 

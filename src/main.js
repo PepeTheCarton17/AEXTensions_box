@@ -419,6 +419,8 @@ elements.btnConfirmGenMode.addEventListener('click', async () => {
 
   appendTerminalLog('INFO', `Iniciando proceso de generación en modo: ${selectedMode.toUpperCase()}...`);
 
+  const selectedLang = document.getElementById('select-extension-lang')?.value || 'es';
+
   try {
     const request = {
       urls: urls,
@@ -426,7 +428,7 @@ elements.btnConfirmGenMode.addEventListener('click', async () => {
       repo_name: customRepoName,
       private_repo: false,
       custom_name: null,
-      lang: 'es',
+      lang: selectedLang,
       nsfw: false
     };
 
@@ -578,13 +580,13 @@ elements.btnTestStream.addEventListener('click', async () => {
     const res = await invokeBackend('test_stream_extractor', { url });
     if (res.success) {
       elements.testStreamResult.innerHTML = `
-        <div class="text-emerald-400 font-bold">✓ ÉXITO: El servidor autorizó la reproducción (${res.host})</div>
+        <div class="text-emerald-400 font-bold">[OK] ÉXITO: El servidor autorizó la reproducción (${res.host})</div>
         <div class="text-slate-300">Calidad: ${res.quality || 'Automática'}</div>
         <div class="text-slate-500 text-[10px] mt-1">Cabeceras enviadas: Referer, Origin, Sec-Fetch-Mode: cors</div>
       `;
     } else {
       elements.testStreamResult.innerHTML = `
-        <div class="text-rose-400 font-bold">✗ FALLO: ${res.error || 'Acceso denegado'} (${res.host})</div>
+        <div class="text-rose-400 font-bold">[FALLO]: ${res.error || 'Acceso denegado'} (${res.host})</div>
         <div class="text-slate-400 text-[10px]">Causa probable: Cloudflare WAF requiere cookies o token de sesión temporal.</div>
       `;
     }
