@@ -21,7 +21,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
 
       - name: Install Rust stable
@@ -78,11 +78,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -125,3 +125,62 @@ jobs:
         with:
           name: AEXT-Android-APK
           path: release_dist/*
+
+  publish-release:
+    name: Publish Official GitHub Release
+    needs: [build-desktop, build-android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all_artifacts
+
+      - name: Consolidate binaries for Release
+        run: |
+          mkdir -p release_assets
+          find all_artifacts -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.apk" \) | while read -r f; do
+            echo "Añadiendo a Release: $f"
+            cp "$f" release_assets/
+          done
+          ls -la release_assets/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: "AEXT v1.0.0 - Multiplatform Release"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: release_assets/*
+          body: |
+            ## AEXT v1.0.0 - Creador Automatizado de Extensiones Nekoyomi
+
+            Aplicación oficial multiplataforma (Android, Windows, Linux) para automatizar la creación de extensiones compatibles con Nekoyomi y Aniyomi, con servidor API y protocolo MCP embebido para asistencia con Inteligencia Artificial.
+
+            ### Archivos de Instalación Disponibles:
+
+            | Plataforma | Archivo | Arquitectura |
+            | :--- | :--- | :--- |
+            | **Android (Móvil)** | `AEXT-v1.0.0-android-universal.apk` | Universal (arm64, armv7, x86_64) |
+            | **Android (Móvil arm64)** | `AEXT-v1.0.0-android-arm64-v8a.apk` | arm64-v8a |
+            | **Windows (PC Instalador)** | `AEXT-v1.0.0-windows-x64-setup.exe` | x86_64 |
+            | **Windows (PC MSI)** | `AEXT-v1.0.0-windows-x64.msi` | x86_64 |
+            | **Linux (PC AppImage)** | `AEXT-v1.0.0-linux-x86_64.AppImage` | x86_64 |
+            | **Linux (PC Debian/Ubuntu)**| `AEXT-v1.0.0-linux-amd64.deb` | x86_64 |
+
+            ---
+
+            ### Aviso Legal / Disclaimer
+            > **IMPORTANTE**: Este software es una herramienta de código abierto desarrollada **exclusivamente con fines educativos y de investigación**.
+            > 
+            > 1. **Sin Alojamiento de Contenido**: Ni esta aplicación ni sus desarrolladores alojan, poseen, retransmiten o distribuyen ningún tipo de contenido multimedia, video, audio o manga.
+            > 2. **Servidores de Terceros**: Las extensiones generadas son scrapers que se comunican exclusivamente con servidores web públicos e independientes operados por terceros no afiliados.
+            > 3. **Propiedad Intelectual**: Todas las marcas comerciales, logotipos e imágenes pertenecen a sus respectivos propietarios legales.
+            > 4. **Responsabilidad del Usuario**: El usuario es el único responsable de la legalidad y uso de las extensiones generadas en conformidad con las leyes de su país.

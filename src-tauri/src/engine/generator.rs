@@ -54,6 +54,14 @@ impl ExtensionGenerator {
         let index_script = generate_repo_index_script();
         files.insert(".scripts/generate-repo-index.py".to_string(), index_script.into_bytes());
 
+        // 7. Keystore permanente determinista (signingkey.jks) para evitar "Firma diferente"
+        let keystore_bytes = decode_base64(KEYSTORE_B64);
+        files.insert("signingkey.jks".to_string(), keystore_bytes);
+
+        // 8. README.md oficial con Disclaimer legal y enlaces de 1 clic para Nekoyomi
+        let readme_content = generate_repo_readme(&safe_name, lang, &analysis.url);
+        files.insert("README.md".to_string(), readme_content.into_bytes());
+
         ExtensionBundle {
             pkg_id,
             class_name,
@@ -563,9 +571,9 @@ android {{
     signingConfigs {{
         create("release") {{
             storeFile = rootProject.file("signingkey.jks")
-            storePassword = "nekoyomi_keystore_pass"
-            keyAlias = "nekoyomi"
-            keyPassword = "nekoyomi_keystore_pass"
+            storePassword = "unboxpassword"
+            keyAlias = "unbox"
+            keyPassword = "unboxpassword"
         }}
     }}
 
@@ -613,7 +621,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -624,7 +632,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Build Extension APK
         run: |
@@ -651,14 +659,35 @@ import json
 import glob
 import hashlib
 import zipfile
+from pathlib import Path
+
+DEFAULT_FINGERPRINT = "8c36c461d49b9a49053fc14f67785e1bd91f79eb1b6ff382d384eb9735266de3"
+
+def extract_signing_fingerprint_from_apk(apk_path: str) -> str:
+    try:
+        with zipfile.ZipFile(apk_path) as z:
+            for item in z.namelist():
+                if item.startswith("META-INF/") and (item.endswith(".RSA") or item.endswith(".DSA")):
+                    data = z.read(item)
+                    idx = data.find(b'\xa0')
+                    if idx != -1:
+                        cert_start = data.find(b'\x30\x82', idx)
+                        if cert_start != -1:
+                            length = int.from_bytes(data[cert_start+2:cert_start+4], 'big') + 4
+                            cert_der = data[cert_start:cert_start+length]
+                            return hashlib.sha256(cert_der).hexdigest()
+    except Exception as e:
+        print(f"[!] Extracción de huella omitida: {e}")
+    return DEFAULT_FINGERPRINT
 
 def main():
     os.makedirs("repo_dist", exist_ok=True)
-    # Busca apks generados
     apks = glob.glob("**/build/outputs/apk/release/*.apk", recursive=True)
     print(f"Encontrados {len(apks)} APKs")
     
     entries = []
+    fingerprint = DEFAULT_FINGERPRINT
+
     for apk in apks:
         filename = os.path.basename(apk)
         dest = os.path.join("repo_dist", filename)
@@ -667,6 +696,10 @@ def main():
             
         with open(dest, "rb") as f:
             h = hashlib.sha256(f.read()).hexdigest()
+
+        extracted_fp = extract_signing_fingerprint_from_apk(dest)
+        if extracted_fp and extracted_fp != DEFAULT_FINGERPRINT:
+            fingerprint = extracted_fp
             
         entries.append({
             "name": filename.replace(".apk", ""),
@@ -685,7 +718,7 @@ def main():
         "meta": {
             "name": "AEXT Extensions Repository",
             "website": "https://github.com",
-            "signingKeyFingerprint": "5170d5885c347f7d1f56ff4fc8ee4bb85e1975e580e5576067fa20320a2e7c41"
+            "signingKeyFingerprint": fingerprint
         }
     }
     with open("repo_dist/repo.json", "w", encoding="utf-8") as f:
@@ -695,3 +728,68 @@ if __name__ == "__main__":
     main()
 "#.to_string()
 }
+
+fn generate_repo_readme(name: &str, lang: &str, base_url: &str) -> String {
+    format!(r#"# {name} - Nekoyomi Extension Repository
+
+Repositorio de extensiones para **Nekoyomi** y **Aniyomi** generado automáticamente con [AEXT](https://github.com/PepeTheCarton17/AEXTensions_box).
+
+---
+
+## Instalación en 1 Clic
+
+| Aplicación | Enlace Directo (Deep Link) |
+| :--- | :--- |
+| **Nekoyomi** | [Añadir Repositorio a Nekoyomi](nekoyomi://add-repo?url=https%3A%2F%2Fraw.githubusercontent.com%2FPepeTheCarton17%2F{{REPO_NAME}}%2Fgh-pages%2Findex.min.json) |
+| **Aniyomi** | [Añadir Repositorio a Aniyomi](aniyomi://add-repo?url=https%3A%2F%2Fraw.githubusercontent.com%2FPepeTheCarton17%2F{{REPO_NAME}}%2Fgh-pages%2Findex.min.json) |
+
+### Instalación Manual:
+1. Abre **Nekoyomi** o **Aniyomi**.
+2. Ve a **Más** → **Ajustes** → **Explorar** → **Repositorios de extensiones**.
+3. Presiona el botón **+** y agrega la URL de `index.min.json` de la rama `gh-pages`.
+
+---
+
+## Información de la Extensión
+- **Nombre:** {name}
+- **Idioma:** {lang}
+- **Fuente original:** {base_url}
+- **Firma:** Determinista e inmutable (`signingkey.jks`) para permitir actualizaciones continuas sin error de firma.
+
+---
+
+## Aviso Legal / Disclaimer
+
+> **IMPORTANTE**: Este repositorio y el software provisto son creados **exclusivamente con fines educativos y de investigación tecnológica**.
+>
+> 1. **Sin Alojamiento de Medios**: Este repositorio, sus autores y las extensiones distribuidas **NO alojan, transmiten, almacenan, redistribuyen ni poseen** ningún archivo multimedia, stream de video, audio o contenido protegido por derechos de autor.
+> 2. **Servidores de Terceros**: Las extensiones funcionan como scrapers y analizadores web que indexan enlaces públicos provistos directamente por sitios web de terceros independientes y no afiliados.
+> 3. **Propiedad Intelectual**: Todas las marcas comerciales, nombres de series, imágenes de portada y logotipos pertenecen a sus respectivos titulares y propietarios de derechos de autor.
+> 4. **Responsabilidad**: Los autores no se responsabilizan por el uso indebido que terceros puedan dar a estas herramientas, siendo el usuario el único responsable de cumplir la legislación vigente en su país.
+"#)
+}
+
+fn decode_base64(input: &str) -> Vec<u8> {
+    let mut output = Vec::new();
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for c in input.chars() {
+        let val = match c {
+            'A'..='Z' => c as u32 - 'A' as u32,
+            'a'..='z' => c as u32 - 'a' as u32 + 26,
+            '0'..='9' => c as u32 - '0' as u32 + 52,
+            '+' => 62,
+            '/' => 63,
+            _ => continue,
+        };
+        buffer = (buffer << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            output.push(((buffer >> bits) & 0xFF) as u8);
+        }
+    }
+    output
+}
+
+const KEYSTORE_B64: &str = "MIIKYgIBAzCCCgwGCSqGSIb3DQEHAaCCCf0Eggn5MIIJ9TCCBawGCSqGSIb3DQEHAaCCBZ0EggWZMIIFlTCCBZEGCyqGSIb3DQEMCgECoIIFQDCCBTwwZgYJKoZIhvcNAQUNMFkwOAYJKoZIhvcNAQUMMCsEFKxgh0vhMKro36YYF2PxyNgh11iwAgInEAIBIDAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBKgQQwoMwXqBk9QKVgx8IdMaH/gSCBNAvd8YKLuOY6wqEU2rrKU9F/k4xMvHgoPgS5DNk3CkKlrRoWzspyP/IlR5hAcgCOPQIE6c+cBW7Of96/7/W5ZHtv7NPRinND/9wOzdXr4ft7mcyCUzTtMH9faiT225voMbMbnKGhAvL8V7ecobVig9JsYIiREM5SLUCBqTOM6AINTN9WKDxNeOi76dc7K4AFVErwAPHA0yZOo8dOC22SnXNuVifek7OLwhODbZQsfBPnfNFvPSOVQuXLTWetFqwGg1NTOmK76k5cXcYlNVFkHCRinRlptVFWaAyDG5v7uQbwv5yTmCrEuf/VROQbv0U/iSCAc/BnMQEZfWYpoNJGN9U/Y9gGdOBkkb784WlkdLKZu8KPsVaEqTTNNr9/n77iQ2WHGaab7XvepXyexbzucSSK7b5xPLsKlxJAvL902XIDES+HMfu5ccrkMPEG6PzQ2XIB4BEvoNkutnYL7dU3iApZFbPldbLKSJcQnwGPcwiLl6RQdJWZPgeZg7n2tph1PoV3zSKAF9uv+Om8BXViSPzie0JU2Zq7cjE736QgR/L6Ki38t8ZltKbYJJabhD18Q7gvVzGutPQ4yv+ogE6UsCvJRQBWvAlNAQEEYtuqTLbge9lvbd7iq16ZoPKFc9XCS/6VY0wGoZwuGymx4N7IPf01cD2R2JW1AUHi0v6Pe6aikmvBVAJkaMTccQxpaSTb6+pLUZR8dJ/tP6LP9bgJyjtkJ6fbtzlQ440l9gRKdde4SzTgcTVETPhCqWHweD72Jj/UBLzIReRCf85W67po9RRRqVjLNnYqEwKDjDzIUh+xxenXiXE3teWS+6LyX0wRTcuAWaWK/UyN2KKTCDcwAagSPfls/Tgp96uRDI7L5nrn9zdioaxL5gwU5WENPg8oylMTH14ViJj2hiL7L0/1oSSsmZJ6DRQeneczi6cNu1F28U/wziB/Mdwk6yLlPIFRPZ32j2aKzLzddpDTByqwqA5Kf8s/hMBdwYWiMYQ0frMGAHuWic+Rnulfw0qZyqXxa+iO5AtDdBuJ0d0BmndwCZ1C/uz0G/6dgWMVmGdfgUNpRy7e3WkUiulLiInIqc/W7M9X3GIIqu5fmPDkN4h0JCDyKjEYgDoBgrpk4udURA+z/0N0LOjzfye99+dTz6aQEEOkZSA9R63l39X7mMWtfJV3KrHmbrzjEL1KFnskcca28/anskkiaElCh2PVXkEXqtYQFFZw2hqo5iaI9M85xLeliMugfDqWxGCnkv4qis5gM4ExuqTlidiKXz+mN4Wxz80GE5PjtVzf8O87w2sxXughuGkjn4DPjT+MbEaMTOZ6xcAbOxtTh+2Lnz5jtYWvYskBodOsPDvvxsC4VJN2WhAVS5xcUuKoXRsmyqsS2O/H4xI/ioHDnD9wTiMQSEg6s/KfETdrEEhnPFnbfS9XdPsOHIlwy9/tt0FULJebEQUKgfBQ296Y6sCrU1aiAwKunUmIhVTcCvvdLOrapTsWGqVvUfHnGi/XF87BTnBB6qBGZP2/gKyO4JeXrTzJNqoViby0y41fwFmMHJ1cuwhet2CN46jSl6So4ladfIJZoLdBjSJJuttflRiSuYuorB5biji8XVbFwNZN+DFmmAgsLyEUhyq0NgGkEcbmA0VtoN1mDE+MBkGCSqGSIb3DQEJFDEMHgoAdQBuAGIAbwB4MCEGCSqGSIb3DQEJFTEUBBJUaW1lIDE3OTQ0MzgxNDg1MDQwggRBBgkqhkiG9w0BBwagggQyMIIELgIBADCCBCcGCSqGSIb3DQEHATBmBgkqhkiG9w0BBQ0wWTA4BgkqhkiG9w0BBQwwKwQU2GxnHVGJ/JJAeraXf3LruDyF3OwCAicQAgEgMAwGCCqGSIb3DQIJBQAwHQYJYIZIAWUDBAEqBBDWvK2HikgO3uhwpQwBUlUAgIIDsOwfz6elTUd4Achi5hJqDPsyHGqqUCAoo3IMbH4wbVXUEs0cA0CJILJ2wgttLOdZuRxwxTcwq044vvGIqaK6h0WrdkIfsZoLg+kK2yPGVRpYZaA3eh4iOcObaNv+zHjLzRD4J4c9KN5uH9FHUhGMMBTyn9i96EAQNdZ3Aiuh7q1IikHIWxydrkdy1l+iTov7i74kcNv1/ytZ3BNTh0N5Vxelg3v0T+cKcc9b1Rxk8TflMyjYwvf0tS+B9tJqdkIqK3OZlq5HLQzq0mUVe2zCO2BE+ZQ5QJmYMlxCqhRD1+1gIHnkIfSzFa4mxeFu3dM0gboViTP9fFeizL16T4BSrDEVPw8bM2iibxDhUnnMquDWbUwY9eE0KIH8HgEQm/5cNc/jTjKNQwAXa4re4DSCVsGMsBpcJgEdh+tsGICi7FroSIZRPakMjzg79GlVsTyZrt14XuKTPQmWWm6siFaiJFKpfMq5Rr/l504Acz+xNVFYpEorr9RkT/N5VK3JlPDhWa4Ep+fdMooRTsUew1RRdMmu/w7LmjJnOkYLVfv9EwY9hp8H8d6eCOe7NmumsiUl8KPChIhAhXPrRvrF4xhvkWXw/RXKfgdu2Q8LAwvAt0aasPgOc7zV8bNZegWZpBwbccGXFhrAEBTy0Yz7vnYB7jsU4xFGB0xjVWyPvGxwECUcZaoB+c9q4VA+XgcyNx9vz720ptiR4gx9hrDjlEOA2enRWYoGm2TRM0u2cCeIsjvWh9qof63FPHZKSIpijLQ6H4d8zuBJDBtKxrYI2vOSLc+adzLJo5Cx7yIpYd6taTax6zaJEZAHoOv/ljTcAJSemukV1soag0ahtap84DfJk1tGRzltxVhWmNELBT5/+OUBa9DBGZeMm1rI719N2Ez+xiQD4QgeeAgVktHoLga6ynRvCQ/4ipMJ9QK4wUdjQwAyE9Bln6YvExPCLbN7dqQpuY7paCTPhg0GDI/DY3ZeMBTWS6YISnzag+Fwf8n1X5KY0fGGG3fkb4VSUNaWJspPXNkWfMXnBQFXlpH05rGXNjL47cNTmjPIKsPZfVav0U2m5vhbg5E9ZXB/xTxMBQdINZRnXBbUbI5S/2NvK+dR69OJgiFQu+PVAkhcnXuZ9H2J4gZXeAiOYkMC0O4SPzHgA27LzsLmFyw3UgoYs+BUY+1ggPyJquJJ9xvufdyStlPk5Q0Z0s8s5NRAbZDx7tOaqkvlVluQ6O2h8wETtCjiDbQiBstb6N5K/gfYiIO/nswDME0wMTANBglghkgBZQMEAgEFAAQglA31wv+/E766/zydTMsoi+7OwEOgCtm8PZB9H441ZbsEFP3kcsKL+/4ge3gVxZofj0OgloPDAgInEA==";
