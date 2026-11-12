@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>AEXT - Creador Automatizado de Extensiones Nekoyomi</title>
+  <link rel="stylesheet" href="./src/styles.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238b5cf6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z'/></svg>">
+</head>
+<body class="bg-surface-950 text-slate-100 min-h-screen flex flex-col font-sans antialiased selection:bg-brand-500/30 selection:text-brand-300">
+
+  <!-- ==================== TOP NAVIGATION / HEADER ==================== -->
+  <header class="sticky top-0 z-40 bg-surface-900/90 backdrop-blur-md border-b border-surface-800 px-4 py-3 flex items-center justify-between shadow-lg">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-brand-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-brand-500/20 ring-1 ring-white/10">
+        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+        </svg>
+      </div>
+      <div>
+        <div class="flex items-center gap-2">
+          <h1 class="font-bold text-base md:text-lg tracking-tight bg-gradient-to-r from-white via-slate-200 to-brand-300 bg-clip-text text-transparent">AEXT</h1>
+          <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-brand-500/20 text-brand-300 border border-brand-500/30">v1.0.0</span>
+        </div>
+        <div class="flex items-center gap-1.5 text-[11px] text-slate-400">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span id="api-status-badge">API Local :45731</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- GitHub Session & Profile Button -->
+    <div class="flex items-center gap-2">
+      <button id="btn-open-auth-modal" class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 hover:border-slate-600 transition-all shadow-sm">
+        <svg class="w-4 h-4 text-slate-300" fill="currentColor" viewBox="0 0 24 24">
+          <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
+        </svg>
+        <span id="auth-btn-text">Conectar GitHub</span>
+        <img id="header-avatar" class="w-5 h-5 rounded-full ring-1 ring-brand-400 hidden" src="" alt="Avatar">
+      </button>
+    </div>
+  </header>
+
+  <!-- ==================== MAIN TABS & NAVIGATION ==================== -->
+  <nav class="bg-surface-900 border-b border-surface-800 px-4 flex gap-1 overflow-x-auto scrollbar-none">
+    <button data-tab="tab-generator" class="tab-btn active px-4 py-2.5 text-xs font-semibold flex items-center gap-2 border-b-2 border-brand-500 text-brand-400 whitespace-nowrap">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+      Generador
+    </button>
+    <button data-tab="tab-extensions" class="tab-btn px-4 py-2.5 text-xs font-medium flex items-center gap-2 border-b-2 border-transparent text-slate-400 hover:text-slate-200 whitespace-nowrap">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+      Mis Extensiones <span id="badge-ext-count" class="px-1.5 py-0.2 rounded-full text-[10px] bg-surface-800 text-slate-300">0</span>
+    </button>
+    <button data-tab="tab-diagnostics" class="tab-btn px-4 py-2.5 text-xs font-medium flex items-center gap-2 border-b-2 border-transparent text-slate-400 hover:text-slate-200 whitespace-nowrap">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+      Diagnóstico & API
+    </button>
+    <button data-tab="tab-settings" class="tab-btn px-4 py-2.5 text-xs font-medium flex items-center gap-2 border-b-2 border-transparent text-slate-400 hover:text-slate-200 whitespace-nowrap">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+      Ajustes & Versión
+    </button>
+  </nav>
+
+  <!-- ==================== CONTENT BODY ==================== -->
+  <main class="flex-1 p-4 md:p-6 max-w-5xl mx-auto w-full">
+
+    <!-- TAB 1: GENERADOR -->
+    <section id="tab-generator" class="tab-pane active space-y-6">
+      <!-- Input Card -->
+      <div class="bg-surface-900 border border-surface-800 rounded-2xl p-5 shadow-xl">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="text-base font-semibold text-slate-100 flex items-center gap-2">
+              <span>Automatizador de Extensiones</span>
+              <span class="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-normal">Sin IA / Determinista</span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-0.5">Ingresa una o varias URLs (una por línea) de los sitios de anime o manga que deseas transformar en extensión.</p>
+          </div>
+        </div>
+
+        <div class="space-y-3">
+          <div>
+            <textarea id="input-urls" rows="3" placeholder="https://animeav1.com&#10;https://latanime.org" class="w-full bg-surface-950 border border-surface-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition-all resize-y font-mono"></textarea>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <div class="flex items-center gap-4 text-xs text-slate-400">
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" id="check-auto-detect-dub" checked class="rounded bg-surface-800 border-surface-700 text-brand-600 focus:ring-brand-500">
+                <span>Separar SUB / DUB</span>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" id="check-stream-extractors" checked class="rounded bg-surface-800 border-surface-700 text-brand-600 focus:ring-brand-500">
+                <span>Extractores (Zilla, Voe, MP4Upload)</span>
+              </label>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <button id="btn-analyze-urls" class="px-4 py-2 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 hover:border-slate-600 transition-all flex items-center gap-1.5">
+                <svg class="w-4 h-4 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                <span>Analizar URLs</span>
+              </button>
+              <button id="btn-start-generation-flow" class="px-5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white shadow-lg shadow-brand-500/25 transition-all flex items-center gap-1.5">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
+                <span>Crear Extensión</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pre-Analysis Preview Grid -->
+      <div id="analysis-preview-container" class="space-y-3 hidden">
+        <h3 class="text-xs font-semibold text-slate-300 uppercase tracking-wider">Sitios Analizados</h3>
+        <div id="analysis-cards" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <!-- Dynamic cards inserted here -->
+        </div>
+      </div>
+
+      <!-- Live Execution Log Terminal -->
+      <div class="bg-surface-950 border border-surface-800 rounded-2xl p-4 shadow-xl font-mono text-xs space-y-2">
+        <div class="flex items-center justify-between border-b border-surface-800/80 pb-2 text-slate-400">
+          <div class="flex items-center gap-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+            <span class="text-[11px] font-semibold text-slate-300">Terminal de Automatización</span>
+          </div>
+          <button id="btn-clear-logs" class="text-[10px] text-slate-500 hover:text-slate-300">Limpiar</button>
+        </div>
+        <div id="terminal-logs" class="h-44 overflow-y-auto space-y-1 text-slate-300 pr-1 select-text scrollbar-thin">
+          <div class="text-slate-500 text-[11px]">[READY] AEXT v1.0.0 listo para procesar URLs y empaquetar extensiones.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: MIS EXTENSIONES -->
+    <section id="tab-extensions" class="tab-pane hidden space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-semibold text-slate-100">Extensiones Generadas</h2>
+          <p class="text-xs text-slate-400">Instala los APKs directamente o agrégalos a tu Nekoyomi mediante su URL de repositorio.</p>
+        </div>
+        <button id="btn-refresh-extensions" class="p-2 rounded-lg bg-surface-850 hover:bg-surface-700 text-slate-300 transition-all">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+        </button>
+      </div>
+
+      <div id="extensions-catalog-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- Rendered dynamically -->
+        <div class="col-span-full py-12 text-center text-slate-500 text-xs">
+          No hay extensiones generadas aún. Ingresa una URL en el Generador para comenzar.
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: DIAGNÓSTICO & API PARA CELULAR -->
+    <section id="tab-diagnostics" class="tab-pane hidden space-y-6">
+      <!-- Mobile API Info -->
+      <div class="bg-surface-900 border border-surface-800 rounded-2xl p-5 shadow-xl space-y-4">
+        <div class="flex items-center gap-3">
+          <div class="p-2.5 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+          </div>
+          <div>
+            <h3 class="text-sm font-semibold text-slate-100">Servidor API Embebido (Para Celular & PC)</h3>
+            <p class="text-xs text-slate-400">Como en Android no hay terminal de línea de comandos, AEXT levanta un servidor HTTP nativo en Rust para comunicarse con Nekoyomi y servir descargas directamente.</p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs font-mono">
+          <div class="p-3 bg-surface-950 rounded-xl border border-surface-800">
+            <span class="text-slate-500 block text-[10px] uppercase">Puerto Local</span>
+            <span class="text-emerald-400 font-bold text-sm">45731</span>
+          </div>
+          <div class="p-3 bg-surface-950 rounded-xl border border-surface-800">
+            <span class="text-slate-500 block text-[10px] uppercase">Endpoint Estado</span>
+            <span class="text-slate-300">GET /api/status</span>
+          </div>
+          <div class="p-3 bg-surface-950 rounded-xl border border-surface-800">
+            <span class="text-slate-500 block text-[10px] uppercase">Descarga Directa</span>
+            <span class="text-slate-300">GET /api/download/:id</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Stream Extractor & Header Test -->
+      <div class="bg-surface-900 border border-surface-800 rounded-2xl p-5 shadow-xl space-y-4">
+        <h3 class="text-sm font-semibold text-slate-100 flex items-center gap-2">
+          <span>Prueba de Extractores & Bypass de Cabeceras</span>
+          <span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">Solución a Errores Temporales 403</span>
+        </h3>
+        <p class="text-xs text-slate-400">Verifica si servidores como Zilla, MP4Upload o Voe responden correctamente con las cabeceras Sec-Fetch y Referer necesarias.</p>
+
+        <div class="flex gap-2">
+          <input type="text" id="test-stream-input" placeholder="https://player.zilla-networks.com/pk/... o enlace directo de embed" class="flex-1 bg-surface-950 border border-surface-800 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono">
+          <button id="btn-test-stream" class="px-4 py-2 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 transition-all">Probar</button>
+        </div>
+
+        <div id="test-stream-result" class="hidden p-3 bg-surface-950 rounded-xl border border-surface-800 text-xs font-mono space-y-1">
+          <!-- Result rendered dynamically -->
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: AJUSTES & ACTUALIZACIONES -->
+    <section id="tab-settings" class="tab-pane hidden space-y-6">
+      <div class="bg-surface-900 border border-surface-800 rounded-2xl p-5 shadow-xl space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="text-sm font-semibold text-slate-100">Información de la Aplicación</h3>
+            <p class="text-xs text-slate-400">AEXT - Automatizador y Gestor de Extensiones</p>
+          </div>
+          <span class="text-xs font-mono px-2 py-1 rounded bg-brand-500/20 text-brand-300 border border-brand-500/30">Versión 1.0.0</span>
+        </div>
+
+        <div class="border-t border-surface-800 pt-3 space-y-3 text-xs">
+          <div class="flex items-center justify-between text-slate-300">
+            <span>Repositorio de AEXT</span>
+            <a href="https://github.com/PepeTheCarton17/AEXTensions_box.git" target="_blank" class="text-brand-400 hover:underline font-mono">PepeTheCarton17/AEXTensions_box</a>
+          </div>
+          <div class="flex items-center justify-between text-slate-300">
+            <span>Motor de Análisis</span>
+            <span class="text-slate-400">Rust Scraper + Reqwest Nativo (Sin IA)</span>
+          </div>
+          <div class="flex items-center justify-between text-slate-300">
+            <span>Compatibilidad</span>
+            <span class="text-emerald-400">Desktop (Windows/Linux/macOS) & Android Mobile</span>
+          </div>
+        </div>
+
+        <div class="pt-2">
+          <button id="btn-check-updates" class="w-full py-2.5 rounded-xl text-xs font-semibold bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 transition-all flex items-center justify-center gap-2">
+            <svg class="w-4 h-4 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+            <span>Buscar Actualizaciones</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ==================== MODAL 1: PREGUNTA PREVIA (LOCAL VS REPOSITORIO GITHUB) ==================== -->
+  <div id="modal-generation-mode" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-surface-900 border border-surface-700 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-150">
+      <div class="text-center space-y-1">
+        <div class="w-12 h-12 mx-auto rounded-2xl bg-brand-500/10 border border-brand-500/20 text-brand-400 flex items-center justify-center mb-3">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+        </div>
+        <h3 class="text-base font-bold text-slate-100">¿Cómo deseas generar tu extensión?</h3>
+        <p class="text-xs text-slate-400">Elige si quieres empaquetarla solo para instalar en tu dispositivo o si deseas crear un repositorio en GitHub con compilación y actualizaciones automáticas.</p>
+      </div>
+
+      <div class="space-y-3">
+        <!-- Option 1: Solo Local -->
+        <label class="flex items-start gap-3 p-3.5 rounded-xl border border-surface-700 bg-surface-950/60 hover:bg-surface-850 hover:border-brand-500/50 cursor-pointer transition-all">
+          <input type="radio" name="gen-mode" value="local" checked class="mt-1 text-brand-600 focus:ring-brand-500">
+          <div>
+            <span class="block text-xs font-semibold text-slate-200">📦 Solo Instalar Localmente</span>
+            <span class="block text-[11px] text-slate-400 mt-0.5">Genera el código y paquete directo en el dispositivo. No requiere cuenta ni token de GitHub. Ideal para pruebas rápidas y uso personal.</span>
+          </div>
+        </label>
+
+        <!-- Option 2: Repositorio GitHub -->
+        <label class="flex items-start gap-3 p-3.5 rounded-xl border border-surface-700 bg-surface-950/60 hover:bg-surface-850 hover:border-brand-500/50 cursor-pointer transition-all">
+          <input type="radio" name="gen-mode" value="github" class="mt-1 text-brand-600 focus:ring-brand-500">
+          <div>
+            <span class="block text-xs font-semibold text-slate-200">🚀 Generar Repositorio en GitHub</span>
+            <span class="block text-[11px] text-slate-400 mt-0.5">Crea el repositorio con GitHub Actions, firma determinista, genera repo.json y publica el APK a gh-pages para instalar y actualizar en Nekoyomi.</span>
+          </div>
+        </label>
+
+        <!-- Optional custom repo name field -->
+        <div id="github-repo-extra-fields" class="hidden pt-2 space-y-2">
+          <label class="text-[11px] text-slate-400 block">Nombre del repositorio GitHub (opcional):</label>
+          <input type="text" id="input-custom-repo-name" placeholder="nekoyomi-extensions-es" class="w-full bg-surface-950 border border-surface-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono">
+        </div>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-2">
+        <button id="btn-cancel-generation-mode" class="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-200 transition-all">Cancelar</button>
+        <button id="btn-confirm-generation-mode" class="px-5 py-2 rounded-xl text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-brand-500/20 transition-all">Continuar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== MODAL 2: GITHUB AUTHENTICATION (PC & MOBILE) ==================== -->
+  <div id="modal-github-auth" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-surface-900 border border-surface-700 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-150">
+      <div class="flex items-center justify-between border-b border-surface-800 pb-3">
+        <div class="flex items-center gap-2">
+          <svg class="w-5 h-5 text-slate-200" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" /></svg>
+          <h3 class="text-sm font-bold text-slate-100">Sesión de GitHub</h3>
+        </div>
+        <button id="btn-close-auth-modal" class="text-slate-400 hover:text-slate-200">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      </div>
+
+      <!-- Current Session View (when logged in) -->
+      <div id="auth-logged-in-view" class="hidden space-y-4">
+        <div class="flex items-center gap-3 p-3 bg-surface-950 rounded-xl border border-surface-800">
+          <img id="modal-user-avatar" class="w-11 h-11 rounded-full ring-2 ring-brand-500/30" src="" alt="User">
+          <div class="flex-1 min-w-0">
+            <h4 id="modal-user-name" class="text-xs font-bold text-slate-100 truncate">Usuario</h4>
+            <p id="modal-user-login" class="text-[11px] text-slate-400 font-mono">@login</p>
+            <span id="modal-auth-type-badge" class="inline-block mt-0.5 text-[9px] px-1.5 py-0.2 rounded bg-surface-800 text-brand-300 font-semibold uppercase">Token PAT</span>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-between gap-2">
+          <button id="btn-switch-account" class="flex-1 py-2 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-300 border border-surface-700 transition-all">Cambiar de Cuenta</button>
+          <button id="btn-logout" class="py-2 px-4 rounded-xl text-xs font-semibold bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-all">Cerrar Sesión</button>
+        </div>
+      </div>
+
+      <!-- Login Form View (when logged out or switching) -->
+      <div id="auth-logged-out-view" class="space-y-4">
+        <!-- PC Fast CLI Connect button (hidden on mobile) -->
+        <div id="cli-detect-container" class="space-y-2">
+          <button id="btn-login-cli" class="w-full py-2.5 rounded-xl text-xs font-semibold bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 transition-all flex items-center justify-center gap-2">
+            <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+            <span>Detectar Sesión de Terminal (GitHub CLI)</span>
+          </button>
+          <div class="flex items-center gap-2 text-slate-500 text-[10px] uppercase font-semibold">
+            <div class="flex-1 border-t border-surface-800"></div>
+            <span>o ingresa tu Personal Access Token</span>
+            <div class="flex-1 border-t border-surface-800"></div>
+          </div>
+        </div>
+
+        <!-- Token Input for Mobile and PC -->
+        <div class="space-y-2">
+          <label class="text-[11px] text-slate-400 block font-medium">GitHub Personal Access Token (PAT):</label>
+          <input type="password" id="input-pat-token" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" class="w-full bg-surface-950 border border-surface-800 rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono">
+          <p class="text-[10px] text-slate-500 leading-relaxed">Requiere permisos: <code class="text-brand-300">repo</code> y <code class="text-brand-300">workflow</code> para poder crear el repositorio y despachar GitHub Actions.</p>
+        </div>
+
+        <button id="btn-submit-pat" class="w-full py-2.5 rounded-xl text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-brand-500/20 transition-all">Guardar e Iniciar Sesión</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
