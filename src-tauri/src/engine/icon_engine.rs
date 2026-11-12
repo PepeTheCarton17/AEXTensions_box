@@ -65,7 +65,7 @@ impl IconEngine {
     fn generate_fallback_image(name: &str) -> DynamicImage {
         // Genera una imagen limpia cuadrada de 192x192 con gradiente y la inicial
         let mut img = RgbaImage::new(192, 192);
-        let initial = name.chars().next().unwrap_or('A').to_ascii_uppercase();
+        let _initial = name.chars().next().unwrap_or('A').to_ascii_uppercase();
         
         // Colores temáticos Nekoyomi (púrpura oscuro a violeta)
         for y in 0..192 {

@@ -1,9 +1,9 @@
-use crate::models::{AiDiagnosticReport, AiPatchRequest, McpToolCallRequest, McpToolCallResponse, SystemStatus};
+use crate::models::{AiDiagnosticReport, AiPatchRequest, McpToolCallRequest, SystemStatus};
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::{IntoResponse, Json},
+    response::{IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
@@ -41,7 +41,7 @@ pub async fn start_embedded_api_server(app_state: AppState, port: u16) {
     });
 }
 
-async fn get_status_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn get_status_handler(State(state): State<AppState>) -> Response {
     let ext_count = state.extensions.read().await.len();
     let gh = state.gh_user.read().await;
 
@@ -57,18 +57,18 @@ async fn get_status_handler(State(state): State<AppState>) -> impl IntoResponse 
         "platform": if cfg!(target_os = "android") { "android" } else { "desktop" }
     });
 
-    Json(status)
+    Json(status).into_response()
 }
 
-async fn get_extensions_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn get_extensions_handler(State(state): State<AppState>) -> Response {
     let items = state.extensions.read().await.clone();
-    Json(items)
+    Json(items).into_response()
 }
 
 async fn download_extension_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Response {
     let items = state.extensions.read().await;
     let item = items.iter().find(|e| e.id == id || e.pkg_id == id);
 
@@ -82,38 +82,38 @@ async fn download_extension_handler(
                 "apk_download_url": ext.apk_download_url,
                 "nekoyomi_repo_url": ext.nekoyomi_repo_url,
             });
-            Ok(Json(info))
+            Json(info).into_response()
         }
-        None => Err(StatusCode::NOT_FOUND),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
-async fn get_logs_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn get_logs_handler(State(state): State<AppState>) -> Response {
     let logs = state.logs.read().await;
     let list: Vec<_> = logs.iter().cloned().collect();
-    Json(list)
+    Json(list).into_response()
 }
 
 #[derive(serde::Deserialize)]
-struct AnalyzePayload {
-    url: String,
+pub struct AnalyzePayload {
+    pub url: String,
 }
 
 async fn analyze_url_handler(
     State(state): State<AppState>,
     Json(payload): Json<AnalyzePayload>,
-) -> impl IntoResponse {
+) -> Response {
     state.add_log("INFO", &format!("API /analyze llamada para: {}", payload.url)).await;
     let analyzer = crate::engine::analyzer::SiteAnalyzer::new();
     match analyzer.analyze(&payload.url).await {
-        Ok(res) => (StatusCode::OK, Json(serde_json::to_value(res).unwrap())),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e }))),
+        Ok(res) => (StatusCode::OK, Json(serde_json::to_value(res).unwrap())).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e }))).into_response(),
     }
 }
 
 // ==================== ENDPOINTS DE ASISTENCIA IA & MCP ====================
 
-async fn get_ai_diagnostics_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn get_ai_diagnostics_handler(State(state): State<AppState>) -> Response {
     let logs = state.logs.read().await;
     let recent_logs: Vec<_> = logs.iter().cloned().collect();
     let ext_count = state.extensions.read().await.len();
@@ -141,28 +141,27 @@ async fn get_ai_diagnostics_handler(State(state): State<AppState>) -> impl IntoR
         },
     };
 
-    Json(report)
+    Json(report).into_response()
 }
 
 async fn apply_ai_patch_handler(
     State(state): State<AppState>,
     Json(patch): Json<AiPatchRequest>,
-) -> impl IntoResponse {
+) -> Response {
     state.add_log("INFO", &format!("Aplicando parche de IA a la extensión: {}", patch.pkg_id)).await;
-    // Modificar o regenerar con selectores o código parcheado
     let mut extensions = state.extensions.write().await;
     if let Some(ext) = extensions.iter_mut().find(|e| e.pkg_id == patch.pkg_id) {
         ext.version_code += 1;
         ext.version = format!("16.{}", ext.version_code);
         state.add_log("SUCCESS", &format!("Extensión {} actualizada con parche de IA a v{}", ext.pkg_id, ext.version)).await;
-        (StatusCode::OK, Json(serde_json::json!({ "status": "patched", "version": ext.version })))
+        (StatusCode::OK, Json(serde_json::json!({ "status": "patched", "version": ext.version }))).into_response()
     } else {
-        (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Extensión no encontrada" })))
+        (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Extensión no encontrada" }))).into_response()
     }
 }
 
 // MCP Manifest & Protocol Server
-async fn mcp_manifest_handler() -> impl IntoResponse {
+async fn mcp_manifest_handler() -> Response {
     let manifest = serde_json::json!({
         "name": "AEXT MCP Server",
         "description": "Servidor MCP nativo de AEXT para permitir a modelos de IA inspeccionar el estado en dispositivos móviles y asistir en la resolución de extensiones",
@@ -202,19 +201,18 @@ async fn mcp_manifest_handler() -> impl IntoResponse {
             }
         ]
     });
-    Json(manifest)
+    Json(manifest).into_response()
 }
 
 async fn mcp_jsonrpc_handler(
     State(state): State<AppState>,
     Json(req): Json<McpToolCallRequest>,
-) -> impl IntoResponse {
+) -> Response {
     state.add_log("INFO", &format!("Llamada MCP recibida: {}", req.method)).await;
 
     match req.method.as_str() {
         "tools/list" => {
-            let manifest = mcp_manifest_handler().await;
-            (StatusCode::OK, manifest.into_response())
+            mcp_manifest_handler().await
         }
         "tools/call" => {
             let params = req.params.unwrap_or_default();
@@ -230,30 +228,30 @@ async fn mcp_jsonrpc_handler(
                         "extensions_count": ext_count,
                         "server_port": 45731
                     });
-                    (StatusCode::OK, Json(serde_json::json!({ "result": res })).into_response())
+                    (StatusCode::OK, Json(serde_json::json!({ "result": res }))).into_response()
                 }
                 "aext_get_logs" => {
                     let logs = state.logs.read().await;
                     let list: Vec<_> = logs.iter().cloned().collect();
-                    (StatusCode::OK, Json(serde_json::json!({ "result": list })).into_response())
+                    (StatusCode::OK, Json(serde_json::json!({ "result": list }))).into_response()
                 }
                 "aext_inspect_dom" => {
                     let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
                     let analyzer = crate::engine::analyzer::SiteAnalyzer::new();
                     match analyzer.analyze(url).await {
-                        Ok(res) => (StatusCode::OK, Json(serde_json::json!({ "result": res })).into_response()),
-                        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e })).into_response()),
+                        Ok(res) => (StatusCode::OK, Json(serde_json::json!({ "result": res }))).into_response(),
+                        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e }))).into_response(),
                     }
                 }
                 _ => (
                     StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({ "error": format!("Tool MCP '{}' no encontrada", name) })).into_response(),
-                ),
+                    Json(serde_json::json!({ "error": format!("Tool MCP '{}' no encontrada", name) })),
+                ).into_response(),
             }
         }
         _ => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Método MCP no soportado" })).into_response(),
-        ),
+            Json(serde_json::json!({ "error": "Método MCP no soportado" })),
+        ).into_response(),
     }
 }

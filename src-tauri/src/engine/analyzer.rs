@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use regex::Regex;
 use scraper::{Html, Selector};
 use std::collections::HashSet;
 
@@ -40,10 +39,11 @@ impl SiteAnalyzer {
             .await
             .map_err(|e| format!("Error conectando con {}: {}", url, e))?;
 
-        let status = resp.status();
+        let _status = resp.status();
         let headers = resp.headers().clone();
         let body = resp.text().await.map_err(|e| format!("Error leyendo HTML: {}", e))?;
 
+        // A partir de aquí no hay llamadas asíncronas (.await), por lo que Html nunca cruza un punto de suspensión.
         let doc = Html::parse_document(&body);
 
         // 1. Detección de Nombre y Título
@@ -67,11 +67,11 @@ impl SiteAnalyzer {
         // 4. Detección de CMS y Tipo
         let (cms, ext_type) = self.detect_cms_and_type(&body);
 
-        // 5. Detección de Servidores de Video (para anime)
-        let (detected_hosts, has_sub_dub) = self.detect_servers_and_dub(&body, clean_url).await;
+        // 5. Detección de Servidores de Video (síncrona)
+        let (detected_hosts, has_sub_dub) = self.detect_servers_and_dub(&body, clean_url);
 
         // 6. Selectores CSS
-        let (card_sel, title_sel, next_sel) = self.detect_selectors(&doc, &cms);
+        let (card_sel, title_sel, next_sel) = self.detect_selectors(&cms);
 
         Ok(AnalysisResult {
             url: clean_url.to_string(),
@@ -151,7 +151,7 @@ impl SiteAnalyzer {
         }
     }
 
-    async fn detect_servers_and_dub(&self, body: &str, _base_url: &str) -> (Vec<String>, bool) {
+    fn detect_servers_and_dub(&self, body: &str, _base_url: &str) -> (Vec<String>, bool) {
         let mut hosts = HashSet::new();
         let known_hosts = [
             ("MP4Upload", "mp4upload.com"),
@@ -177,7 +177,7 @@ impl SiteAnalyzer {
         (hosts.into_iter().collect(), has_sub_dub)
     }
 
-    fn detect_selectors(&self, _doc: &Html, cms: &str) -> (String, String, String) {
+    fn detect_selectors(&self, cms: &str) -> (String, String, String) {
         match cms {
             "dooplay" => (
                 "article.item-movies, article.item, div.poster".to_string(),
