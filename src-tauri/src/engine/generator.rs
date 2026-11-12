@@ -344,7 +344,10 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
 
         val filtered = page.animes.filterNot {{ anime ->
             val genreLower = anime.genre?.lowercase() ?: ""
-            blacklistWords.any {{ word -> genreLower.contains(word) }}
+            val titleLower = anime.title.lowercase()
+            blacklistWords.any {{ word ->
+                (genreLower.isNotEmpty() && genreLower.contains(word)) || titleLower.contains(word)
+            }}
         }}
         return AnimesPage(filtered, page.hasNextPage)
     }}
@@ -657,7 +660,7 @@ import hashlib
 import zipfile
 from pathlib import Path
 
-DEFAULT_FINGERPRINT = "8c36c461d49b9a49053fc14f67785e1bd91f79eb1b6ff382d384eb9735266de3"
+DEFAULT_FINGERPRINT = "2f4cdf7ed264f6e6aa0d7655b7d6222df6d9f0ffde924f0eea4c57be2dc8c75c"
 
 def extract_signing_fingerprint_from_apk(apk_path: str) -> str:
     try:

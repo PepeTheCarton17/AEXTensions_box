@@ -177,7 +177,25 @@ pub async fn generate_extensions(
             }
 
             GenerationMode::GithubRepo => {
-                let token = auth.get_saved_token().ok_or("Se requiere iniciar sesión en GitHub para publicar repositorios")?;
+                // Intentar obtener token desde: 1) archivo guardado, 2) CLI (detectar y guardar)
+                let token = match auth.get_saved_token() {
+                    Some(t) => t,
+                    None => {
+                        // No hay token guardado; intentar extraer del CLI y persistirlo
+                        match auth.extract_and_save_cli_token().await {
+                            Ok((t, info)) => {
+                                let mut gh_state = state.gh_user.write().await;
+                                *gh_state = Some(info);
+                                state.add_log("INFO", "Token de GitHub CLI detectado y guardado automáticamente").await;
+                                t
+                            }
+                            Err(_) => {
+                                return Err("Se requiere iniciar sesión en GitHub. Ve a la sección de autenticación e ingresa tu Personal Access Token (PAT).".to_string());
+                            }
+                        }
+                    }
+                };
+
                 let gh_user = auth.verify_token(&token).await?;
                 let client = GithubApiClient::new(token);
 

@@ -84,6 +84,66 @@ impl GithubAuthManager {
         })
     }
 
+    /// Extrae el token raw del CLI de GitHub sin verificar (solo lectura).
+    fn read_cli_token_raw() -> Option<String> {
+        #[cfg(target_os = "windows")]
+        {
+            let appdata = std::env::var("APPDATA").unwrap_or_default();
+            let cli_hosts = PathBuf::from(&appdata).join("GitHub CLI").join("hosts.yml");
+            if cli_hosts.exists() {
+                if let Ok(content) = fs::read_to_string(&cli_hosts) {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("oauth_token:") {
+                            let token = trimmed.trim_start_matches("oauth_token:").trim().to_string();
+                            if !token.is_empty() {
+                                return Some(token);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let cli_hosts = PathBuf::from(&home).join(".config").join("gh").join("hosts.yml");
+            if cli_hosts.exists() {
+                if let Ok(content) = fs::read_to_string(&cli_hosts) {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("oauth_token:") {
+                            let token = trimmed.trim_start_matches("oauth_token:").trim().to_string();
+                            if !token.is_empty() {
+                                return Some(token);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback: comando gh auth token
+        if let Ok(output) = std::process::Command::new("gh").arg("auth").arg("token").output() {
+            if output.status.success() {
+                let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !token.is_empty() {
+                    return Some(token);
+                }
+            }
+        }
+        None
+    }
+
+    /// Extrae el token del CLI, lo verifica, lo guarda en disco y retorna (token, info).
+    pub async fn extract_and_save_cli_token(&self) -> Result<(String, GithubAccountInfo), String> {
+        let token = Self::read_cli_token_raw()
+            .ok_or_else(|| "No se detectó sesión activa de GitHub CLI".to_string())?;
+        let mut info = self.verify_token(&token).await?;
+        info.auth_type = "cli".to_string();
+        self.save_token(&token)?;
+        Ok((token, info))
+    }
+
     #[cfg(target_os = "windows")]
     pub async fn detect_cli_session(&self) -> Result<GithubAccountInfo, String> {
         // En Windows intentar leer token de GitHub CLI
@@ -99,6 +159,8 @@ impl GithubAuthManager {
                         if !token.is_empty() {
                             let mut info = self.verify_token(token).await?;
                             info.auth_type = "cli".to_string();
+                            // Guardar el token para que generate_extensions lo encuentre
+                            let _ = self.save_token(token);
                             return Ok(info);
                         }
                     }
@@ -113,6 +175,7 @@ impl GithubAuthManager {
                 if !token.is_empty() {
                     let mut info = self.verify_token(&token).await?;
                     info.auth_type = "cli".to_string();
+                    let _ = self.save_token(&token);
                     return Ok(info);
                 }
             }
@@ -135,6 +198,7 @@ impl GithubAuthManager {
                         if !token.is_empty() {
                             let mut info = self.verify_token(token).await?;
                             info.auth_type = "cli".to_string();
+                            let _ = self.save_token(token);
                             return Ok(info);
                         }
                     }
@@ -148,6 +212,7 @@ impl GithubAuthManager {
                 if !token.is_empty() {
                     let mut info = self.verify_token(&token).await?;
                     info.auth_type = "cli".to_string();
+                    let _ = self.save_token(&token);
                     return Ok(info);
                 }
             }
