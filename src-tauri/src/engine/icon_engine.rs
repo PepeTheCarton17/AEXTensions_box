@@ -1,5 +1,5 @@
 use image::imageops::FilterType;
-use image::{DynamicImage, GenericImageView, RgbaImage, Rgba};
+use image::{DynamicImage, RgbaImage, Rgba};
 use std::collections::HashMap;
 use std::io::Cursor;
 

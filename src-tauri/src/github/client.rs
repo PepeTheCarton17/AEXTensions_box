@@ -3,6 +3,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT, ACCEPT}
 
 pub struct GithubApiClient {
     client: reqwest::Client,
+    #[allow(dead_code)]
     token: String,
 }
 
@@ -36,7 +37,7 @@ impl GithubApiClient {
             .build()
             .unwrap_or_default();
 
-        Self { client, token }
+        Self { client, token: token.clone() }
     }
 
     pub async fn ensure_repository(&self, owner: &str, repo_name: &str, private: bool) -> Result<String, String> {
@@ -74,7 +75,6 @@ impl GithubApiClient {
     }
 
     pub async fn put_file_content(&self, owner: &str, repo: &str, path: &str, content: &[u8], commit_message: &str) -> Result<(), String> {
-        use std::io::Write;
         let url = format!("https://api.github.com/repos/{}/{}/contents/{}", owner, repo, path);
 
         // Verificamos si el archivo ya existe para obtener su SHA (requerido por GitHub API para sobreescribir)
@@ -90,7 +90,6 @@ impl GithubApiClient {
         }
 
         // Convertir contenido a base64
-        use std::fmt::Write as FmtWrite;
         let base64_content = base64_encode(content);
 
         let mut body = serde_json::json!({

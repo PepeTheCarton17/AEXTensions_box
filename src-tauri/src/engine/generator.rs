@@ -75,9 +75,11 @@ impl ExtensionGenerator {
     }
 }
 
+#[allow(dead_code)]
 struct I18nData {
     pref_audio_title: &'static str,
     pref_audio_entries: &'static [&'static str],
+    #[allow(dead_code)]
     pref_quality_title: &'static str,
     pref_server_blacklist_title: &'static str,
     pref_server_blacklist_summary: &'static str,
@@ -225,13 +227,11 @@ fn generate_kotlin_source(analysis: &AnalysisResult, class_name: &str, pkg_slug:
     let pref_genre_blacklist_title = i18n.pref_genre_blacklist_title;
     let pref_genre_blacklist_summary = i18n.pref_genre_blacklist_summary;
 
-    let genre_entries = i18n.genres.iter().map(|(g, _)| format!("\"{}\"", g)).collect::<Vec<_>>().join(", ");
-    let genre_values = i18n.genres.iter().map(|(_, v)| format!("\"{}\"", v)).collect::<Vec<_>>().join(", ");
-
     format!(r#"package eu.kanade.tachiyomi.animeextension.{lang}.{pkg_slug}
 
 import android.app.Application
 import android.content.SharedPreferences
+import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.MultiSelectListPreference
 import androidx.preference.PreferenceScreen
@@ -334,15 +334,17 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
         filterBlacklistedAnimes(super.searchAnimeParse(response))
 
     private fun filterBlacklistedAnimes(page: AnimesPage): AnimesPage {{
-        val blacklistedGenres = preferences.getStringSet("genre_blacklist", emptySet()) ?: emptySet()
-        if (blacklistedGenres.isEmpty()) return page
+        val rawBlacklist = preferences.getString("genre_blacklist_text", "") ?: ""
+        val blacklistWords = rawBlacklist
+            .split(",")
+            .map {{ it.trim().lowercase() }}
+            .filter {{ it.isNotEmpty() }}
+
+        if (blacklistWords.isEmpty()) return page
 
         val filtered = page.animes.filterNot {{ anime ->
-            val titleLower = anime.title.lowercase()
             val genreLower = anime.genre?.lowercase() ?: ""
-            blacklistedGenres.any {{ bg ->
-                bg.isNotEmpty() && (titleLower.contains(bg) || genreLower.contains(bg))
-            }}
+            blacklistWords.any {{ word -> genreLower.contains(word) }}
         }}
         return AnimesPage(filtered, page.hasNextPage)
     }}
@@ -442,13 +444,12 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
         }}
         screen.addPreference(serverBlacklistPref)
 
-        val genreBlacklistPref = MultiSelectListPreference(screen.context).apply {{
-            key = "genre_blacklist"
+        val genreBlacklistPref = EditTextPreference(screen.context).apply {{
+            key = "genre_blacklist_text"
             title = "{pref_genre_blacklist_title}"
-            entries = arrayOf({genre_entries})
-            entryValues = arrayOf({genre_values})
-            setDefaultValue(emptySet<String>())
+            setDefaultValue("")
             summary = "{pref_genre_blacklist_summary}"
+            dialogTitle = "{pref_genre_blacklist_title}"
         }}
         screen.addPreference(genreBlacklistPref)
     }}
@@ -494,9 +495,6 @@ object {class_name}Filters {{
     class GenreFilter(name: String, val genres: List<Genre>) :
         AnimeFilter.Select<String>(name, genres.map {{ it.name }}.toTypedArray())
 
-    class BlacklistGenreFilter(name: String, val genres: List<Genre>) :
-        AnimeFilter.Select<String>(name, genres.map {{ it.name }}.toTypedArray())
-
     class AudioFilter : AnimeFilter.Select<String>(
         "{filter_audio_title}",
         arrayOf({audio_entries})
@@ -515,8 +513,7 @@ object {class_name}Filters {{
     fun getFilterList(): AnimeFilterList = AnimeFilterList(
         Header("{filter_header}"),
         AudioFilter(),
-        GenreFilter("{filter_genre_title}", DEFAULT_GENRES),
-        BlacklistGenreFilter("{filter_genre_blacklist_title}", DEFAULT_GENRES)
+        GenreFilter("{filter_genre_title}", DEFAULT_GENRES)
     )
 }}
 "#)
