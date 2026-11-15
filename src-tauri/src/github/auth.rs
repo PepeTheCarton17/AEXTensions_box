@@ -25,6 +25,11 @@ impl GithubAuthManager {
                 }
             }
         }
+        // Fallback inmediato a GitHub CLI
+        if let Some(cli_tok) = Self::read_cli_token_raw() {
+            let _ = self.save_token(&cli_tok);
+            return Some(cli_tok);
+        }
         None
     }
 
@@ -85,7 +90,7 @@ impl GithubAuthManager {
     }
 
     /// Extrae el token raw del CLI de GitHub sin verificar (solo lectura).
-    fn read_cli_token_raw() -> Option<String> {
+    pub fn read_cli_token_raw() -> Option<String> {
         #[cfg(target_os = "windows")]
         {
             let appdata = std::env::var("APPDATA").unwrap_or_default();
@@ -122,7 +127,8 @@ impl GithubAuthManager {
                 }
             }
         }
-        // Fallback: comando gh auth token
+
+        // Intento con comando gh auth token desde PATH
         if let Ok(output) = std::process::Command::new("gh").arg("auth").arg("token").output() {
             if output.status.success() {
                 let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -131,6 +137,28 @@ impl GithubAuthManager {
                 }
             }
         }
+
+        // En Windows, probar rutas típicas de instalación si gh no está en PATH
+        #[cfg(target_os = "windows")]
+        {
+            let standard_paths = [
+                r"C:\Program Files\GitHub CLI\gh.exe",
+                r"C:\Program Files (x86)\GitHub CLI\gh.exe",
+            ];
+            for path in standard_paths {
+                if std::path::Path::new(path).exists() {
+                    if let Ok(output) = std::process::Command::new(path).arg("auth").arg("token").output() {
+                        if output.status.success() {
+                            let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                            if !token.is_empty() {
+                                return Some(token);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         None
     }
 
@@ -140,85 +168,13 @@ impl GithubAuthManager {
             .ok_or_else(|| "No se detectó sesión activa de GitHub CLI".to_string())?;
         let mut info = self.verify_token(&token).await?;
         info.auth_type = "cli".to_string();
-        self.save_token(&token)?;
+        let _ = self.save_token(&token);
         Ok((token, info))
     }
 
-    #[cfg(target_os = "windows")]
     pub async fn detect_cli_session(&self) -> Result<GithubAccountInfo, String> {
-        // En Windows intentar leer token de GitHub CLI
-        let appdata = std::env::var("APPDATA").unwrap_or_default();
-        let cli_hosts = PathBuf::from(&appdata).join("GitHub CLI").join("hosts.yml");
-        if cli_hosts.exists() {
-            if let Ok(content) = fs::read_to_string(&cli_hosts) {
-                // Buscamos oauth_token en github.com
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("oauth_token:") {
-                        let token = trimmed.trim_start_matches("oauth_token:").trim();
-                        if !token.is_empty() {
-                            let mut info = self.verify_token(token).await?;
-                            info.auth_type = "cli".to_string();
-                            // Guardar el token para que generate_extensions lo encuentre
-                            let _ = self.save_token(token);
-                            return Ok(info);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Intento con comando gh auth token si está en PATH
-        if let Ok(output) = std::process::Command::new("gh").arg("auth").arg("token").output() {
-            if output.status.success() {
-                let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !token.is_empty() {
-                    let mut info = self.verify_token(&token).await?;
-                    info.auth_type = "cli".to_string();
-                    let _ = self.save_token(&token);
-                    return Ok(info);
-                }
-            }
-        }
-
-        Err("No se detectó sesión activa de GitHub CLI".to_string())
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    pub async fn detect_cli_session(&self) -> Result<GithubAccountInfo, String> {
-        // En Linux/macOS intentar ~/.config/gh/hosts.yml o gh auth token
-        let home = std::env::var("HOME").unwrap_or_default();
-        let cli_hosts = PathBuf::from(&home).join(".config").join("gh").join("hosts.yml");
-        if cli_hosts.exists() {
-            if let Ok(content) = fs::read_to_string(&cli_hosts) {
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("oauth_token:") {
-                        let token = trimmed.trim_start_matches("oauth_token:").trim();
-                        if !token.is_empty() {
-                            let mut info = self.verify_token(token).await?;
-                            info.auth_type = "cli".to_string();
-                            let _ = self.save_token(token);
-                            return Ok(info);
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Ok(output) = std::process::Command::new("gh").arg("auth").arg("token").output() {
-            if output.status.success() {
-                let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !token.is_empty() {
-                    let mut info = self.verify_token(&token).await?;
-                    info.auth_type = "cli".to_string();
-                    let _ = self.save_token(&token);
-                    return Ok(info);
-                }
-            }
-        }
-
-        Err("No se detectó sesión de GitHub CLI".to_string())
+        let (_, info) = self.extract_and_save_cli_token().await?;
+        Ok(info)
     }
 }
 

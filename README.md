@@ -27,8 +27,16 @@ Los binarios precompilados para todas las plataformas estan disponibles directam
 - **Lista Negra de Generos (#) y Servidores**:
   - Filtro interactivo `BlacklistGenresFilter` en el catalogo para excluir etiquetas no deseadas (Aventura, Ecchi, Gore, etc.).
   - Preferencia persistente `server_blacklist` en los ajustes de la extension para ignorar reproductores lentos o inestables.
-- **Soporte Zilla HLS & Video Directo**: Inyeccion automatica de cabeceras seguras (`Sec-Fetch-Mode`, `Origin`, `Referer`, `User-Agent`) para prevenir bloqueos HTTP 403 Forbidden.
-- **Separacion SUB / DUB**: Clasificacion automatica de audio con selector de idioma preferido y ordenamiento en `sortVideos`.
+- **Motor de Extractores Real (no solo iframes)**: La extension generada resuelve el embed de cada servidor antes de entregar el video:
+  - `MP4Upload`, `Voe`, `Byse / StreamWish`, `Zilla / HLS` y un extractor generico para hosts desconocidos.
+  - Sigue redirecciones por JavaScript (`window.location.href = "..."`), habituales en hosts que rotan de dominio.
+  - Detecta todas las calidades reales del servidor (`label`, `quality`, `res`, `RESOLUTION=`) y **nunca inventa** una calidad: si no puede determinarla usa `Auto` (tambien evita leer `300px` del CSS como si fuera `300p`).
+  - Expande el **master HLS** (`#EXT-X-STREAM-INF`) en una entrada `Video` por variante, con su resolucion y bitrate (`1080p (4500 kbps)`, `720p (900 kbps)`, ...). El reproductor muestra asi todas las calidades disponibles de la misma fuente.
+  - Inyecta cabeceras de Cloudflare en playlist, variantes y segmentos (`User-Agent`, `Referer`, `Origin`, `Accept`, `Sec-Fetch-Dest/Mode/Site`), evitando el `403 Forbidden` y el salto al final del video por segmentos rechazados.
+  - Usa `network.cloudflareClient` para heredar cookies de Cloudflare y hace un warm-up de la pagina del player para que el reto se resuelva antes de pedir la playlist.
+  - Nota honesta: los hosts que hoy sirven el video solo desde una SPA/JS ofuscado (por ejemplo `Byse`) pueden necesitar una actualizacion especifica de su extractor. AEXT no devuelve videos de prueba ni calidades inventadas: si no puede resolverlos, simplemente no los lista.
+- **Separacion SUB / DUB**: Deteccion automatica por bloque del HTML (`SUB`, `DUB`, `LAT`, `CAST`), con prefijo `[SUB]`/`[DUB]` y selector de audio preferido.
+- **Preferencias del reproductor**: servidor preferido, calidad preferida y lista negra de servidores; el orden final es audio -> servidor -> resolucion descendente.
 
 ### 2. Firma Inmutable y Determinista (Sin Errores de Actualizacion)
 - Cada extension generada incorpora de forma estatica el certificado `signingkey.jks` con alias `unbox` y huella SHA-256 inmutable:
@@ -38,12 +46,28 @@ Los binarios precompilados para todas las plataformas estan disponibles directam
 - **Compatibilidad Garantizada**: Elimina el fallo de Android "Firma diferente al actualizar" permitiendo instalar nuevas versiones de tus extensiones sobre versiones previas sin desinstalar.
 
 ### 3. Doble Flujo de Creacion
-- **Modo Local**: Compila y empaqueta el APK directo en el almacenamiento de tu dispositivo o PC sin depender de servicios externos.
+- **Modo Local (codigo fuente)**:
+  - Escribe la extension completa en `%APPDATA%/AEXT/extensions/<pkg_id>` (o `~/.aext`).
+  - El boton de descarga entrega un **ZIP real del codigo fuente** (`application/zip`), listo para abrir en Android Studio o subir a tu repo.
+  - No compila el APK en el dispositivo: para obtener el APK hay que compilar el proyecto (Gradle local o GitHub Actions).
 - **Modo Repositorio GitHub**:
-  - Crea o actualiza automaticamente tu repositorio en GitHub mediante API.
-  - Sube la estructura Gradle completa, el codigo fuente Kotlin, el icono mipmap y el archivo de firma.
-  - Despliega un workflow de GitHub Actions que compila los APKs y publica a la rama `gh-pages` con su catalogo `index.min.json` y `repo.json`.
-  - Genera un archivo `README.md` con enlaces directos tipo `nekoyomi://add-repo?url=...` para anadir el repositorio a Nekoyomi en un solo toque.
+  - Reutiliza un repositorio existente de tu cuenta (selector de repos + rama por defecto real) en lugar de crear siempre `owner/repo` en `main`. Si el repo ya tiene extensiones, sus modulos se conservan y se fusionan en `settings.gradle.kts`.
+  - Sube la estructura Gradle multi-modulo identica a `repo_unbox`:
+    ```text
+    settings.gradle.kts
+    build.gradle.kts
+    gradle.properties
+    gradle/wrapper/...
+    .github/workflows/build_push.yml
+    .github/scripts/generate-repo-index.py
+    src/<lang>/<slug>/build.gradle.kts
+    src/<lang>/<slug>/src/main/AndroidManifest.xml
+    src/<lang>/<slug>/src/main/java/.../<Clase>.kt
+    ```
+  - El workflow compila con `gradle assembleRelease` y publica APK, icono, `index.min.json` y `repo.json` en la rama `gh-pages`.
+  - El boton **Ver compilacion** abre GitHub Actions (no promete una URL de APK inexistente).
+  - Genera un `README.md` con enlaces `nekoyomi://add-repo?url=...` para agregar el repositorio en un toque.
+  - El indice se genera a partir de los `applicationId`, `versionCode`, `versionName` y `override val name` reales del codigo.
 
 ### 4. Autenticacion GitHub Adaptativa
 - **En PC (Desktop)**: Deteccion automatica del inicio de sesion de **GitHub CLI (`gh auth token`)** o uso de Personal Access Token (PAT).
@@ -53,7 +77,7 @@ Los binarios precompilados para todas las plataformas estan disponibles directam
 - Dado que en Android no se dispone de una terminal interactiva estandar, AEXT ejecuta un servidor HTTP nativo en Rust en el puerto local `:45731`:
   - `GET /api/status`: Diagnostico del sistema, plataforma, memoria y credenciales.
   - `GET /api/extensions`: Listado de extensiones creadas y enlaces de instalacion.
-  - `GET /api/download/:id`: Descarga directa de APK compilado al movil.
+  - `GET /api/download/:id`: Descarga el **ZIP del codigo fuente** de la extension (modo local) con `Content-Disposition`; en modo GitHub apunta a la compilacion.
   - `GET /api/logs`: Flujo de registros y logs en tiempo real para diagnosticar scrapers o fallos de compilacion.
   - **Soporte MCP (Model Context Protocol)**: Permite que asistentes de IA (en PC o a traves de la red local) inspeccionen el proceso, asistan en la creacion de filtros complejos y verifiquen el estado de los repositorios.
 

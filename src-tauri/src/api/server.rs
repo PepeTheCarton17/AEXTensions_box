@@ -1,12 +1,15 @@
 use crate::models::{AiDiagnosticReport, AiPatchRequest, McpToolCallRequest, SystemStatus};
 use crate::state::AppState;
 use axum::{
+    body::Body,
     extract::{Path, State},
-    http::StatusCode,
+    http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
+use std::fs;
+use std::path::{Path as FsPath, PathBuf};
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -30,15 +33,32 @@ pub async fn start_embedded_api_server(app_state: AppState, port: u16) {
         .with_state(app_state.clone());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    app_state.add_log("INFO", &format!("Servidor API & MCP embebido escuchando en http://0.0.0.0:{}", port)).await;
+    app_state
+        .add_log(
+            "INFO",
+            &format!(
+                "Servidor API & MCP embebido escuchando en http://0.0.0.0:{}",
+                port
+            ),
+        )
+        .await;
 
     tokio::spawn(async move {
         if let Ok(listener) = tokio::net::TcpListener::bind(&addr).await {
             let _ = axum::serve(listener, app).await;
         } else {
-            app_state.add_log("ERROR", &format!("No se pudo enlazar el servidor API en el puerto {}", port)).await;
+            app_state
+                .add_log(
+                    "ERROR",
+                    &format!("No se pudo enlazar el servidor API en el puerto {}", port),
+                )
+                .await;
         }
     });
+}
+
+fn app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
 }
 
 async fn get_status_handler(State(state): State<AppState>) -> Response {
@@ -48,7 +68,7 @@ async fn get_status_handler(State(state): State<AppState>) -> Response {
     let status = serde_json::json!({
         "status": "online",
         "app_name": "AEXT",
-        "version": "1.0.0",
+        "version": app_version(),
         "extensions_count": ext_count,
         "mcp_enabled": true,
         "mcp_endpoint": "http://localhost:45731/mcp",
@@ -65,26 +85,85 @@ async fn get_extensions_handler(State(state): State<AppState>) -> Response {
     Json(items).into_response()
 }
 
+/// Entrega un ZIP real con el código fuente de la extensión (y su
+/// `extension.json`). En modo local no existe un APK compilado en el
+/// dispositivo, así que este es el artefacto honesto que podemos ofrecer.
 async fn download_extension_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Response {
     let items = state.extensions.read().await;
-    let item = items.iter().find(|e| e.id == id || e.pkg_id == id);
+    let item = items
+        .iter()
+        .find(|e| e.id == id || e.pkg_id == id)
+        .cloned();
+    drop(items);
 
-    match item {
-        Some(ext) => {
-            let info = serde_json::json!({
-                "id": ext.id,
-                "name": ext.name,
-                "pkg_id": ext.pkg_id,
-                "version": ext.version,
-                "apk_download_url": ext.apk_download_url,
-                "nekoyomi_repo_url": ext.nekoyomi_repo_url,
-            });
-            Json(info).into_response()
+    let Some(ext) = item else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    let dir = crate::commands::local_extension_dir(&state, &ext.pkg_id);
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    if dir.is_dir() {
+        collect_dir_entries(&dir, &dir, &mut entries);
+    }
+
+    // Metadatos legibles por humanos / por Nekoyomi.
+    match serde_json::to_vec_pretty(&ext) {
+        Ok(bytes) => entries.push(("extension.json".to_string(), bytes)),
+        Err(e) => {
+            state
+                .add_log("WARN", &format!("No se pudo serializar extension.json: {}", e))
+                .await;
         }
-        None => StatusCode::NOT_FOUND.into_response(),
+    }
+
+    if entries.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "No hay archivos locales para esta extensión",
+                "pkg_id": ext.pkg_id,
+            })),
+        )
+            .into_response();
+    }
+
+    let zip = crate::engine::create_zip(&entries);
+    let filename = format!("{}.zip", ext.pkg_id);
+    let disposition = format!("attachment; filename=\"{}\"", filename);
+
+    let mut response = Response::new(Body::from(zip));
+    *response.status_mut() = StatusCode::OK;
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/zip"));
+    if let Ok(value) = HeaderValue::from_str(&disposition) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_DISPOSITION, value);
+    }
+    response
+}
+
+fn collect_dir_entries(root: &FsPath, current: &FsPath, out: &mut Vec<(String, Vec<u8>)>) {
+    let Ok(read_dir) = fs::read_dir(current) else {
+        return;
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_dir_entries(root, &path, out);
+        } else if path.is_file() {
+            let Ok(relative) = path.strip_prefix(root) else {
+                continue;
+            };
+            let name = relative.to_string_lossy().replace('\\', "/");
+            if let Ok(bytes) = fs::read(&path) {
+                out.push((name, bytes));
+            }
+        }
     }
 }
 
@@ -103,11 +182,17 @@ async fn analyze_url_handler(
     State(state): State<AppState>,
     Json(payload): Json<AnalyzePayload>,
 ) -> Response {
-    state.add_log("INFO", &format!("API /analyze llamada para: {}", payload.url)).await;
+    state
+        .add_log("INFO", &format!("API /analyze llamada para: {}", payload.url))
+        .await;
     let analyzer = crate::engine::analyzer::SiteAnalyzer::new();
     match analyzer.analyze(&payload.url).await {
         Ok(res) => (StatusCode::OK, Json(serde_json::to_value(res).unwrap())).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e }))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": e })),
+        )
+            .into_response(),
     }
 }
 
@@ -119,18 +204,23 @@ async fn get_ai_diagnostics_handler(State(state): State<AppState>) -> Response {
     let ext_count = state.extensions.read().await.len();
     let gh = state.gh_user.read().await;
 
-    let failed_sites: Vec<String> = recent_logs.iter()
+    let failed_sites: Vec<String> = recent_logs
+        .iter()
         .filter(|l| l.level == "ERROR" || l.level == "WARN")
         .map(|l| l.message.clone())
         .collect();
 
     let report = AiDiagnosticReport {
-        app_version: "1.0.0".to_string(),
-        platform: if cfg!(target_os = "android") { "android".to_string() } else { "desktop".to_string() },
+        app_version: app_version().to_string(),
+        platform: if cfg!(target_os = "android") {
+            "android".to_string()
+        } else {
+            "desktop".to_string()
+        },
         recent_logs,
         failed_sites,
         system_info: SystemStatus {
-            app_version: "1.0.0".to_string(),
+            app_version: app_version().to_string(),
             api_port: 45731,
             mcp_endpoint: "http://localhost:45731/mcp".to_string(),
             is_mobile: cfg!(target_os = "android"),
@@ -148,15 +238,250 @@ async fn apply_ai_patch_handler(
     State(state): State<AppState>,
     Json(patch): Json<AiPatchRequest>,
 ) -> Response {
-    state.add_log("INFO", &format!("Aplicando parche de IA a la extensión: {}", patch.pkg_id)).await;
+    state
+        .add_log(
+            "INFO",
+            &format!("Aplicando parche de IA a la extensión: {}", patch.pkg_id),
+        )
+        .await;
+
     let mut extensions = state.extensions.write().await;
-    if let Some(ext) = extensions.iter_mut().find(|e| e.pkg_id == patch.pkg_id) {
-        ext.version_code += 1;
-        ext.version = format!("16.{}", ext.version_code);
-        state.add_log("SUCCESS", &format!("Extensión {} actualizada con parche de IA a v{}", ext.pkg_id, ext.version)).await;
-        (StatusCode::OK, Json(serde_json::json!({ "status": "patched", "version": ext.version }))).into_response()
-    } else {
-        (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Extensión no encontrada" }))).into_response()
+    let Some(ext) = extensions
+        .iter_mut()
+        .find(|e| e.pkg_id == patch.pkg_id || e.id == patch.pkg_id)
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Extensión no encontrada" })),
+        )
+            .into_response();
+    };
+
+    let next_code = ext.version_code + 1;
+    let next_version = format!("16.{}", next_code);
+    ext.version_code = next_code;
+    ext.version = next_version.clone();
+
+    let dir = crate::commands::local_extension_dir(&state, &ext.pkg_id);
+    let persisted = apply_patch_to_files(&dir, &patch, next_code, &next_version);
+
+    drop(extensions);
+    state.persist_extensions().await;
+
+    match &persisted {
+        Ok(true) => state
+            .add_log(
+                "SUCCESS",
+                &format!(
+                    "Extensión {} actualizada con parche de IA a v{} (archivos locales reescritos)",
+                    patch.pkg_id, next_version
+                ),
+            )
+            .await,
+        Ok(false) => state
+            .add_log(
+                "WARN",
+                &format!(
+                    "Extensión {} actualizada a v{} solo en el catálogo: no hay copia local de los archivos para parchear",
+                    patch.pkg_id, next_version
+                ),
+            )
+            .await,
+        Err(e) => state
+            .add_log(
+                "WARN",
+                &format!("Parche aplicado en catálogo, pero falló la escritura de archivos: {}", e),
+            )
+            .await,
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "patched",
+            "version": next_version,
+            "files_patched": persisted.unwrap_or(false)
+        })),
+    )
+        .into_response()
+}
+
+/// Reescribe `build.gradle.kts` (versión) y los selectores del Kotlin si la
+/// extensión tiene copia local. Devuelve `false` si no existe esa copia.
+fn apply_patch_to_files(
+    dir: &FsPath,
+    patch: &AiPatchRequest,
+    version_code: i32,
+    version_name: &str,
+) -> Result<bool, String> {
+    if !dir.is_dir() {
+        return Ok(false);
+    }
+
+    let gradle_path = find_module_gradle(dir, &patch.pkg_id);
+    if let Some(gradle_path) = gradle_path {
+        let content = fs::read_to_string(&gradle_path)
+            .map_err(|e| format!("No se pudo leer {}: {}", gradle_path.display(), e))?;
+        let re_code = regex::Regex::new(r"versionCode\s*=\s*\d+")
+            .map_err(|e| e.to_string())?;
+        let re_name = regex::Regex::new(r#"versionName\s*=\s*"[^"]*""#)
+            .map_err(|e| e.to_string())?;
+        let content = re_code
+            .replace(&content, format!("versionCode = {}", version_code).as_str())
+            .to_string();
+        let content = re_name
+            .replace(&content, format!("versionName = \"{}\"", version_name).as_str())
+            .to_string();
+        fs::write(&gradle_path, content)
+            .map_err(|e| format!("No se pudo escribir {}: {}", gradle_path.display(), e))?;
+    }
+
+    let mut kotlin_files = Vec::new();
+    collect_files_with_extension(dir, "kt", &mut kotlin_files);
+    for kt in kotlin_files {
+        let Ok(content) = fs::read_to_string(&kt) else {
+            continue;
+        };
+        let original = content.clone();
+        let mut patched = content;
+
+        if let Some(selector) = patch.custom_card_selector.as_deref() {
+            if !selector.trim().is_empty() {
+                let escaped = escape_kotlin_string(selector);
+                for func in [
+                    "popularAnimeSelector",
+                    "latestUpdatesSelector",
+                    "searchAnimeSelector",
+                ] {
+                    patched = replace_selector_function(&patched, func, &escaped);
+                }
+            }
+        }
+
+        if let Some(selector) = patch.custom_next_selector.as_deref() {
+            if !selector.trim().is_empty() {
+                let escaped = escape_kotlin_string(selector);
+                for func in [
+                    "popularAnimeNextPageSelector",
+                    "latestUpdatesNextPageSelector",
+                    "searchAnimeNextPageSelector",
+                ] {
+                    patched = replace_selector_function(&patched, func, &escaped);
+                }
+            }
+        }
+
+        if let Some(selector) = patch.custom_title_selector.as_deref() {
+            if !selector.trim().is_empty() {
+                let escaped = escape_kotlin_string(selector);
+                if let Ok(re) = regex::Regex::new(r#"title\s*=\s*element\.selectFirst\("[^"]*"\)"#) {
+                    patched = re
+                        .replace(&patched, |_: &regex::Captures| {
+                            format!("title = element.selectFirst(\"{}\")", escaped)
+                        })
+                        .to_string();
+                }
+            }
+        }
+
+        if let Some(code) = patch.custom_video_code.as_deref() {
+            if !code.trim().is_empty() {
+                let marker = "\n// ============================== AEXT IA PATCH ==============================\n";
+                if !patched.contains("AEXT IA PATCH") {
+                    patched.push_str(marker);
+                    patched.push_str(code);
+                    patched.push('\n');
+                }
+            }
+        }
+
+        if patched != original {
+            fs::write(&kt, patched)
+                .map_err(|e| format!("No se pudo escribir {}: {}", kt.display(), e))?;
+        }
+    }
+
+    Ok(true)
+}
+
+fn replace_selector_function(content: &str, func: &str, escaped_selector: &str) -> String {
+    let pattern = format!(r#"({}\(\)\s*:\s*String\s*=\s*")[^"]*(")"#, regex::escape(func));
+    match regex::Regex::new(&pattern) {
+        Ok(re) => re
+            .replace(content, |caps: &regex::Captures| {
+                format!(
+                    "{}{}{}",
+                    caps.get(1).map(|m| m.as_str()).unwrap_or(""),
+                    escaped_selector,
+                    caps.get(2).map(|m| m.as_str()).unwrap_or("")
+                )
+            })
+            .to_string(),
+        Err(_) => content.to_string(),
+    }
+}
+
+fn escape_kotlin_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Localiza el `build.gradle.kts` del módulo de la extensión. La ruta se
+/// deriva del `pkg_id` (`src/<lang>/<slug>`); si no existe, se busca.
+fn find_module_gradle(dir: &FsPath, pkg_id: &str) -> Option<PathBuf> {
+    let parts: Vec<&str> = pkg_id.split('.').filter(|p| !p.is_empty()).collect();
+    if parts.len() >= 2 {
+        let lang = parts[parts.len() - 2];
+        let slug = parts[parts.len() - 1];
+        let direct = dir
+            .join("src")
+            .join(lang)
+            .join(slug)
+            .join("build.gradle.kts");
+        if direct.exists() {
+            return Some(direct);
+        }
+    }
+
+    let mut candidates = Vec::new();
+    collect_gradle_files(dir, &mut candidates);
+    candidates.sort_by_key(|path| path.components().count());
+    candidates.into_iter().find(|path| {
+        fs::read_to_string(path)
+            .map(|content| content.contains("applicationId"))
+            .unwrap_or(false)
+    })
+}
+
+fn collect_gradle_files(dir: &FsPath, out: &mut Vec<PathBuf>) {
+    let Ok(read_dir) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_gradle_files(&path, out);
+        } else if path.file_name().and_then(|name| name.to_str()) == Some("build.gradle.kts") {
+            out.push(path);
+        }
+    }
+}
+
+fn collect_files_with_extension(dir: &FsPath, extension: &str, out: &mut Vec<PathBuf>) {
+    let Ok(read_dir) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files_with_extension(&path, extension, out);
+        } else if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case(extension))
+            .unwrap_or(false)
+        {
+            out.push(path);
+        }
     }
 }
 
@@ -165,7 +490,7 @@ async fn mcp_manifest_handler() -> Response {
     let manifest = serde_json::json!({
         "name": "AEXT MCP Server",
         "description": "Servidor MCP nativo de AEXT para permitir a modelos de IA inspeccionar el estado en dispositivos móviles y asistir en la resolución de extensiones",
-        "version": "1.0.0",
+        "version": app_version(),
         "tools": [
             {
                 "name": "aext_get_status",
@@ -208,23 +533,26 @@ async fn mcp_jsonrpc_handler(
     State(state): State<AppState>,
     Json(req): Json<McpToolCallRequest>,
 ) -> Response {
-    state.add_log("INFO", &format!("Llamada MCP recibida: {}", req.method)).await;
+    state
+        .add_log("INFO", &format!("Llamada MCP recibida: {}", req.method))
+        .await;
 
     match req.method.as_str() {
-        "tools/list" => {
-            mcp_manifest_handler().await
-        }
+        "tools/list" => mcp_manifest_handler().await,
         "tools/call" => {
             let params = req.params.unwrap_or_default();
             let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let args = params.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
+            let args = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
 
             match name {
                 "aext_get_status" => {
                     let ext_count = state.extensions.read().await.len();
                     let res = serde_json::json!({
                         "platform": if cfg!(target_os = "android") { "android" } else { "desktop" },
-                        "version": "1.0.0",
+                        "version": app_version(),
                         "extensions_count": ext_count,
                         "server_port": 45731
                     });
@@ -239,19 +567,27 @@ async fn mcp_jsonrpc_handler(
                     let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
                     let analyzer = crate::engine::analyzer::SiteAnalyzer::new();
                     match analyzer.analyze(url).await {
-                        Ok(res) => (StatusCode::OK, Json(serde_json::json!({ "result": res }))).into_response(),
-                        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e }))).into_response(),
+                        Ok(res) => {
+                            (StatusCode::OK, Json(serde_json::json!({ "result": res }))).into_response()
+                        }
+                        Err(e) => (
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({ "error": e })),
+                        )
+                            .into_response(),
                     }
                 }
                 _ => (
                     StatusCode::NOT_FOUND,
                     Json(serde_json::json!({ "error": format!("Tool MCP '{}' no encontrada", name) })),
-                ).into_response(),
+                )
+                    .into_response(),
             }
         }
         _ => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "Método MCP no soportado" })),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }

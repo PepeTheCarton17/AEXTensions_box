@@ -17,6 +17,7 @@ pub struct GenerationRequest {
     pub custom_name: Option<String>,
     pub lang: Option<String>,
     pub nsfw: Option<bool>,
+    pub ext_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

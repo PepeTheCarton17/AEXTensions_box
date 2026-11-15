@@ -29,12 +29,11 @@ impl IconEngine {
             }
         }
 
-        let img = match raw_bytes {
-            Some(bytes) => {
-                image::load_from_memory(&bytes).unwrap_or_else(|_| Self::generate_fallback_image(fallback_name))
-            }
-            None => Self::generate_fallback_image(fallback_name),
-        };
+        let loaded = raw_bytes
+            .as_deref()
+            .and_then(|bytes| image::load_from_memory(bytes).ok());
+        let used_fallback = loaded.is_none();
+        let img = loaded.unwrap_or_else(|| Self::generate_fallback_image(fallback_name));
 
         let mut mipmaps = HashMap::new();
         let sizes = [
@@ -54,7 +53,11 @@ impl IconEngine {
 
             let bytes = buf.into_inner();
             if size == 192 {
-                base64_icon = format!("data:image/png;base64,{}", base64_encode(&bytes));
+                base64_icon = if used_fallback {
+                    Self::generate_fallback_icon_uri(fallback_name)
+                } else {
+                    format!("data:image/png;base64,{}", base64_encode(&bytes))
+                };
             }
             mipmaps.insert(dir_name.to_string(), bytes);
         }
@@ -63,22 +66,64 @@ impl IconEngine {
     }
 
     fn generate_fallback_image(name: &str) -> DynamicImage {
-        // Genera una imagen limpia cuadrada de 192x192 con gradiente y la inicial
+        // Genera una imagen cuadrada de 192x192 con gradiente estable por nombre.
         let mut img = RgbaImage::new(192, 192);
-        let _initial = name.chars().next().unwrap_or('A').to_ascii_uppercase();
-        
-        // Colores temáticos Nekoyomi (púrpura oscuro a violeta)
+        let (base_r, base_g, base_b) = Self::color_for_name(name);
+
         for y in 0..192 {
             for x in 0..192 {
-                let r = (90 + (x * 50) / 192) as u8;
-                let g = (40 + (y * 40) / 192) as u8;
-                let b = (160 + ((x + y) * 30) / 384) as u8;
+                let r = base_r.saturating_add(((x * 40) / 192) as u8);
+                let g = base_g.saturating_add(((y * 32) / 192) as u8);
+                let b = base_b.saturating_add((((x + y) * 24) / 384) as u8);
                 img.put_pixel(x, y, Rgba([r, g, b, 255]));
             }
         }
 
         DynamicImage::ImageRgba8(img)
     }
+
+    /// Icono vectorial de respaldo con la inicial del nombre. Se usa en el
+    /// catálogo cuando el sitio no expone un favicon descargable.
+    fn generate_fallback_icon_uri(name: &str) -> String {
+        let letter = name
+            .chars()
+            .find(|c| c.is_ascii_alphanumeric())
+            .unwrap_or('A')
+            .to_ascii_uppercase();
+        let (r, g, b) = Self::color_for_name(name);
+
+        let svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 192 192\"><defs><linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop stop-color=\"#{:02X}{:02X}{:02X}\"/><stop offset=\"1\" stop-color=\"#7C3AED\"/></linearGradient></defs><rect width=\"192\" height=\"192\" rx=\"40\" fill=\"url(#g)\"/><text x=\"96\" y=\"130\" text-anchor=\"middle\" font-family=\"Segoe UI,Arial,sans-serif\" font-size=\"104\" font-weight=\"700\" fill=\"#FFFFFF\">{}</text></svg>",
+            r, g, b, letter
+        );
+
+        format!("data:image/svg+xml;utf8,{}", percent_encode(&svg))
+    }
+
+    fn color_for_name(name: &str) -> (u8, u8, u8) {
+        let mut hash: u32 = 2_166_136_261;
+        for c in name.chars() {
+            hash ^= c as u32;
+            hash = hash.wrapping_mul(16_777_619);
+        }
+        let r = 70 + ((hash >> 2) & 0x3F) as u8;
+        let g = 40 + ((hash >> 9) & 0x3F) as u8;
+        let b = 130 + ((hash >> 16) & 0x5F) as u8;
+        (r, g, b)
+    }
+}
+
+fn percent_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() * 2);
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+    out
 }
 
 fn base64_encode(data: &[u8]) -> String {

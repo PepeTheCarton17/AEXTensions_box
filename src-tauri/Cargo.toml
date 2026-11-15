@@ -24,8 +24,7 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart", "cookies", "gzip"] }
 scraper = "0.20"
 regex = "1.10"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-sha2 = "0.10"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "webp"] }
 chrono = "0.4"
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
