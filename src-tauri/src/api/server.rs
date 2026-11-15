@@ -32,12 +32,14 @@ pub async fn start_embedded_api_server(app_state: AppState, port: u16) {
         .layer(cors)
         .with_state(app_state.clone());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    // Solo loopback: la app es local y así no se abre el puerto a la red
+    // (ni se dispara el aviso del firewall de Windows).
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
     app_state
         .add_log(
             "INFO",
             &format!(
-                "Servidor API & MCP embebido escuchando en http://0.0.0.0:{}",
+                "Servidor API & MCP embebido escuchando en http://127.0.0.1:{}",
                 port
             ),
         )
