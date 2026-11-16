@@ -18,6 +18,7 @@ pub fn run() {
     });
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::get_gh_auth_status,
@@ -34,7 +35,14 @@ pub fn run() {
             commands::get_system_logs,
             commands::test_stream_extractor,
             commands::get_system_status,
-            commands::check_aext_updates
+            commands::check_aext_updates,
+            commands::open_url,
+            commands::save_extension_zip,
+            commands::open_extension_folder,
+            commands::list_extension_backups,
+            commands::restore_extension_backup,
+            commands::check_build_toolchain,
+            commands::compile_extension
         ])
         .run(tauri::generate_context!())
         .expect("error while running AEXT application");

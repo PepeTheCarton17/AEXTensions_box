@@ -1,4 +1,5 @@
 pub mod analyzer;
+pub mod backup;
 pub mod generator;
 pub mod icon_engine;
 pub mod packager;

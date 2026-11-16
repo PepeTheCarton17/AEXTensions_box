@@ -1,5 +1,7 @@
 // AEXT Client Engine - Tauri v2 & Embedded API Bridge
 
+import { initLanguage, setLanguage, getLanguage, t, applyLanguage } from './i18n.js';
+
 let tauriCore = null;
 
 async function initTauri() {
@@ -52,11 +54,27 @@ async function invokeBackend(command, args = {}) {
       return await res.json();
     }
     case 'check_aext_updates': {
+      // Fallback de desarrollo: consulta la release real de GitHub.
+      const res = await fetch(
+        'https://api.github.com/repos/PepeTheCarton17/AEXTensions_box/releases/latest',
+        { headers: { Accept: 'application/vnd.github+json' } }
+      );
+      if (!res.ok) throw new Error(`GitHub HTTP ${res.status}`);
+      const release = await res.json();
+      const tag = String(release.tag_name || '').replace(/^v/, '');
       return {
-        current_version: '1.0.0',
-        latest_version: '1.0.0',
+        current_version: 'dev',
+        latest_version: tag,
+        tag_name: release.tag_name || '',
         update_available: false,
-        release_notes: 'AEXT v1.0.0 al día.'
+        release_notes: release.body || '',
+        release_url: release.html_url || '',
+        assets: (release.assets || []).map((asset) => ({
+          name: asset.name,
+          url: asset.browser_download_url,
+          size: asset.size,
+          content_type: asset.content_type,
+        })),
       };
     }
     case 'get_system_status': {
@@ -96,6 +114,11 @@ const state = {
   logs: [],
   pendingGenerationMode: 'local',
   githubRepos: [],
+  appVersion: '',
+  lastRelease: null,
+  successExt: null,
+  selectedBackupExt: '',
+  toolchain: null,
 };
 
 // ==================== DOM ELEMENTS ====================
@@ -150,7 +173,7 @@ const elements = {
   btnTestStream: document.getElementById('btn-test-stream'),
   testStreamResult: document.getElementById('test-stream-result'),
 
-  // AI & MCP Assistance
+  // MCP diagnostics & local patches
   btnCopyMcpConfig: document.getElementById('btn-copy-mcp-config'),
   btnGenAiDiag: document.getElementById('btn-generate-ai-diagnostic'),
   btnCopyLogsAi: document.getElementById('btn-copy-logs-ai'),
@@ -172,6 +195,17 @@ const elements = {
   selectConfirmExtType: document.getElementById('select-confirm-ext-type'),
   selectConfirmExtLang: document.getElementById('select-confirm-ext-lang'),
 
+  // Tools: backups
+  selectBackupExt: document.getElementById('select-backup-ext'),
+  btnRefreshBackups: document.getElementById('btn-refresh-backups'),
+  btnOpenSelectedFolder: document.getElementById('btn-open-selected-folder'),
+  backupsList: document.getElementById('backups-list'),
+
+  // Settings / releases
+  settingsCurrentVersion: document.getElementById('settings-current-version'),
+  releaseAssetsBody: document.getElementById('release-assets-body'),
+  customRepoWrapper: document.getElementById('custom-repo-wrapper'),
+
   // Success Modal
   modalGenSuccess: document.getElementById('modal-generation-success'),
   successExtIcon: document.getElementById('success-ext-icon'),
@@ -179,6 +213,12 @@ const elements = {
   successExtPkg: document.getElementById('success-ext-pkg'),
   successExtType: document.getElementById('success-ext-type'),
   successExtVersion: document.getElementById('success-ext-version'),
+  successDownloadStatus: document.getElementById('success-download-status'),
+  successBuildSection: document.getElementById('success-build-section'),
+  successToolchainStatus: document.getElementById('success-toolchain-status'),
+  successCompileOutput: document.getElementById('success-compile-output'),
+  btnSuccessOpenFolder: document.getElementById('btn-success-open-folder'),
+  btnSuccessCompile: document.getElementById('btn-success-compile'),
   btnSuccessInstallApk: document.getElementById('btn-success-install-apk'),
   btnSuccessInstallLabel: document.getElementById('btn-success-install-label'),
   btnSuccessDeeplinkRepo: document.getElementById('btn-success-deeplink-repo'),
@@ -247,10 +287,19 @@ function iconFor(ext) {
   return icon || fallbackIcon(ext && ext.name);
 }
 
-// Descarga un artefacto del servidor local como Blob. Evita que el webview
-// navegue a la URL del API (lo que dejaba al usuario en una página sin botón
-// de volver) y funciona aunque el archivo sea un ZIP.
+// Descarga un artefacto del servidor local.
+// - En la app nativa Rust escribe el ZIP en Descargas y devuelve la ruta real
+//   (WebView2 no siempre completa las descargas Blob ni avisa al usuario).
+// - En navegador se usa un Blob para no navegar fuera de la app.
 async function saveLocalZip(url, filename) {
+  if (window.__TAURI_INTERNALS__ || window.__TAURI__) {
+    const saved = await invokeBackend('save_extension_zip', { url, filename });
+    if (!saved || !saved.path) {
+      throw new Error('La descarga no devolvió una ruta de archivo.');
+    }
+    return saved;
+  }
+
   const response = await fetch(url);
   if (!response.ok) {
     let detail = '';
@@ -277,7 +326,335 @@ async function saveLocalZip(url, filename) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
+  return { path: null, bytes: blob.size, filename: filename || 'extension.zip' };
 }
+
+// ==================== ENLACES EXTERNOS ====================
+// El webview de Tauri no debe navegar fuera de la app: todo enlace http(s)
+// se abre en el navegador del sistema mediante el comando nativo `open_url`.
+async function openExternal(url) {
+  if (!url) return false;
+  try {
+    await invokeBackend('open_url', { url });
+    return true;
+  } catch (error) {
+    try {
+      window.open(url, '_blank', 'noopener');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
+document.addEventListener('click', (event) => {
+  const link = event.target.closest('a[href^="http"]');
+  if (link && !link.hasAttribute('download')) {
+    event.preventDefault();
+    openExternal(link.href);
+    return;
+  }
+  const opener = event.target.closest('[data-open-url]');
+  if (opener) {
+    event.preventDefault();
+    openExternal(opener.getAttribute('data-open-url'));
+  }
+});
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = value;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  return `${size.toFixed(size >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function releaseAssetMeta(name) {
+  const lower = String(name || '').toLowerCase();
+  if (lower.endsWith('.apk')) {
+    const arch = lower.includes('arm64') ? 'arm64-v8a' : 'universal';
+    return { platform: 'Android (Mobile)', arch, tone: 'emerald', icon: 'android' };
+  }
+  if (lower.endsWith('.msi')) {
+    return { platform: 'Windows (PC) MSI', arch: 'x86_64', tone: 'sky', icon: 'windows' };
+  }
+  if (lower.endsWith('setup.exe')) {
+    return { platform: 'Windows (PC) Setup', arch: 'x86_64', tone: 'sky', icon: 'windows' };
+  }
+  if (lower.endsWith('.exe')) {
+    return { platform: `Windows (PC) ${t('rel.portable')}`, arch: 'x86_64', tone: 'sky', icon: 'windows' };
+  }
+  if (lower.endsWith('.appimage')) {
+    return { platform: 'Linux (PC) AppImage', arch: 'x86_64', tone: 'amber', icon: 'linux' };
+  }
+  if (lower.endsWith('.deb')) {
+    return { platform: 'Linux (PC) Debian', arch: 'x86_64', tone: 'amber', icon: 'linux' };
+  }
+  return { platform: 'Archivo', arch: '—', tone: 'slate', icon: 'file' };
+}
+
+function releaseIcon(kind, tone) {
+  if (kind === 'android') {
+    return `<svg class="w-4 h-4 text-${tone}-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>`;
+  }
+  if (kind === 'windows') {
+    return `<svg class="w-4 h-4 text-${tone}-400" fill="currentColor" viewBox="0 0 24 24"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.901-1.799"/></svg>`;
+  }
+  if (kind === 'linux') {
+    return `<svg class="w-4 h-4 text-${tone}-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>`;
+  }
+  return `<svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>`;
+}
+
+function renderReleaseTable(release) {
+  if (!elements.releaseAssetsBody) return;
+  state.lastRelease = release || state.lastRelease;
+  const data = state.lastRelease;
+  const assets = (data && Array.isArray(data.assets)) ? data.assets : [];
+
+  if (!assets.length) {
+    elements.releaseAssetsBody.innerHTML = `
+      <tr>
+        <td colspan="4" class="p-3 text-slate-500">${escapeHtml(t('rel.no_assets'))}</td>
+      </tr>`;
+    return;
+  }
+
+  const weight = (name) => {
+    const lower = String(name).toLowerCase();
+    if (lower.endsWith('setup.exe')) return 0;
+    if (lower.endsWith('.msi')) return 1;
+    if (lower.endsWith('.exe')) return 2;
+    if (lower.endsWith('.appimage')) return 3;
+    if (lower.endsWith('.deb')) return 4;
+    if (lower.endsWith('.apk')) return 5;
+    return 6;
+  };
+
+  const rows = assets
+    .filter((asset) => /\.(exe|msi|apk|appimage|deb)$/i.test(asset.name || ''))
+    .sort((a, b) => weight(a.name) - weight(b.name))
+    .map((asset) => {
+      const meta = releaseAssetMeta(asset.name);
+      const size = formatBytes(asset.size);
+      return `
+        <tr class="hover:bg-surface-850/50">
+          <td class="p-3 font-sans font-semibold text-slate-200 flex items-center gap-2">
+            ${releaseIcon(meta.icon, meta.tone)}
+            <span>${escapeHtml(meta.platform)}</span>
+          </td>
+          <td class="p-3 text-indigo-300 break-all">${escapeHtml(asset.name || '')}</td>
+          <td class="p-3 text-slate-400">${escapeHtml(meta.arch)}</td>
+          <td class="p-3 text-right whitespace-nowrap">
+            <button data-open-url="${escapeHtml(asset.url || '')}" class="px-2.5 py-1 rounded bg-surface-800 hover:bg-surface-700 text-brand-300 border border-surface-700 transition-all">
+              ${escapeHtml(t('rel.download_btn'))}${size ? ` · ${escapeHtml(size)}` : ''}
+            </button>
+          </td>
+        </tr>`;
+    });
+
+  elements.releaseAssetsBody.innerHTML = rows.join('') || `
+    <tr>
+      <td colspan="4" class="p-3 text-slate-500">${escapeHtml(t('rel.no_assets'))}</td>
+    </tr>`;
+}
+
+// ==================== COPIAS DE SEGURIDAD DEL CÓDIGO ====================
+function refreshBackupExtensions() {
+  if (!elements.selectBackupExt) return;
+  const current = elements.selectBackupExt.value || state.selectedBackupExt;
+  const options = [`<option value="">${escapeHtml(t('tools.select_ext'))}</option>`]
+    .concat(state.extensions.map((ext) => (
+      `<option value="${escapeHtml(ext.pkg_id)}">${escapeHtml(ext.name)} — ${escapeHtml(ext.pkg_id)}</option>`
+    )))
+    .join('');
+  elements.selectBackupExt.innerHTML = options;
+  if (current && state.extensions.some((ext) => ext.pkg_id === current)) {
+    elements.selectBackupExt.value = current;
+  }
+}
+
+async function loadBackups(pkgId) {
+  if (!elements.backupsList) return;
+  const pkg = pkgId || elements.selectBackupExt?.value || state.selectedBackupExt;
+  state.selectedBackupExt = pkg || '';
+  if (!pkg) {
+    elements.backupsList.innerHTML = `<p class="text-xs text-slate-500">${escapeHtml(t('tools.select_ext'))}</p>`;
+    return;
+  }
+
+  elements.backupsList.innerHTML = `<p class="text-xs text-slate-500">${escapeHtml(t('rel.loading'))}</p>`;
+  try {
+    const list = await invokeBackend('list_extension_backups', { pkgId: pkg }) || [];
+    if (!list.length) {
+      elements.backupsList.innerHTML = `<p class="text-xs text-slate-500">${escapeHtml(t('tools.backups_empty'))}</p>`;
+      return;
+    }
+    elements.backupsList.innerHTML = list.map((backup) => `
+      <div class="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-surface-950 border border-surface-800">
+        <div class="min-w-0">
+          <p class="text-xs font-semibold text-slate-200">${escapeHtml(backup.created_at || backup.name)}</p>
+          <p class="text-[10px] text-slate-500 font-mono">${escapeHtml(backup.name)} · ${escapeHtml(backup.reason || '')} · ${backup.files || 0} ${escapeHtml(t('tools.files'))}</p>
+        </div>
+        <button data-restore-backup="${escapeHtml(backup.name)}" class="px-3 py-1.5 rounded-lg text-[11px] font-medium bg-surface-800 hover:bg-surface-700 text-brand-300 border border-surface-700 transition-all">
+          ${escapeHtml(t('tools.restore'))}
+        </button>
+      </div>
+    `).join('');
+  } catch (error) {
+    elements.backupsList.innerHTML = `<p class="text-xs text-rose-400">${escapeHtml(String(error))}</p>`;
+  }
+}
+
+async function openExtensionFolder(pkgId) {
+  if (!pkgId) return;
+  try {
+    const info = await invokeBackend('open_extension_folder', { pkgId });
+    appendTerminalLog('INFO', t('logs.folder', { path: info.path }));
+    if (!info.opened) alert(t('alerts.path', { path: info.path }));
+    return info;
+  } catch (error) {
+    alert(String(error));
+    return null;
+  }
+}
+
+// ==================== COMPILACIÓN LOCAL ====================
+async function loadToolchain(force = false) {
+  if (state.toolchain && !force) {
+    renderToolchainStatus();
+    return state.toolchain;
+  }
+  try {
+    state.toolchain = await invokeBackend('check_build_toolchain');
+  } catch (error) {
+    state.toolchain = {
+      can_build: false,
+      missing: [String(error)],
+      notes: [],
+      java: false,
+      kotlinc: false,
+      gradle: false,
+      android_sdk: false,
+    };
+  }
+  renderToolchainStatus();
+  return state.toolchain;
+}
+
+function renderToolchainStatus() {
+  if (!elements.successToolchainStatus) return;
+  const info = state.toolchain;
+  if (!info) {
+    elements.successToolchainStatus.textContent = t('succ.toolchain_checking');
+    return;
+  }
+
+  const marks = [
+    `Java ${info.java ? '✓' : '✗'}`,
+    `Kotlin ${info.kotlinc ? '✓' : '—'}`,
+    `Gradle ${info.gradle ? '✓' : '✗'}`,
+    `Android SDK ${info.android_sdk ? '✓' : '✗'}`,
+  ].join('  ·  ');
+
+  if (info.can_build) {
+    elements.successToolchainStatus.textContent = `${marks}\n${t('succ.toolchain_ready')}`;
+    elements.successToolchainStatus.className = 'text-[10px] text-emerald-300 leading-relaxed whitespace-pre-line';
+  } else {
+    const missing = (info.missing || []).join(', ');
+    elements.successToolchainStatus.textContent = `${marks}\n${t('succ.toolchain_missing')} ${missing}`;
+    elements.successToolchainStatus.className = 'text-[10px] text-amber-300 leading-relaxed whitespace-pre-line';
+  }
+
+  if (elements.btnSuccessCompile) {
+    // No se desactiva: si falta alguna herramienta, al pulsar se explica cuál
+    // falta y se vuelve a comprobar (el usuario puede instalarla sin reiniciar).
+    elements.btnSuccessCompile.disabled = false;
+    elements.btnSuccessCompile.title = info.can_build
+      ? t('succ.toolchain_ready')
+      : `${t('succ.toolchain_missing')} ${(info.missing || []).join(', ')}`;
+  }
+}
+
+async function compileSuccessExtension() {
+  const ext = state.successExt;
+  if (!ext || !elements.btnSuccessCompile) return;
+
+  // Comprobación fresca: el usuario puede haber instalado el SDK tras abrir la app.
+  const info = await loadToolchain(true);
+  if (!info.can_build) {
+    alert(t('alerts.compile_missing', { missing: (info.missing || []).join(', ') }));
+    return;
+  }
+
+  const button = elements.btnSuccessCompile;
+  const label = button.querySelector('span');
+  const original = label ? label.textContent : '';
+  button.disabled = true;
+  button.classList.add('opacity-60', 'cursor-wait');
+  if (label) label.textContent = t('succ.compiling');
+  if (elements.successCompileOutput) {
+    elements.successCompileOutput.classList.remove('hidden');
+    elements.successCompileOutput.textContent = t('logs.compile_start', { pkg: ext.pkg_id });
+  }
+  appendTerminalLog('INFO', t('logs.compile_start', { pkg: ext.pkg_id }));
+
+  try {
+    const result = await invokeBackend('compile_extension', { pkgId: ext.pkg_id });
+    if (elements.successCompileOutput) {
+      elements.successCompileOutput.textContent = result.output || '';
+      elements.successCompileOutput.classList.remove('hidden');
+    }
+    if (result.success) {
+      appendTerminalLog('SUCCESS', t('logs.compile_ok', { path: result.apk_path || '' }));
+      if (elements.successDownloadStatus) {
+        elements.successDownloadStatus.classList.remove('hidden');
+        elements.successDownloadStatus.textContent = `APK: ${result.apk_path}`;
+      }
+      await openExtensionFolder(ext.pkg_id);
+    } else {
+      appendTerminalLog('ERROR', t('logs.compile_fail', { pkg: ext.pkg_id }));
+      alert(t('alerts.compile_failed'));
+    }
+  } catch (error) {
+    if (elements.successCompileOutput) {
+      elements.successCompileOutput.classList.remove('hidden');
+      elements.successCompileOutput.textContent = String(error);
+    }
+    appendTerminalLog('ERROR', String(error));
+    alert(String(error));
+  } finally {
+    button.disabled = false;
+    button.classList.remove('opacity-60', 'cursor-wait');
+    if (label) label.textContent = original || t('succ.compile');
+  }
+}
+
+// Re-renderiza el contenido dinámico al cambiar el idioma.
+window.addEventListener('aext:language', () => {
+  if (!state.currentUser && elements.authBtnText) {
+    elements.authBtnText.setAttribute('data-i18n', 'header.connect_github');
+    elements.authBtnText.textContent = t('header.connect_github');
+  }
+  if (elements.selectExistingRepo && elements.selectExistingRepo.options.length) {
+    syncRepoSelection();
+  }
+  if (state.extensions.length) renderExtensionsGrid(state.extensions);
+  if (state.analyzedSites.length) {
+    elements.analysisCards.innerHTML = '';
+    state.analyzedSites.forEach(renderAnalysisCard);
+  }
+  renderReleaseTable(state.lastRelease);
+  refreshBackupExtensions();
+  if (state.selectedBackupExt) loadBackups(state.selectedBackupExt);
+  renderToolchainStatus();
+});
+
 
 // ==================== NAVIGATION TABS ====================
 elements.tabBtns.forEach(btn => {
@@ -319,6 +696,8 @@ async function checkAuthStatus() {
 function updateAuthUI(user) {
   state.currentUser = user;
   if (user) {
+    // Al iniciar sesión el botón muestra el usuario, no el texto traducible.
+    elements.authBtnText.removeAttribute('data-i18n');
     elements.authBtnText.textContent = `@${user.username}`;
     if (user.avatar_url) {
       elements.headerAvatar.src = user.avatar_url;
@@ -332,7 +711,8 @@ function updateAuthUI(user) {
     elements.modalUserLogin.textContent = `@${user.username}`;
     elements.modalAuthTypeBadge.textContent = user.auth_type === 'cli' ? 'Sesión CLI' : 'Token PAT';
   } else {
-    elements.authBtnText.textContent = 'Conectar GitHub';
+    elements.authBtnText.setAttribute('data-i18n', 'header.connect_github');
+    elements.authBtnText.textContent = t('header.connect_github');
     elements.headerAvatar.classList.add('hidden');
     elements.authLoggedInView.classList.add('hidden');
     elements.authLoggedOutView.classList.remove('hidden');
@@ -360,7 +740,7 @@ if (elements.btnLoginCli) {
       elements.modalGithubAuth.classList.remove('flex');
     } catch (e) {
       appendTerminalLog('WARN', `CLI no detectado: ${e}. Ingresa un Personal Access Token.`);
-      alert(`No se detectó sesión de GitHub CLI: ${e}`);
+      alert(t('alerts.cli_missing', { error: e }));
     }
   });
 }
@@ -368,7 +748,7 @@ if (elements.btnLoginCli) {
 elements.btnSubmitPat.addEventListener('click', async () => {
   const token = elements.inputPatToken.value.trim();
   if (!token) {
-    alert('Ingresa un Personal Access Token válido de GitHub');
+    alert(t('alerts.token_required'));
     return;
   }
   try {
@@ -381,7 +761,7 @@ elements.btnSubmitPat.addEventListener('click', async () => {
     elements.modalGithubAuth.classList.remove('flex');
   } catch (e) {
     appendTerminalLog('ERROR', `Error de autenticación: ${e}`);
-    alert(`Token inválido o expirado: ${e}`);
+    alert(t('alerts.token_invalid', { error: e }));
   }
 });
 
@@ -411,7 +791,7 @@ function getEnteredUrls() {
 elements.btnAnalyzeUrls.addEventListener('click', async () => {
   const urls = getEnteredUrls();
   if (urls.length === 0) {
-    alert('Por favor ingresa al menos una URL válida (ej. https://animeav1.com)');
+    alert(t('alerts.urls_required'));
     return;
   }
 
@@ -427,6 +807,9 @@ elements.btnAnalyzeUrls.addEventListener('click', async () => {
       state.analyzedSites.push(result);
       renderAnalysisCard(result);
       appendTerminalLog('SUCCESS', `Sitio identificado: ${result.name} (CMS: ${result.cms}, Servidores: ${result.detected_hosts.join(', ') || 'N/A'})`);
+      for (const warning of (result.warnings || [])) {
+        appendTerminalLog('WARN', `${result.name}: ${warning}`);
+      }
     } catch (e) {
       appendTerminalLog('ERROR', `Fallo al analizar ${url}: ${e}`);
     }
@@ -445,21 +828,63 @@ function renderAnalysisCard(site) {
     ? site.protections.map(p => `<span class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/20">${escapeHtml(p)}</span>`).join(' ')
     : '<span class="text-slate-500 text-[10px]">Ninguna</span>';
 
+  const warnings = Array.isArray(site.warnings) ? site.warnings : [];
+  const samples = Array.isArray(site.sample_items) ? site.sample_items : [];
+  const searchValue = site.search_path
+    ? (site.search_param ? `${site.search_path} · ${site.search_param}` : site.search_path)
+    : null;
+  const routes = [
+    { label: t('analysis.listing'), value: site.popular_path },
+    { label: t('analysis.latest'), value: site.latest_path },
+    { label: t('analysis.search'), value: searchValue },
+  ];
+  const routesHtml = routes.map(route => `
+      <div>
+        <span class="text-slate-500 block text-[10px]">${escapeHtml(route.label)}</span>
+        <span class="font-mono text-[10px] ${route.value ? 'text-emerald-300' : 'text-slate-500'}">${route.value ? escapeHtml(route.value) : escapeHtml(t('analysis.not_detected'))}</span>
+      </div>`).join('');
+
+  const confidenceLabel = site.catalog_detected
+    ? t('analysis.confidence_ok')
+    : t('analysis.confidence_low');
+  const confidenceClass = site.catalog_detected
+    ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+    : 'bg-amber-500/10 text-amber-300 border-amber-500/20';
+
+  const samplesHtml = samples.length > 0
+    ? `<div class="space-y-1">
+        <span class="text-slate-500 block text-[10px]">${escapeHtml(t('analysis.samples'))}</span>
+        <div class="flex flex-wrap gap-1">${samples.map(s => `<span class="px-1.5 py-0.5 rounded text-[10px] bg-surface-800 text-slate-300 border border-surface-700">${escapeHtml(s)}</span>`).join('')}</div>
+      </div>`
+    : '';
+
+  const warningsHtml = warnings.length > 0
+    ? `<div class="space-y-1 pt-2 border-t border-amber-500/20">
+        <span class="text-amber-300 block text-[10px] font-semibold">${escapeHtml(t('analysis.warnings'))}</span>
+        <ul class="list-disc list-inside space-y-0.5 text-[10px] text-amber-200/80">
+          ${warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}
+        </ul>
+      </div>`
+    : '';
+
   const siteIcon = site.favicon_url && site.favicon_url.trim()
     ? site.favicon_url
     : fallbackIcon(site.name);
   const siteIconFallback = fallbackIcon(site.name);
 
   card.innerHTML = `
-    <div class="flex items-start justify-between">
+    <div class="flex items-start justify-between gap-3">
       <div class="flex items-center gap-3">
         <img class="w-8 h-8 rounded-lg bg-surface-800 object-cover" src="${escapeHtml(siteIcon)}" onerror="this.onerror=null;this.src='${siteIconFallback}'">
         <div>
           <h4 class="text-xs font-bold text-slate-100">${escapeHtml(site.name)}</h4>
-          <span class="text-[10px] font-mono text-slate-400">${escapeHtml(site.url)}</span>
+          <span class="text-[10px] font-mono text-slate-400" title="${escapeHtml(site.entry_url || site.url)}">${escapeHtml(site.url)}</span>
         </div>
       </div>
-      <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-brand-500/10 text-brand-300 border border-brand-500/20 uppercase">${site.ext_type}</span>
+      <div class="flex flex-col items-end gap-1">
+        <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-brand-500/10 text-brand-300 border border-brand-500/20 uppercase">${escapeHtml(site.ext_type)}</span>
+        <span class="px-2 py-0.5 rounded text-[10px] font-semibold border ${confidenceClass}">${escapeHtml(confidenceLabel)}</span>
+      </div>
     </div>
 
     <div class="grid grid-cols-2 gap-2 text-[11px] pt-1">
@@ -473,6 +898,13 @@ function renderAnalysisCard(site) {
       </div>
     </div>
 
+    <div class="space-y-1 pt-2 border-t border-surface-800">
+      <span class="text-slate-500 block text-[10px]">${escapeHtml(t('analysis.detected_paths'))}</span>
+      <div class="grid grid-cols-3 gap-2">${routesHtml}</div>
+    </div>
+
+    ${samplesHtml}
+
     <div class="space-y-1 pt-1 border-t border-surface-800">
       <span class="text-slate-500 block text-[10px]">Servidores detectados:</span>
       <div class="flex flex-wrap gap-1">${hostsBadges}</div>
@@ -482,6 +914,8 @@ function renderAnalysisCard(site) {
       <span class="text-slate-500 block text-[10px]">Protecciones WAF / Cloudflare:</span>
       <div class="flex flex-wrap gap-1">${protectionsBadges}</div>
     </div>
+
+    ${warningsHtml}
   `;
 
   elements.analysisCards.appendChild(card);
@@ -524,14 +958,16 @@ function openGenerationModal() {
   const selectedMode = document.querySelector('input[name="gen-mode"]:checked')?.value;
   if (selectedMode === 'github') {
     elements.githubRepoExtraFields.classList.remove('hidden');
-    loadGithubRepos();
+    // No se rellena el campo "otro repo" con el repositorio guardado: si está
+    // en la lista, el selector lo muestra; si no, el usuario escribe uno.
+    loadGithubRepos().then(syncRepoSelection);
   }
 }
 
 elements.btnStartGenFlow.addEventListener('click', () => {
   const urls = getEnteredUrls();
   if (urls.length === 0) {
-    alert('Ingresa al menos una URL antes de generar la extensión.');
+    alert(t('alerts.urls_required'));
     return;
   }
 
@@ -546,29 +982,55 @@ elements.btnCancelGenMode.addEventListener('click', () => {
 async function loadGithubRepos() {
   if (!elements.selectExistingRepo) return;
   if (!state.currentUser) {
-    elements.selectExistingRepo.innerHTML = '<option value="">Inicia sesión en GitHub para ver tus repositorios</option>';
+    elements.selectExistingRepo.innerHTML = `<option value="">${escapeHtml(t('modal.repo_none'))}</option>`;
+    syncRepoSelection();
     return;
   }
-  elements.selectExistingRepo.innerHTML = '<option value="">Cargando repositorios…</option>';
+  elements.selectExistingRepo.innerHTML = `<option value="">${escapeHtml(t('modal.repo_loading'))}</option>`;
   try {
     const repos = await invokeBackend('list_github_repos') || [];
     state.githubRepos = repos;
     if (repos.length === 0) {
-      elements.selectExistingRepo.innerHTML = '<option value="">No se encontraron repositorios</option>';
+      elements.selectExistingRepo.innerHTML = `<option value="">${escapeHtml(t('modal.repo_none'))}</option>`;
+      syncRepoSelection();
       return;
     }
     const saved = (localStorage.getItem('aext_default_repo') || '').toLowerCase();
-    elements.selectExistingRepo.innerHTML = '<option value="">— Crear un repositorio nuevo —</option>' +
+    elements.selectExistingRepo.innerHTML = `<option value="">${escapeHtml(t('modal.repo_none'))}</option>` +
       repos.map(repo => {
         const value = escapeHtml(repo.full_name);
         const selected = repo.full_name.toLowerCase() === saved ? ' selected' : '';
         const visibility = repo.private ? ' (privado)' : '';
         return `<option value="${value}"${selected}>${escapeHtml(repo.full_name)}${visibility}</option>`;
       }).join('');
+    syncRepoSelection();
   } catch (e) {
     console.warn('No se pudieron listar los repositorios:', e);
-    elements.selectExistingRepo.innerHTML = '<option value="">No se pudieron cargar los repositorios</option>';
+    elements.selectExistingRepo.innerHTML = `<option value="">${escapeHtml(t('modal.repo_none'))}</option>`;
+    syncRepoSelection();
   }
+}
+
+/// Si hay un repositorio seleccionado, el campo "otro repo" queda desactivado
+/// para que no haya dos destinos contradictorios. Con «Ninguno» se habilita.
+function syncRepoSelection() {
+  if (!elements.selectExistingRepo || !elements.inputCustomRepoName) return;
+  const selected = elements.selectExistingRepo.value.trim();
+  const input = elements.inputCustomRepoName;
+  if (selected) {
+    input.value = '';
+    input.disabled = true;
+    input.placeholder = t('modal.repo_using');
+    input.classList.add('opacity-50', 'cursor-not-allowed');
+  } else {
+    input.disabled = false;
+    input.placeholder = t('modal.repo_custom_ph');
+    input.classList.remove('opacity-50', 'cursor-not-allowed');
+  }
+}
+
+if (elements.selectExistingRepo) {
+  elements.selectExistingRepo.addEventListener('change', syncRepoSelection);
 }
 
 if (elements.btnRefreshRepos) {
@@ -580,12 +1042,7 @@ document.querySelectorAll('input[name="gen-mode"]').forEach(radio => {
   radio.addEventListener('change', (e) => {
     if (e.target.value === 'github') {
       elements.githubRepoExtraFields.classList.remove('hidden');
-      // Pre-fill from saved settings if empty
-      if (!elements.inputCustomRepoName.value.trim()) {
-        const savedRepo = localStorage.getItem('aext_default_repo') || '';
-        elements.inputCustomRepoName.value = savedRepo;
-      }
-      loadGithubRepos();
+      loadGithubRepos().then(syncRepoSelection);
     } else {
       elements.githubRepoExtraFields.classList.add('hidden');
     }
@@ -596,11 +1053,10 @@ elements.btnConfirmGenMode.addEventListener('click', async () => {
   const urls = getEnteredUrls();
   const selectedMode = document.querySelector('input[name="gen-mode"]:checked').value;
   const selectedRepo = elements.selectExistingRepo?.value?.trim() || '';
-  const typedRepo = elements.inputCustomRepoName.value.trim();
-  const customRepoName = selectedRepo
-    || typedRepo
-    || localStorage.getItem('aext_default_repo')?.trim()
-    || null;
+  const typedRepo = elements.inputCustomRepoName?.value?.trim() || '';
+  // «Ninguno» + campo vacío = crear repositorio nuevo. No se usa el repo
+  // guardado en ajustes en silencio: solo se prellena y el usuario decide.
+  const customRepoName = selectedRepo || typedRepo || null;
   const isPrivate = elements.checkPrivateRepo?.checked || false;
 
   const customName = elements.inputConfirmExtName?.value?.trim() || null;
@@ -609,18 +1065,41 @@ elements.btnConfirmGenMode.addEventListener('click', async () => {
     || document.getElementById('select-extension-lang')?.value
     || 'es';
 
+  // Si el análisis no pudo confirmar el catálogo (SPA, sin tarjetas, sin
+  // buscador), pedir confirmación explícita: no se van a inventar rutas.
+  const lowConfidence = state.analyzedSites.filter(
+    site => site && (!site.catalog_detected || !site.popular_path || !site.search_path)
+  );
+  if (lowConfidence.length > 0) {
+    const warningText = lowConfidence
+      .map(site => {
+        const detail = Array.isArray(site.warnings) && site.warnings.length
+          ? site.warnings.join(' ')
+          : t('analysis.confidence_low');
+        return `• ${site.name}: ${detail}`;
+      })
+      .join('\n');
+    if (!confirm(t('alerts.low_confidence', { warnings: warningText }))) {
+      return;
+    }
+  }
+
   elements.modalGenMode.classList.add('hidden');
   elements.modalGenMode.classList.remove('flex');
 
   if (selectedMode === 'github' && !state.currentUser) {
-    alert('Has seleccionado "Generar Repositorio en GitHub" pero no has iniciado sesión. Por favor inicia sesión primero con tu cuenta de GitHub o PAT.');
+    alert(t('alerts.github_required'));
     elements.modalGithubAuth.classList.remove('hidden');
     elements.modalGithubAuth.classList.add('flex');
     return;
   }
 
-  appendTerminalLog('INFO', `Iniciando proceso de generación en modo: ${selectedMode.toUpperCase()}...`);
-  appendTerminalLog('INFO', `Nombre: ${customName || guessNameFromInput()}, tipo: ${extType || 'auto'}, idioma: ${selectedLang}`);
+  appendTerminalLog('INFO', t('logs.gen_start', { mode: selectedMode.toUpperCase() }));
+  appendTerminalLog('INFO', t('logs.gen_meta', {
+    name: customName || guessNameFromInput() || '—',
+    type: extType || 'auto',
+    lang: selectedLang,
+  }));
 
   try {
     const request = {
@@ -635,14 +1114,14 @@ elements.btnConfirmGenMode.addEventListener('click', async () => {
     };
 
     const createdExtensions = await invokeBackend('generate_extensions', { request });
-    appendTerminalLog('SUCCESS', `¡${createdExtensions.length} extensión(es) generada(s) exitosamente!`);
+    appendTerminalLog('SUCCESS', t('logs.gen_success', { count: createdExtensions.length }));
 
     for (const ext of createdExtensions) {
       if (ext.github_repo_url) {
-        appendTerminalLog('SUCCESS', `Repositorio: ${ext.github_repo_url}`);
+        appendTerminalLog('SUCCESS', t('logs.repo', { url: ext.github_repo_url }));
       }
       if (ext.nekoyomi_repo_url) {
-        appendTerminalLog('SUCCESS', `Enlace para Nekoyomi: ${ext.nekoyomi_repo_url}`);
+        appendTerminalLog('SUCCESS', t('logs.nekoyomi', { url: ext.nekoyomi_repo_url }));
       }
     }
 
@@ -655,8 +1134,8 @@ elements.btnConfirmGenMode.addEventListener('click', async () => {
     }
 
   } catch (err) {
-    appendTerminalLog('ERROR', `Error en la generación: ${err}`);
-    alert(`Ocurrió un error generando la extensión: ${err}`);
+    appendTerminalLog('ERROR', t('logs.gen_error', { error: err }));
+    alert(`${t('logs.gen_error', { error: err })}`);
   }
 });
 
@@ -664,6 +1143,7 @@ elements.btnConfirmGenMode.addEventListener('click', async () => {
 
 function showGenerationSuccess(ext) {
   if (!elements.modalGenSuccess) return;
+  state.successExt = ext;
 
   elements.successExtIcon.src = iconFor(ext);
   elements.successExtIcon.onerror = () => {
@@ -675,45 +1155,76 @@ function showGenerationSuccess(ext) {
   if (elements.successExtType) elements.successExtType.textContent = (ext.ext_type || 'anime').toUpperCase();
   if (elements.successExtVersion) elements.successExtVersion.textContent = `v${ext.version || '1'}`;
 
+  if (elements.successDownloadStatus) {
+    elements.successDownloadStatus.classList.add('hidden');
+    elements.successDownloadStatus.textContent = '';
+  }
+  if (elements.successCompileOutput) {
+    elements.successCompileOutput.classList.add('hidden');
+    elements.successCompileOutput.textContent = '';
+  }
+  if (elements.successBuildSection) {
+    elements.successBuildSection.classList.remove('hidden');
+  }
+  if (elements.btnSuccessCompile) {
+    elements.btnSuccessCompile.disabled = true;
+    const label = elements.btnSuccessCompile.querySelector('span');
+    if (label) label.textContent = t('succ.compile');
+  }
+
   if (elements.btnSuccessInstallApk) {
     const button = elements.btnSuccessInstallApk;
     button.onclick = null;
     button.removeAttribute('target');
+    button.removeAttribute('download');
+    const label = elements.btnSuccessInstallLabel;
+
     if (ext.apk_download_url) {
       const isRealApk = /\.apk(\?|$)/i.test(ext.apk_download_url);
       if (isRealApk) {
+        // APK real: se abre en el navegador para que el sistema lo descargue.
         button.href = ext.apk_download_url;
-        button.setAttribute('download', '');
         button.classList.remove('hidden');
-        if (elements.btnSuccessInstallLabel) {
-          elements.btnSuccessInstallLabel.textContent = 'Descargar APK';
-        }
+        if (label) label.textContent = t('succ.apk');
       } else {
         // ZIP local: descarga por Blob para no navegar fuera de la app.
         button.href = '#';
-        button.removeAttribute('download');
         button.onclick = async (event) => {
           event.preventDefault();
+          const original = label ? label.textContent : t('succ.zip');
+          button.classList.add('opacity-60', 'cursor-wait');
+          if (label) label.textContent = t('ext.downloading');
           try {
-            await saveLocalZip(ext.apk_download_url, `${ext.pkg_id}.zip`);
-            appendTerminalLog('SUCCESS', `Código fuente de ${ext.name} descargado (${ext.pkg_id}.zip)`);
+            const saved = await saveLocalZip(ext.apk_download_url, `${ext.pkg_id}.zip`);
+            appendTerminalLog('SUCCESS', t('logs.zip_saved', { file: `${ext.pkg_id}.zip` }));
+            if (saved && saved.path) {
+              appendTerminalLog('INFO', t('logs.zip_path', { path: saved.path }));
+            }
+            if (elements.successDownloadStatus) {
+              elements.successDownloadStatus.classList.remove('hidden');
+              elements.successDownloadStatus.textContent = saved && saved.path
+                ? t('succ.downloaded_to', { path: saved.path })
+                : t('succ.downloaded');
+            }
+            if (label) label.textContent = `✓ ${t('succ.zip')}`;
           } catch (error) {
-            alert(`No se pudo descargar el ZIP:\n${error.message || error}\n\nSi la extensión es antigua, pulsa "Actualizar" en el catálogo para regenerar los archivos.`);
+            appendTerminalLog('ERROR', t('logs.zip_error', {
+              file: `${ext.pkg_id}.zip`,
+              error: error.message || error,
+            }));
+            alert(t('alerts.zip_failed', { error: error.message || error }));
+          } finally {
+            button.classList.remove('opacity-60', 'cursor-wait');
           }
         };
         button.classList.remove('hidden');
-        if (elements.btnSuccessInstallLabel) {
-          elements.btnSuccessInstallLabel.textContent = 'Descargar código fuente (.zip)';
-        }
+        if (label) label.textContent = t('succ.zip');
       }
     } else if (ext.github_repo_url) {
       button.href = `${ext.github_repo_url.replace(/\/$/, '')}/actions`;
-      button.removeAttribute('download');
       button.setAttribute('target', '_blank');
       button.classList.remove('hidden');
-      if (elements.btnSuccessInstallLabel) {
-        elements.btnSuccessInstallLabel.textContent = 'Ver compilación en GitHub Actions';
-      }
+      if (label) label.textContent = t('succ.actions');
     } else {
       button.classList.add('hidden');
     }
@@ -734,11 +1245,13 @@ function showGenerationSuccess(ext) {
 
   elements.modalGenSuccess.classList.remove('hidden');
   elements.modalGenSuccess.classList.add('flex');
+  loadToolchain();
 }
 
 function closeGenerationSuccess() {
   elements.modalGenSuccess.classList.add('hidden');
   elements.modalGenSuccess.classList.remove('flex');
+  state.successExt = null;
   const tabExt = document.querySelector('[data-tab="tab-extensions"]');
   if (tabExt) tabExt.click();
 }
@@ -747,15 +1260,25 @@ if (elements.btnCloseSuccessModal) {
   elements.btnCloseSuccessModal.addEventListener('click', closeGenerationSuccess);
 }
 
+if (elements.btnSuccessOpenFolder) {
+  elements.btnSuccessOpenFolder.addEventListener('click', () => {
+    if (state.successExt) openExtensionFolder(state.successExt.pkg_id);
+  });
+}
+
+if (elements.btnSuccessCompile) {
+  elements.btnSuccessCompile.addEventListener('click', compileSuccessExtension);
+}
+
 if (elements.btnSuccessCopyRepo) {
   elements.btnSuccessCopyRepo.addEventListener('click', async () => {
     const url = elements.btnSuccessCopyRepo.dataset.repoUrl;
     if (!url) return;
     try {
       await navigator.clipboard.writeText(url);
-      alert('¡Enlace copiado! Pégalo en Nekoyomi > Más > Ajustes > Extensiones.');
+      alert(t('alerts.copy_repo'));
     } catch (_) {
-      alert(`Copia este enlace en Nekoyomi:\n${url}`);
+      alert(t('alerts.copy_repo_fallback', { url }));
     }
   });
 }
@@ -776,7 +1299,7 @@ function renderExtensionsGrid(list) {
   if (list.length === 0) {
     elements.extensionsCatalogGrid.innerHTML = `
       <div class="col-span-full py-12 text-center text-slate-500 text-xs">
-        No hay extensiones generadas aún. Ingresa una URL en el Generador para comenzar.
+        ${escapeHtml(t('ext.empty'))}
       </div>
     `;
     return;
@@ -796,26 +1319,26 @@ function renderExtensionsGrid(list) {
     let primaryAction;
     if (downloadUrl && isRealApk) {
       primaryAction = `
-        <a href="${escapeHtml(downloadUrl)}" download class="flex-1 py-2 px-3 rounded-xl text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white flex items-center justify-center gap-1.5 transition-all text-center">
+        <a href="${escapeHtml(downloadUrl)}" class="flex-1 py-2 px-3 rounded-xl text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white flex items-center justify-center gap-1.5 transition-all text-center">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-          <span>Descargar APK</span>
+          <span>${escapeHtml(t('succ.apk'))}</span>
         </a>`;
     } else if (downloadUrl) {
       primaryAction = `
         <button data-download-url="${escapeHtml(downloadUrl)}" data-download-name="${escapeHtml(ext.pkg_id)}.zip" class="btn-download-zip flex-1 py-2 px-3 rounded-xl text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white flex items-center justify-center gap-1.5 transition-all text-center">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-          <span>Descargar código (.zip)</span>
+          <span>${escapeHtml(t('ext.download_zip'))}</span>
         </button>`;
     } else if (hasGithub) {
       primaryAction = `
         <a href="${escapeHtml(ext.github_repo_url.replace(/\/$/, ''))}/actions" target="_blank" rel="noreferrer" class="flex-1 py-2 px-3 rounded-xl text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white flex items-center justify-center gap-1.5 transition-all text-center" title="La compilación del APK corre en GitHub Actions">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-          <span>Ver compilación</span>
+          <span>${escapeHtml(t('ext.actions'))}</span>
         </a>`;
     } else {
       primaryAction = `
         <span class="flex-1 py-2 px-3 rounded-xl text-xs font-semibold bg-surface-800 text-slate-500 flex items-center justify-center gap-1.5 text-center">
-          Sin descarga disponible
+          ${escapeHtml(t('ext.no_download'))}
         </span>`;
     }
 
@@ -836,12 +1359,12 @@ function renderExtensionsGrid(list) {
 
       <div class="grid grid-cols-2 gap-2 text-[11px] pt-1 border-t border-surface-800/60">
         <div>
-          <span class="text-slate-500 block text-[10px]">CMS Detectado</span>
+          <span class="text-slate-500 block text-[10px]">${escapeHtml(t('ext.cms'))}</span>
           <span class="text-slate-300 font-medium capitalize">${escapeHtml(ext.cms)}</span>
         </div>
         <div>
-          <span class="text-slate-500 block text-[10px]">Audio Preferido</span>
-          <span class="text-slate-300 font-medium">${ext.has_sub_dub ? 'Configurable (SUB/DUB)' : 'Estándar'}</span>
+          <span class="text-slate-500 block text-[10px]">${escapeHtml(t('ext.audio'))}</span>
+          <span class="text-slate-300 font-medium">${ext.has_sub_dub ? escapeHtml(t('ext.audio_config')) : escapeHtml(t('ext.audio_standard'))}</span>
         </div>
       </div>
 
@@ -849,26 +1372,31 @@ function renderExtensionsGrid(list) {
       <div class="pt-2 border-t border-surface-800 flex flex-wrap items-center gap-2">
         ${primaryAction}
 
-        <button data-update-pkg="${escapeHtml(ext.pkg_id)}" class="btn-update-ext py-2 px-3 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 flex items-center gap-1.5 transition-all" title="Regenerar y subir una nueva versión">
+        <button data-update-pkg="${escapeHtml(ext.pkg_id)}" class="btn-update-ext py-2 px-3 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 flex items-center gap-1.5 transition-all" title="${escapeHtml(t('ext.update'))}">
           <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-          <span>Actualizar</span>
+          <span>${escapeHtml(t('ext.update'))}</span>
+        </button>
+
+        <button data-open-folder-pkg="${escapeHtml(ext.pkg_id)}" class="btn-open-folder py-2 px-3 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 flex items-center gap-1.5 transition-all" title="${escapeHtml(t('ext.open_folder'))}">
+          <svg class="w-3.5 h-3.5 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+          <span>${escapeHtml(t('ext.open_folder'))}</span>
         </button>
 
         ${ext.nekoyomi_repo_url ? `
           <button data-repo-url="${escapeHtml(ext.nekoyomi_repo_url)}" class="btn-copy-repo py-2 px-3 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 flex items-center gap-1.5 transition-all" title="Copiar enlace de repositorio para Nekoyomi">
             <svg class="w-3.5 h-3.5 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-            <span>Copiar Repo</span>
+            <span>${escapeHtml(t('ext.copy_repo'))}</span>
           </button>
         ` : ''}
 
         ${ext.github_repo_url ? `
-          <a href="${escapeHtml(ext.github_repo_url)}" target="_blank" class="py-2 px-3 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-300 border border-surface-700 flex items-center gap-1 transition-all" title="Ver repositorio en GitHub">
+          <a href="${escapeHtml(ext.github_repo_url)}" target="_blank" class="py-2 px-3 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-300 border border-surface-700 flex items-center gap-1 transition-all" title="${escapeHtml(t('ext.github'))}">
             <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" /></svg>
           </a>
         ` : ''}
 
         <!-- Delete button -->
-        <button data-delete-pkg="${escapeHtml(ext.pkg_id)}" class="btn-delete-ext p-2 rounded-xl text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-all" title="Eliminar extensión">
+        <button data-delete-pkg="${escapeHtml(ext.pkg_id)}" class="btn-delete-ext p-2 rounded-xl text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-all" title="${escapeHtml(t('ext.delete'))}">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
         </button>
       </div>
@@ -884,10 +1412,18 @@ function renderExtensionsGrid(list) {
       if (!url) return;
       try {
         await navigator.clipboard.writeText(url);
-        alert('¡Enlace de repositorio copiado al portapapeles! Puedes pegarlo en Nekoyomi > Más > Ajustes > Extensiones.');
+        alert(t('alerts.copy_repo'));
       } catch (_) {
-        alert(`Copia este enlace en Nekoyomi:\n${url}`);
+        alert(t('alerts.copy_repo_fallback', { url }));
       }
+    });
+  });
+
+  // Hook open-folder buttons
+  document.querySelectorAll('.btn-open-folder').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const pkgId = e.currentTarget.getAttribute('data-open-folder-pkg');
+      if (pkgId) openExtensionFolder(pkgId);
     });
   });
 
@@ -902,17 +1438,21 @@ function renderExtensionsGrid(list) {
       const original = label ? label.textContent : '';
       button.disabled = true;
       button.classList.add('opacity-60', 'cursor-wait');
-      if (label) label.textContent = 'Descargando…';
+      if (label) label.textContent = t('ext.downloading');
       try {
-        await saveLocalZip(url, filename);
-        appendTerminalLog('SUCCESS', `Descargado ${filename}`);
+        const saved = await saveLocalZip(url, filename);
+        appendTerminalLog('SUCCESS', t('logs.zip_saved', { file: filename }));
+        if (saved && saved.path) {
+          appendTerminalLog('INFO', t('logs.zip_path', { path: saved.path }));
+        }
+        if (label) label.textContent = `✓ ${t('ext.download_zip')}`;
       } catch (error) {
-        appendTerminalLog('ERROR', `No se pudo descargar ${filename}: ${error.message || error}`);
-        alert(`No se pudo descargar el ZIP:\n${error.message || error}\n\nSi la extensión se creó con una versión anterior de AEXT, pulsa "Actualizar" para regenerar los archivos.`);
+        appendTerminalLog('ERROR', t('logs.zip_error', { file: filename, error: error.message || error }));
+        alert(t('alerts.zip_failed', { error: error.message || error }));
+        if (label) label.textContent = original || t('ext.download_zip');
       } finally {
         button.disabled = false;
         button.classList.remove('opacity-60', 'cursor-wait');
-        if (label) label.textContent = original || 'Descargar código (.zip)';
       }
     });
   });
@@ -927,18 +1467,22 @@ function renderExtensionsGrid(list) {
       const original = label ? label.textContent : '';
       button.disabled = true;
       button.classList.add('opacity-60', 'cursor-wait');
-      if (label) label.textContent = 'Actualizando…';
-      appendTerminalLog('INFO', `Actualizando ${pkgId}...`);
+      if (label) label.textContent = t('ext.updating');
+      appendTerminalLog('INFO', `↻ ${pkgId}…`);
       try {
         const updated = await invokeBackend('update_extension', { pkgId });
-        appendTerminalLog('SUCCESS', `Extensión ${updated ? updated.name : pkgId} actualizada a v${updated ? updated.version : '?'}`);
+        appendTerminalLog('SUCCESS', t('logs.updated', {
+          name: updated ? updated.name : pkgId,
+          version: updated ? updated.version : '?',
+        }));
         await loadExtensions();
+        refreshBackupExtensions();
       } catch (err) {
-        appendTerminalLog('ERROR', `No se pudo actualizar ${pkgId}: ${err}`);
-        alert(`No se pudo actualizar la extensión:\n${err}`);
+        appendTerminalLog('ERROR', t('logs.update_error', { pkg: pkgId, error: err }));
+        alert(t('logs.update_error', { pkg: pkgId, error: err }));
         button.disabled = false;
         button.classList.remove('opacity-60', 'cursor-wait');
-        if (label) label.textContent = original || 'Actualizar';
+        if (label) label.textContent = original || t('ext.update');
       }
     });
   });
@@ -947,9 +1491,10 @@ function renderExtensionsGrid(list) {
   document.querySelectorAll('.btn-delete-ext').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       const pkgId = e.currentTarget.getAttribute('data-delete-pkg');
-      if (confirm(`¿Estás seguro de eliminar la extensión ${pkgId}?`)) {
+      if (confirm(t('alerts.confirm_delete', { pkg: pkgId }))) {
         await invokeBackend('delete_extension', { pkgId });
         loadExtensions();
+        refreshBackupExtensions();
       }
     });
   });
@@ -961,7 +1506,7 @@ elements.btnRefreshExtensions.addEventListener('click', loadExtensions);
 elements.btnTestStream.addEventListener('click', async () => {
   const url = elements.testStreamInput.value.trim();
   if (!url) {
-    alert('Ingresa una URL de stream o embed para probar');
+    alert(t('alerts.no_stream'));
     return;
   }
 
@@ -987,18 +1532,18 @@ elements.btnTestStream.addEventListener('click', async () => {
   }
 });
 
-// ==================== AI ASSISTANCE & MCP EVENTS ====================
+// ==================== HERRAMIENTAS, MCP Y COPIAS DE SEGURIDAD ====================
 if (elements.btnCopyMcpConfig) {
   elements.btnCopyMcpConfig.addEventListener('click', () => {
     const config = {
       mcpServers: {
         aext: {
-          url: "http://localhost:45731/mcp"
+          url: "http://127.0.0.1:45731/mcp"
         }
       }
     };
     navigator.clipboard.writeText(JSON.stringify(config, null, 2));
-    alert('¡Configuración MCP copiada al portapapeles!\nPégala en tu cliente de IA (Claude Desktop, Antigravity o Cursor) en la sección mcpServers.');
+    alert(t('alerts.mcp_copied'));
   });
 }
 
@@ -1008,9 +1553,9 @@ if (elements.btnCopyLogsAi) {
       const logs = await invokeBackend('get_system_logs') || [];
       const text = logs.map(l => `[${l.timestamp}] [${l.level}] ${l.message}`).join('\n');
       navigator.clipboard.writeText(`LOGS AEXT:\n${text}`);
-      alert('¡Logs de terminal copiados para compartir con tu IA!');
+      alert(t('alerts.logs_copied'));
     } catch (e) {
-      alert('Error copiando logs');
+      alert(t('alerts.logs_copy_error'));
     }
   });
 }
@@ -1018,12 +1563,12 @@ if (elements.btnCopyLogsAi) {
 if (elements.btnGenAiDiag) {
   elements.btnGenAiDiag.addEventListener('click', async () => {
     try {
-      const res = await fetch('http://localhost:45731/api/ai/diagnostics');
+      const res = await fetch('http://127.0.0.1:45731/api/ai/diagnostics');
       const diag = await res.json();
       navigator.clipboard.writeText(JSON.stringify(diag, null, 2));
-      alert('¡Reporte completo de diagnóstico generado y copiado al portapapeles en JSON!\nPuedes enviárselo directamente a tu IA para que diagnostique y repare la extensión.');
+      alert(t('alerts.diag_copied'));
     } catch (e) {
-      alert('No se pudo generar el reporte de diagnóstico del servidor API embebido');
+      alert(t('alerts.diag_error'));
     }
   });
 }
@@ -1032,27 +1577,97 @@ if (elements.btnApplyAiPatch) {
   elements.btnApplyAiPatch.addEventListener('click', async () => {
     const val = elements.inputAiPatch.value.trim();
     if (!val) {
-      alert('Ingresa el JSON del parche de IA');
+      alert('Ingresa el JSON del parche');
       return;
     }
     try {
       const patch = JSON.parse(val);
-      const res = await fetch('http://localhost:45731/api/ai/patch', {
+      const res = await fetch('http://127.0.0.1:45731/api/ai/patch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch)
       });
       const data = await res.json();
       if (res.ok) {
-        appendTerminalLog('SUCCESS', `Parche de IA aplicado con éxito a ${patch.pkg_id} (Nueva versión: ${data.version})`);
-        alert(`¡Parche de IA aplicado exitosamente!\nExtensión actualizada a la versión ${data.version}`);
-        loadExtensions();
+        appendTerminalLog('SUCCESS', t('logs.patch_ok', { pkg: patch.pkg_id, version: data.version }));
+        alert(t('alerts.patch_ok', {
+          version: data.version,
+          backup: data.backup || '—',
+        }));
+        const pkgId = patch.pkg_id;
+        await loadExtensions();
+        refreshBackupExtensions();
+        if (pkgId) loadBackups(pkgId);
       } else {
-        alert(`Error aplicando parche: ${data.error}`);
+        alert(t('alerts.patch_error', { error: data.error }));
       }
     } catch (e) {
-      alert(`JSON inválido: ${e.message}`);
+      alert(t('alerts.invalid_json', { error: e.message }));
     }
+  });
+}
+
+if (elements.selectBackupExt) {
+  elements.selectBackupExt.addEventListener('change', () => {
+    state.selectedBackupExt = elements.selectBackupExt.value;
+    loadBackups(state.selectedBackupExt);
+  });
+}
+
+if (elements.btnRefreshBackups) {
+  elements.btnRefreshBackups.addEventListener('click', async () => {
+    refreshBackupExtensions();
+    await loadBackups(elements.selectBackupExt?.value || '');
+  });
+}
+
+if (elements.btnOpenSelectedFolder) {
+  elements.btnOpenSelectedFolder.addEventListener('click', () => {
+    const pkgId = elements.selectBackupExt?.value || state.selectedBackupExt;
+    if (!pkgId) {
+      alert(t('alerts.missing_ext'));
+      return;
+    }
+    openExtensionFolder(pkgId);
+  });
+}
+
+if (elements.backupsList) {
+  elements.backupsList.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-restore-backup]');
+    if (!button) return;
+    const backup = button.getAttribute('data-restore-backup');
+    const pkgId = elements.selectBackupExt?.value || state.selectedBackupExt;
+    if (!backup || !pkgId) return;
+
+    if (!confirm(`Restaurar ${backup} en ${pkgId}? Los archivos actuales se sobrescribirán.`)) {
+      return;
+    }
+
+    button.disabled = true;
+    try {
+      const result = await invokeBackend('restore_extension_backup', { pkgId, backup });
+      appendTerminalLog('SUCCESS', t('logs.restore_ok', {
+        backup,
+        count: result.restored_files,
+      }));
+      alert(t('alerts.restore_ok', { count: result.restored_files }));
+      await loadExtensions();
+      await loadBackups(pkgId);
+    } catch (error) {
+      appendTerminalLog('ERROR', String(error));
+      alert(t('alerts.restore_error', { error }));
+      button.disabled = false;
+    }
+  });
+}
+
+// ==================== IDIOMA DE LA INTERFAZ ====================
+const initialUiLang = initLanguage();
+if (elements.settingsAppUiLang) {
+  elements.settingsAppUiLang.value = initialUiLang;
+  elements.settingsAppUiLang.addEventListener('change', () => {
+    setLanguage(elements.settingsAppUiLang.value);
   });
 }
 
@@ -1083,46 +1698,71 @@ if (elements.btnSaveSettings) {
   elements.btnSaveSettings.addEventListener('click', () => {
     const lang = elements.settingsLang?.value || 'es';
     const repo = elements.settingsDefaultRepo?.value?.trim() || '';
+    const uiLang = elements.settingsAppUiLang?.value || getLanguage();
 
     localStorage.setItem('aext_lang', lang);
     localStorage.setItem('aext_default_repo', repo);
+    if (uiLang !== getLanguage()) setLanguage(uiLang);
 
     // Sync generator lang selector
     if (elements.selectExtLang) elements.selectExtLang.value = lang;
 
     if (state.currentUser) loadGithubRepos();
 
-    appendTerminalLog('SUCCESS', `Ajustes guardados: idioma=${lang}, repo=${repo || '(auto-generar)'}`);
-    alert('Ajustes guardados correctamente.');
+    appendTerminalLog('SUCCESS', t('logs.settings_saved', { lang, repo: repo || '(auto)' }));
+    alert(t('alerts.settings_saved'));
   });
+}
+
+// ==================== VERSIONES Y DESCARGAS ====================
+async function refreshReleaseInfo() {
+  try {
+    const data = await invokeBackend('check_aext_updates');
+    if (data && data.current_version) {
+      state.appVersion = data.current_version;
+      if (elements.appVersionBadge) elements.appVersionBadge.textContent = `v${data.current_version}`;
+      if (elements.settingsCurrentVersion) elements.settingsCurrentVersion.textContent = `v${data.current_version}`;
+    }
+    renderReleaseTable(data);
+    return data;
+  } catch (error) {
+    renderReleaseTable(null);
+    return null;
+  }
 }
 
 // ==================== CHECK UPDATES ====================
 elements.btnCheckUpdates.addEventListener('click', async () => {
   const button = elements.btnCheckUpdates;
   const label = button.querySelector('span');
-  const original = label ? label.textContent : '';
-  if (label) label.textContent = 'Buscando…';
+  if (label) label.textContent = t('rel.checking');
   button.disabled = true;
   try {
-    const data = await invokeBackend('check_aext_updates');
+    const data = await refreshReleaseInfo();
+    if (!data) {
+      alert(t('alerts.update_error', { error: 'sin conexión con GitHub' }));
+      return;
+    }
     if (data.update_available) {
-      const open = confirm(
-        `Nueva versión disponible: v${data.latest_version}\n` +
-        `Tienes instalada la v${data.current_version}.\n\n` +
-        `${data.release_notes || ''}\n\n¿Abrir la página de descarga?`
-      );
+      const open = confirm(t('alerts.update_found', {
+        latest: data.latest_version,
+        current: data.current_version,
+        notes: data.release_notes || '',
+      }));
       if (open && data.release_url) {
-        window.open(data.release_url, '_blank');
+        await openExternal(data.release_url);
       }
     } else {
-      alert(`AEXT v${data.current_version}\n\n${data.release_notes || 'Estás ejecutando la versión más reciente.'}`);
+      alert(t('alerts.up_to_date', {
+        version: data.current_version,
+        notes: data.release_notes || '',
+      }));
     }
   } catch (e) {
-    alert(`Error al verificar actualizaciones: ${e}`);
+    alert(t('alerts.update_error', { error: e }));
   } finally {
     button.disabled = false;
-    if (label) label.textContent = original || 'Buscar Actualizaciones';
+    if (label) label.textContent = t('rel.check');
   }
 });
 
@@ -1132,16 +1772,22 @@ elements.btnClearLogs.addEventListener('click', () => {
 
 // ==================== APP INITIALIZATION ====================
 window.addEventListener('DOMContentLoaded', async () => {
-  appendTerminalLog('INFO', 'AEXT inicializado. Comprobando estado de GitHub y servidor API...');
+  appendTerminalLog('INFO', t('logs.init'));
   await checkAuthStatus();
   await loadExtensions();
+  refreshBackupExtensions();
 
   try {
     const status = await invokeBackend('get_system_status');
-    if (status && elements.appVersionBadge) {
-      elements.appVersionBadge.textContent = `v${status.app_version}`;
+    if (status && status.app_version) {
+      state.appVersion = status.app_version;
+      if (elements.appVersionBadge) elements.appVersionBadge.textContent = `v${status.app_version}`;
+      if (elements.settingsCurrentVersion) elements.settingsCurrentVersion.textContent = `v${status.app_version}`;
     }
   } catch (_) {
     // El endpoint es opcional (fallback HTTP puede no exponerlo).
   }
+
+  // La tabla de descargas se llena con los assets reales de la última release.
+  refreshReleaseInfo();
 });

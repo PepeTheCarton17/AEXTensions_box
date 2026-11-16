@@ -78,7 +78,7 @@ pub struct ExtractorTestResult {
     pub error: Option<String>,
 }
 
-// ==================== MCP & AI ASSISTANCE MODELS ====================
+// ==================== MCP & MANUAL PATCH MODELS ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolCallRequest {

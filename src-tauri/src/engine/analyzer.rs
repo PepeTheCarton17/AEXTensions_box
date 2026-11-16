@@ -1,10 +1,14 @@
 use serde::{Deserialize, Serialize};
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 use std::collections::HashSet;
+use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisResult {
+    /// Origen del sitio (esquema + host, sin ruta). Es lo que se usa como `baseUrl`.
     pub url: String,
+    /// URL exacta que se analizó (puede incluir ruta).
+    pub entry_url: String,
     pub name: String,
     pub lang: String,
     pub ext_type: String, // "anime" | "manga"
@@ -16,6 +20,22 @@ pub struct AnalysisResult {
     pub card_selector: String,
     pub title_selector: String,
     pub next_page_selector: String,
+    /// Ruta detectada del listado/populares (p. ej. `/animes`). Nunca se inventa.
+    pub popular_path: Option<String>,
+    /// Ruta detectada de "últimos/recientes". Si no existe, `supportsLatest = false`.
+    pub latest_path: Option<String>,
+    /// Ruta del formulario de búsqueda detectado.
+    pub search_path: Option<String>,
+    /// Nombre del parámetro de búsqueda detectado (p. ej. `s`, `q`).
+    pub search_param: Option<String>,
+    /// Cómo pagina el sitio: `query`, `path` o `none`.
+    pub page_style: String,
+    /// True si la portada contiene tarjetas de catálogo reconocibles.
+    pub catalog_detected: bool,
+    /// Muestra de títulos encontrados en la portada (para confirmar en la UI).
+    pub sample_items: Vec<String>,
+    /// Avisos honestos sobre lo que no se pudo detectar o verificar.
+    pub warnings: Vec<String>,
 }
 
 pub struct SiteAnalyzer {
@@ -32,8 +52,22 @@ impl SiteAnalyzer {
     }
 
     pub async fn analyze(&self, url: &str) -> Result<AnalysisResult, String> {
-        let clean_url = url.trim_end_matches('/');
-        let resp = self.client.get(clean_url)
+        let parsed = Url::parse(url.trim()).map_err(|e| format!("URL inválida '{}': {}", url, e))?;
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            return Err(format!("Solo se admiten URLs http/https: {}", url));
+        }
+
+        // El `baseUrl` generado debe ser SIEMPRE el origen. Usar una ruta de la
+        // portada (o inventar `/animes`, `/recientes`) provoca redirecciones a
+        // páginas que no son catálogo, como ocurre con pluto.tv.
+        let origin = parsed.origin().ascii_serialization();
+        if origin == "null" || origin.is_empty() {
+            return Err(format!("No se pudo determinar el origen de {}", url));
+        }
+        let host = parsed.host_str().unwrap_or("").to_string();
+        let entry_url = parsed.to_string();
+
+        let resp = self.client.get(&entry_url)
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
             .send()
             .await
@@ -41,16 +75,17 @@ impl SiteAnalyzer {
 
         let _status = resp.status();
         let headers = resp.headers().clone();
+        let final_url = resp.url().clone();
         let body = resp.text().await.map_err(|e| format!("Error leyendo HTML: {}", e))?;
 
         // A partir de aquí no hay llamadas asíncronas (.await), por lo que Html nunca cruza un punto de suspensión.
         let doc = Html::parse_document(&body);
 
         // 1. Detección de Nombre y Título
-        let name = self.detect_site_name(&doc, clean_url);
+        let name = self.detect_site_name(&doc, &origin);
 
         // 2. Detección de Favicon
-        let favicon_url = self.detect_favicon(&doc, clean_url);
+        let favicon_url = self.detect_favicon(&doc, &origin);
 
         // 3. Detección de Protecciones
         let mut protections = Vec::new();
@@ -64,17 +99,100 @@ impl SiteAnalyzer {
             protections.push("Cloudflare WAF".to_string());
         }
 
-        // 4. Detección de CMS y Tipo
+        // 4. Detección de CMS, Tipo y catálogo real
         let (cms, ext_type) = self.detect_cms_and_type(&body);
+        let catalog = self.detect_catalog(&doc, &origin, &host);
 
-        // 5. Detección de Servidores de Video (síncrona)
-        let (detected_hosts, has_sub_dub) = self.detect_servers_and_dub(&body, clean_url);
+        // 5. Rutas reales de listado, recientes y búsqueda
+        let (popular_path, latest_path) = self.detect_section_paths(&doc, &origin, &host, &catalog);
+        let (search_path, search_param) = self.detect_search(&doc, &origin, &host, &cms);
 
-        // 6. Selectores CSS
-        let (card_sel, title_sel, next_sel) = self.detect_selectors(&cms);
+        // 6. Servidores de video y SUB/DUB (síncrona)
+        let (detected_hosts, has_sub_dub) = self.detect_servers_and_dub(&body, &origin);
+
+        // 7. Selectores: los del CMS solo si encajan; si no, los detectados.
+        let (cms_card, cms_title, cms_next) = self.detect_selectors(&cms);
+        let card_selector = if catalog.count >= 4 {
+            catalog.card_selector.clone()
+        } else {
+            cms_card
+        };
+        let title_selector = if catalog.count >= 4 {
+            catalog.title_selector.clone()
+        } else {
+            cms_title
+        };
+        let next_page_selector = if !catalog.next_page_selector.is_empty() {
+            catalog.next_page_selector.clone()
+        } else if catalog.page_style == "none" {
+            String::new()
+        } else {
+            cms_next
+        };
+
+        let catalog_detected = catalog.count >= 4;
+        let page_style = if catalog.page_style != "none" {
+            catalog.page_style.clone()
+        } else if matches!(cms.as_str(), "dooplay" | "madara" | "mangathemesia") {
+            "path".to_string()
+        } else {
+            "none".to_string()
+        };
+
+        // 8. Avisos honestos: mejor advertir que generar rutas falsas.
+        let mut warnings = Vec::new();
+        let looks_spa = body.contains("__NEXT_DATA__")
+            || body.contains("__NUXT__")
+            || body.contains("data-reactroot")
+            || body.contains("id=\"app\"")
+            || body.contains("id='app'");
+        if !catalog_detected {
+            if looks_spa {
+                warnings.push(
+                    "La portada parece una SPA (React/Next/Nuxt): el HTML estático no expone el catálogo. Revisa las URLs y selectores antes de publicar.".to_string(),
+                );
+            } else {
+                warnings.push(
+                    "No se detectaron tarjetas de catálogo en la portada; los selectores pueden ser incorrectos.".to_string(),
+                );
+            }
+        }
+        if popular_path.is_none() {
+            warnings.push(
+                "No se detectó una ruta de catálogo/populares: se usará la URL de entrada tal cual.".to_string(),
+            );
+        } else if !catalog_detected {
+            warnings.push(format!(
+                "La ruta de listado {} se tomó de un enlace del menú, pero no se pudo verificar que sea un catálogo de tarjetas.",
+                popular_path.as_deref().unwrap_or("/")
+            ));
+        }
+        if latest_path.is_none() {
+            warnings.push(
+                "No se detectó una ruta de 'recientes'; la pestaña de últimos quedará desactivada.".to_string(),
+            );
+        }
+        if search_path.is_none() || search_param.is_none() {
+            warnings.push(
+                "No se detectó un formulario de búsqueda: el buscador generado puede no funcionar.".to_string(),
+            );
+        }
+        if !protections.is_empty() {
+            warnings.push(format!(
+                "Protección detectada ({}). El cliente usará Cloudflare/WebView cuando haga falta.",
+                protections.join(", ")
+            ));
+        }
+        if final_url.path() != parsed.path() && !final_url.path().is_empty() {
+            warnings.push(format!(
+                "La URL de entrada redirigió a {}. Comprueba que sea el catálogo correcto.",
+                final_url
+            ));
+        }
 
         Ok(AnalysisResult {
-            url: clean_url.to_string(),
+            url: origin,
+            entry_url,
             name,
             lang: "es".to_string(),
             ext_type,
@@ -83,10 +201,401 @@ impl SiteAnalyzer {
             detected_hosts,
             has_sub_dub,
             protections,
-            card_selector: card_sel,
-            title_selector: title_sel,
-            next_page_selector: next_sel,
+            card_selector,
+            title_selector,
+            next_page_selector,
+            popular_path,
+            latest_path,
+            search_path,
+            search_param,
+            page_style,
+            catalog_detected,
+            sample_items: catalog.samples,
+            warnings,
         })
+    }
+
+    fn same_origin_path(href: &str, origin: &str, host: &str) -> Option<String> {
+        let h = href.trim();
+        if h.is_empty()
+            || h.starts_with('#')
+            || h.starts_with("javascript:")
+            || h.starts_with("mailto:")
+            || h.starts_with("tel:")
+            || h.starts_with("data:")
+        {
+            return None;
+        }
+
+        let u = if h.starts_with("//") {
+            Url::parse(&format!("https:{}", h)).ok()?
+        } else if h.starts_with('/') {
+            Url::parse(&format!("{}{}", origin, h)).ok()?
+        } else if h.starts_with("http://") || h.starts_with("https://") {
+            Url::parse(h).ok()?
+        } else {
+            // Ruta relativa: se resuelve contra el origen.
+            Url::parse(&format!("{}/{}", origin, h)).ok()?
+        };
+
+        if u.host_str().map(|d| !d.eq_ignore_ascii_case(host)).unwrap_or(true) {
+            return None;
+        }
+
+        let mut path = u.path().to_string();
+        if path.is_empty() {
+            path.push('/');
+        }
+        if let Some(q) = u.query() {
+            path.push('?');
+            path.push_str(q);
+        }
+        Some(path)
+    }
+
+    fn is_internal_href(href: &str, host: &str) -> bool {
+        let h = href.trim();
+        if h.is_empty()
+            || h.starts_with('#')
+            || h.starts_with("javascript:")
+            || h.starts_with("mailto:")
+            || h.starts_with("tel:")
+            || h.starts_with("data:")
+        {
+            return false;
+        }
+        if h.starts_with("//") {
+            return h[2..]
+                .split('/')
+                .next()
+                .map(|d| d.eq_ignore_ascii_case(host))
+                .unwrap_or(false);
+        }
+        if h.starts_with("http://") || h.starts_with("https://") {
+            return Url::parse(h)
+                .ok()
+                .and_then(|u| u.host_str().map(|d| d.eq_ignore_ascii_case(host)))
+                .unwrap_or(false);
+        }
+        true
+    }
+
+    fn matches_any(hay: &str, keys: &[&str]) -> bool {
+        keys.iter().any(|k| {
+            if k.chars().count() <= 4 && !k.contains(' ') {
+                hay.split(|c: char| !c.is_alphanumeric()).any(|t| t == *k)
+            } else {
+                hay.contains(k)
+            }
+        })
+    }
+
+    fn card_title(card: ElementRef<'_>, host: &str) -> Option<(String, String)> {
+        let link_sel = Selector::parse("a[href]").ok()?;
+        let link = card.select(&link_sel).find(|a| {
+            Self::is_internal_href(a.value().attr("href").unwrap_or(""), host)
+        })?;
+        let href = link.value().attr("href")?.to_string();
+
+        let title_sel = Selector::parse(
+            "h1, h2, h3, h4, h5, .title, [class*=title], [class*=name], [itemprop=name]",
+        )
+        .ok()?;
+        let title = card
+            .select(&title_sel)
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .find(|t| !t.is_empty())
+            .or_else(|| link.value().attr("title").map(|s| s.trim().to_string()))
+            .or_else(|| {
+                let img_sel = Selector::parse("img[alt]").ok()?;
+                card.select(&img_sel)
+                    .next()
+                    .map(|i| i.value().attr("alt").unwrap_or("").trim().to_string())
+            })
+            .unwrap_or_default();
+
+        Some((href, title))
+    }
+
+    fn infer_title_selector(cards: &[ElementRef<'_>]) -> String {
+        let candidates = [
+            "h3 a", "h2 a", "h4 a", "h3", "h2", "h4",
+            "a[title]", ".title", "[class*=title]", "[class*=name]",
+        ];
+        for candidate in candidates {
+            let Ok(sel) = Selector::parse(candidate) else { continue };
+            let hits = cards
+                .iter()
+                .filter(|card| {
+                    card.select(&sel)
+                        .next()
+                        .map(|e| !e.text().collect::<String>().trim().is_empty())
+                        .unwrap_or(false)
+                })
+                .count();
+            if !cards.is_empty() && hits * 2 >= cards.len() {
+                return candidate.to_string();
+            }
+        }
+        "a".to_string()
+    }
+
+    fn detect_pagination(&self, doc: &Html, origin: &str, host: &str) -> (String, String) {
+        let Ok(sel) = Selector::parse("a[href]") else {
+            return (String::new(), "none".to_string());
+        };
+
+        let mut style = "none".to_string();
+        let mut found = false;
+
+        for a in doc.select(&sel) {
+            let href = a.value().attr("href").unwrap_or("");
+            let rel = a.value().attr("rel").unwrap_or("").to_lowercase();
+            let class = a.value().attr("class").unwrap_or("").to_lowercase();
+            let aria = a.value().attr("aria-label").unwrap_or("").to_lowercase();
+            let text = a.text().collect::<String>().trim().to_lowercase();
+
+            let is_next = rel.split_whitespace().any(|r| r == "next")
+                || text == "next"
+                || text == "siguiente"
+                || text == "»"
+                || text == "›"
+                || text.contains("siguiente")
+                || class.contains("next")
+                || class.contains("siguiente")
+                || aria.contains("next")
+                || aria.contains("siguiente");
+
+            if !is_next {
+                continue;
+            }
+            let Some(path) = Self::same_origin_path(href, origin, host) else { continue };
+            if path.contains("page=") || path.contains("paged=") || path.contains("p=") {
+                style = "query".to_string();
+            } else if path.contains("/page/")
+                || path.contains("/pagina/")
+                || path.contains("/p/")
+            {
+                style = "path".to_string();
+            }
+            found = true;
+            break;
+        }
+
+        // Si no hay enlace "siguiente", usar la paginación numérica como pista.
+        if !found {
+            for a in doc.select(&sel) {
+                if a.text().collect::<String>().trim() != "2" {
+                    continue;
+                }
+                let href = a.value().attr("href").unwrap_or("");
+                let Some(path) = Self::same_origin_path(href, origin, host) else { continue };
+                if path.contains("page=2") || path.contains("paged=2") {
+                    style = "query".to_string();
+                    found = true;
+                    break;
+                }
+                if path.contains("/page/2") || path.contains("/pagina/2") {
+                    style = "path".to_string();
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        let selector = if found {
+            "a[rel=next], a.next, a[class*=next], a[class*=siguiente]".to_string()
+        } else {
+            String::new()
+        };
+        (selector, style)
+    }
+
+    fn detect_catalog(&self, doc: &Html, origin: &str, host: &str) -> CatalogInfo {
+        let candidates = [
+            "article",
+            "li.item, li.card, div.item, div.card",
+            "div[class*=card], div[class*=item], div[class*=poster], div[class*=cover]",
+            "div.page-item-detail, div.c-tabs-item__content",
+            "article.item-movies, article.item",
+        ];
+
+        let mut best = CatalogInfo {
+            card_selector: String::new(),
+            title_selector: String::new(),
+            next_page_selector: String::new(),
+            page_style: "none".to_string(),
+            count: 0,
+            samples: Vec::new(),
+        };
+
+        for sel_str in candidates {
+            let Ok(sel) = Selector::parse(sel_str) else { continue };
+            let cards: Vec<ElementRef<'_>> = doc.select(&sel).collect();
+            if cards.len() < 4 {
+                continue;
+            }
+
+            let mut valid = 0;
+            let mut samples: Vec<String> = Vec::new();
+            for card in &cards {
+                if let Some((_href, title)) = Self::card_title(*card, host) {
+                    valid += 1;
+                    if samples.len() < 6 && !title.is_empty() && !samples.contains(&title) {
+                        samples.push(title);
+                    }
+                }
+            }
+
+            let ratio = valid as f32 / cards.len() as f32;
+            if valid < 4 || ratio < 0.6 || valid <= best.count {
+                continue;
+            }
+
+            let (next_page_selector, page_style) =
+                self.detect_pagination(doc, origin, host);
+            best = CatalogInfo {
+                card_selector: sel_str.to_string(),
+                title_selector: Self::infer_title_selector(&cards),
+                next_page_selector,
+                page_style,
+                count: valid,
+                samples,
+            };
+        }
+
+        best
+    }
+
+    fn detect_section_paths(
+        &self,
+        doc: &Html,
+        origin: &str,
+        host: &str,
+        _catalog: &CatalogInfo,
+    ) -> (Option<String>, Option<String>) {
+        let Ok(sel) = Selector::parse("a[href]") else {
+            return (None, None);
+        };
+
+        let mut popular: Option<String> = None;
+        let mut latest: Option<String> = None;
+        let mut listing: Option<String> = None;
+
+        for (index, a) in doc.select(&sel).enumerate() {
+            // Las primeras ~500 anclas cubren header/nav/portada; evita recorrer
+            // listados gigantes y confundir títulos con rutas de sección.
+            if index > 500 {
+                break;
+            }
+            let href = a.value().attr("href").unwrap_or("");
+            let Some(path) = Self::same_origin_path(href, origin, host) else { continue };
+            let text = a.text().collect::<String>().trim().to_lowercase();
+            let hay = format!("{} {}", text, path.to_lowercase());
+
+            if latest.is_none()
+                && Self::matches_any(
+                    &hay,
+                    &[
+                        "reciente", "recientes", "ultimo", "ultimos", "último", "últimos",
+                        "latest", "updated", "actualizado", "estrenos", "novedades",
+                        "new releases", "recien agregado", "recién agregado",
+                    ],
+                )
+            {
+                latest = Some(path.clone());
+            }
+
+            if popular.is_none()
+                && Self::matches_any(
+                    &hay,
+                    &[
+                        "popular", "populares", "tendencia", "tendencias", "trending",
+                        "mas visto", "más visto", "top", "destacado", "destacados",
+                        "featured", "ranking",
+                    ],
+                )
+            {
+                popular = Some(path.clone());
+            }
+
+            if listing.is_none()
+                && Self::matches_any(
+                    &hay,
+                    &[
+                        "anime", "animes", "series", "serie", "catalogo", "catálogo",
+                        "catalog", "explorar", "browse", "biblioteca", "library",
+                        "todas", "todos", "all",
+                    ],
+                )
+            {
+                listing = Some(path.clone());
+            }
+        }
+
+        // El listado general es una alternativa razonable a "populares",
+        // pero solo si el enlace existía de verdad en la página.
+        if popular.is_none() {
+            popular = listing;
+        }
+
+        (popular, latest)
+    }
+
+    fn detect_search(
+        &self,
+        doc: &Html,
+        origin: &str,
+        host: &str,
+        cms: &str,
+    ) -> (Option<String>, Option<String>) {
+        let Ok(form_sel) = Selector::parse("form") else {
+            return (None, None);
+        };
+        let Ok(input_sel) = Selector::parse("input") else {
+            return (None, None);
+        };
+
+        for form in doc.select(&form_sel) {
+            let mut param: Option<String> = None;
+            for input in form.select(&input_sel) {
+                let ty = input.value().attr("type").unwrap_or("text").to_lowercase();
+                let name = input.value().attr("name").unwrap_or("").trim();
+                if name.is_empty() {
+                    continue;
+                }
+                let lower = name.to_lowercase();
+                let looks_like_search = ty == "search"
+                    || matches!(
+                        lower.as_str(),
+                        "q" | "s" | "query" | "search" | "buscar" | "keyword" | "keywords" | "term" | "k"
+                    );
+                if looks_like_search {
+                    param = Some(name.to_string());
+                    if ty == "search" {
+                        break;
+                    }
+                }
+            }
+
+            let Some(param) = param else { continue };
+            let action = form.value().attr("action").unwrap_or("").trim();
+            let path = if action.is_empty() || action == "#" {
+                Some("/".to_string())
+            } else {
+                Self::same_origin_path(action, origin, host)
+            };
+            if let Some(path) = path {
+                return (Some(path), Some(param));
+            }
+        }
+
+        // WordPress (Dooplay/Madara) usa `?s=` en la raíz por convención del CMS.
+        if matches!(cms, "dooplay" | "madara") {
+            return (Some("/".to_string()), Some("s".to_string()));
+        }
+
+        (None, None)
     }
 
     fn detect_site_name(&self, doc: &Html, url: &str) -> String {
@@ -356,5 +865,114 @@ impl SiteAnalyzer {
                 "a.next, a[rel=next]".to_string(),
             ),
         }
+    }
+}
+
+struct CatalogInfo {
+    card_selector: String,
+    title_selector: String,
+    next_page_selector: String,
+    page_style: String,
+    count: usize,
+    samples: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CATALOG_HTML: &str = r#"<!doctype html>
+<html><body>
+<nav>
+  <a href="/explorar">Explorar</a>
+  <a href="/recientes">Recientes</a>
+  <a href="/populares">Populares</a>
+</nav>
+<form action="/buscar"><input type="search" name="q"></form>
+<main>
+  <article><a href="/anime/1"><img alt="Uno"><h3>Uno</h3></a></article>
+  <article><a href="/anime/2"><img alt="Dos"><h3>Dos</h3></a></article>
+  <article><a href="/anime/3"><img alt="Tres"><h3>Tres</h3></a></article>
+  <article><a href="/anime/4"><img alt="Cuatro"><h3>Cuatro</h3></a></article>
+  <article><a href="/anime/5"><img alt="Cinco"><h3>Cinco</h3></a></article>
+  <article><a href="/anime/6"><img alt="Seis"><h3>Seis</h3></a></article>
+  <a rel="next" href="/explorar?page=2">Siguiente</a>
+</main>
+</body></html>"#;
+
+    #[test]
+    fn same_origin_path_only_accepts_internal_urls() {
+        let origin = "https://example.com";
+        assert_eq!(
+            SiteAnalyzer::same_origin_path("/animes?page=2", origin, "example.com").as_deref(),
+            Some("/animes?page=2")
+        );
+        assert_eq!(
+            SiteAnalyzer::same_origin_path("animes", origin, "example.com").as_deref(),
+            Some("/animes")
+        );
+        assert_eq!(
+            SiteAnalyzer::same_origin_path("https://otro.com/x", origin, "example.com"),
+            None
+        );
+        assert_eq!(
+            SiteAnalyzer::same_origin_path("javascript:void(0)", origin, "example.com"),
+            None
+        );
+    }
+
+    #[test]
+    fn detects_real_catalog_paths_and_search() {
+        let analyzer = SiteAnalyzer::new();
+        let doc = Html::parse_document(CATALOG_HTML);
+        let origin = "https://example.com";
+        let host = "example.com";
+
+        let catalog = analyzer.detect_catalog(&doc, origin, host);
+        assert_eq!(catalog.count, 6);
+        assert_eq!(catalog.card_selector, "article");
+        assert_eq!(catalog.page_style, "query");
+        assert!(!catalog.next_page_selector.is_empty());
+        assert!(catalog.samples.contains(&"Uno".to_string()));
+
+        let (popular, latest) = analyzer.detect_section_paths(&doc, origin, host, &catalog);
+        assert_eq!(popular.as_deref(), Some("/populares"));
+        assert_eq!(latest.as_deref(), Some("/recientes"));
+
+        let (search_path, search_param) = analyzer.detect_search(&doc, origin, host, "generic");
+        assert_eq!(search_path.as_deref(), Some("/buscar"));
+        assert_eq!(search_param.as_deref(), Some("q"));
+    }
+
+    #[test]
+    fn does_not_fabricate_paths_or_search() {
+        let analyzer = SiteAnalyzer::new();
+        let doc = Html::parse_document(
+            r#"<!doctype html><html><body><div id="app"></div></body></html>"#,
+        );
+        let origin = "https://spa.example.com";
+        let host = "spa.example.com";
+
+        let catalog = analyzer.detect_catalog(&doc, origin, host);
+        assert_eq!(catalog.count, 0);
+        assert!(catalog.next_page_selector.is_empty());
+
+        let (popular, latest) = analyzer.detect_section_paths(&doc, origin, host, &catalog);
+        assert_eq!(popular, None);
+        assert_eq!(latest, None);
+
+        let (search_path, search_param) = analyzer.detect_search(&doc, origin, host, "generic");
+        assert_eq!(search_path, None);
+        assert_eq!(search_param, None);
+    }
+
+    #[test]
+    fn wordpress_search_fallback_is_cms_specific() {
+        let analyzer = SiteAnalyzer::new();
+        let doc = Html::parse_document("<html><body></body></html>");
+        let (path, param) =
+            analyzer.detect_search(&doc, "https://wp.example.com", "wp.example.com", "dooplay");
+        assert_eq!(path.as_deref(), Some("/"));
+        assert_eq!(param.as_deref(), Some("s"));
     }
 }

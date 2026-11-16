@@ -179,6 +179,14 @@ pub async fn generate_extensions(
             .await
             .map_err(|e| format!("Error analizando {}: {}", url, e))?;
 
+        // Avisos honestos del análisis: el usuario debe saber qué no se pudo
+        // detectar antes de publicar o compilar.
+        for warning in &analysis.warnings {
+            state
+                .add_log("WARN", &format!("{}: {}", analysis.name, warning))
+                .await;
+        }
+
         // 1. Generar iconos y mipmaps
         state
             .add_log("INFO", &format!("Generando iconos para {}", analysis.name))
@@ -235,6 +243,7 @@ pub async fn generate_extensions(
                 let _ = fs::remove_dir_all(&target_dir);
                 write_bundle_to_dir(&target_dir, &bundle.files)?;
                 write_icons_to_dir(&target_dir, &bundle.module_path, &mipmaps)?;
+                write_repo_icons(&target_dir, &bundle.pkg_id, &mipmaps)?;
 
                 ext_item.apk_download_url = Some(format!(
                     "{}/api/download/{}",
@@ -544,6 +553,7 @@ pub async fn update_extension(
     let _ = fs::remove_dir_all(&target_dir);
     write_bundle_to_dir(&target_dir, &bundle.files)?;
     write_icons_to_dir(&target_dir, &bundle.module_path, &mipmaps)?;
+    write_repo_icons(&target_dir, &bundle.pkg_id, &mipmaps)?;
     if existing.pkg_id != bundle.pkg_id {
         // El paquete cambió de id: borrar la carpeta local antigua.
         let _ = fs::remove_dir_all(local_extension_dir(&state, &existing.pkg_id));
@@ -640,6 +650,16 @@ pub async fn update_extension(
                         &format!("icon/{}.png", bundle.pkg_id),
                         icon_bytes,
                         "AEXT: Actualizar icono del paquete",
+                        &branch,
+                    )
+                    .await;
+                let _ = client
+                    .put_file_content(
+                        &repo.owner,
+                        &repo.name,
+                        "icon/ic_launcher.png",
+                        icon_bytes,
+                        "AEXT: Actualizar icono genérico",
                         &branch,
                     )
                     .await;
@@ -865,13 +885,32 @@ pub async fn check_aext_updates() -> Result<serde_json::Value, String> {
                     "Estás ejecutando la versión más reciente.".to_string()
                 };
 
+                let assets: Vec<serde_json::Value> = json
+                    .get("assets")
+                    .and_then(|v| v.as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .map(|asset| {
+                                serde_json::json!({
+                                    "name": asset.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "url": asset.get("browser_download_url").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "size": asset.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+                                    "content_type": asset.get("content_type").and_then(|v| v.as_str()).unwrap_or("")
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
                 return Ok(serde_json::json!({
                     "current_version": current_version,
                     "latest_version": latest_version,
                     "tag_name": if tag_name.is_empty() { format!("v{}", current_version) } else { tag_name.to_string() },
                     "update_available": update_available,
                     "release_notes": notes,
-                    "release_url": release_url
+                    "release_url": release_url,
+                    "assets": assets
                 }));
             }
         }
@@ -908,6 +947,603 @@ pub async fn check_aext_updates() -> Result<serde_json::Value, String> {
         "release_url": "https://github.com/PepeTheCarton17/AEXTensions_box/releases",
         "error": true
     }))
+}
+
+// ============================== UTILIDADES DEL SISTEMA ==============================
+
+/// Abre un enlace externo en el navegador del sistema. En Tauri el webview no
+/// debe navegar fuera de la app, así que todos los enlaces pasan por aquí.
+#[tauri::command]
+pub async fn open_url(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err("Solo se permiten enlaces http/https.".to_string());
+    }
+    tauri_plugin_opener::open_url(trimmed.to_string(), None::<&str>)
+        .map_err(|e| format!("No se pudo abrir el enlace: {}", e))
+}
+
+/// Descarga un ZIP del servidor local y lo guarda en la carpeta de descargas.
+///
+/// El webview no siempre completa las descargas Blob (WebView2 puede ignorar
+/// el evento y no avisar al usuario), así que en escritorio la escritura la
+/// hace Rust y devuelve la ruta real del archivo.
+#[tauri::command]
+pub async fn save_extension_zip(
+    app: tauri::AppHandle,
+    url: String,
+    filename: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let trimmed = url.trim().to_string();
+    let lower = trimmed.to_ascii_lowercase();
+    // Solo el propio servidor embebido: evita que la app actúe como proxy.
+    if !(lower.starts_with("http://127.0.0.1:") || lower.starts_with("http://localhost:")) {
+        return Err("Solo se permiten descargas del servidor local de AEXT.".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent("AEXT-Downloader/1.0")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .get(&trimmed)
+        .send()
+        .await
+        .map_err(|e| format!("No se pudo descargar el ZIP: {}", e))?;
+    if !response.status().is_success() {
+        return Err(format!("El servidor respondió HTTP {}", response.status()));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("No se pudo leer el ZIP: {}", e))?;
+
+    use tauri::Manager;
+    let dir = app
+        .path()
+        .download_dir()
+        .or_else(|_| app.path().app_data_dir())
+        .unwrap_or_else(|_| std::env::temp_dir());
+
+    let raw = filename.unwrap_or_default();
+    let base = raw
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let mut name: String = base
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .collect();
+    if name.is_empty() {
+        name = "extension.zip".to_string();
+    }
+    if !name.to_ascii_lowercase().ends_with(".zip") {
+        name.push_str(".zip");
+    }
+
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("No se pudo crear {}: {}", dir.display(), e))?;
+    let path = dir.join(&name);
+    std::fs::write(&path, &bytes)
+        .map_err(|e| format!("No se pudo escribir {}: {}", path.display(), e))?;
+
+    Ok(serde_json::json!({
+        "path": path.display().to_string(),
+        "bytes": bytes.len(),
+        "filename": name,
+    }))
+}
+
+/// Devuelve la ruta local del código de una extensión (para mostrarla aunque
+/// el sistema no pueda abrir el explorador, p. ej. en Android).
+#[tauri::command]
+pub async fn open_extension_folder(
+    state: State<'_, AppState>,
+    pkg_id: String,
+) -> Result<serde_json::Value, String> {
+    let dir = local_extension_dir(&state, &pkg_id);
+    if !dir.is_dir() {
+        return Err(format!(
+            "No hay copia local de esta extensión en {}",
+            dir.display()
+        ));
+    }
+
+    let path = dir.display().to_string();
+    let opened = tauri_plugin_opener::open_path(&dir, None::<&str>).is_ok();
+
+    Ok(serde_json::json!({ "path": path, "opened": opened }))
+}
+
+#[tauri::command]
+pub async fn list_extension_backups(
+    state: State<'_, AppState>,
+    pkg_id: String,
+) -> Result<Vec<crate::engine::backup::BackupInfo>, String> {
+    let dir = local_extension_dir(&state, &pkg_id);
+    Ok(crate::engine::backup::list_backups(&dir))
+}
+
+/// Restaura una copia de seguridad concreta ("versión original" o un parche
+/// anterior). Es reversible: nunca borra archivos, solo los sobrescribe.
+#[tauri::command]
+pub async fn restore_extension_backup(
+    state: State<'_, AppState>,
+    pkg_id: String,
+    backup: String,
+) -> Result<serde_json::Value, String> {
+    let dir = local_extension_dir(&state, &pkg_id);
+    let count = crate::engine::backup::restore_backup(&dir, &backup)?;
+
+    // La copia también revierte versionCode/versionName del build.gradle.kts:
+    // sincronizamos la ficha de la extensión para que la UI no muestre una
+    // versión que ya no existe en el código restaurado.
+    let (restored_code, restored_name) = read_extension_versions(&dir);
+    if restored_code.is_some() || restored_name.is_some() {
+        let mut extensions = state.extensions.write().await;
+        if let Some(ext) = extensions
+            .iter_mut()
+            .find(|e| e.pkg_id == pkg_id || e.id == pkg_id)
+        {
+            if let Some(code) = restored_code {
+                ext.version_code = code;
+            }
+            if let Some(name) = &restored_name {
+                ext.version = name.clone();
+            }
+        }
+        drop(extensions);
+        state.persist_extensions().await;
+    }
+
+    state
+        .add_log(
+            "SUCCESS",
+            &format!(
+                "Copia '{}' restaurada en {} ({} archivos)",
+                backup, pkg_id, count
+            ),
+        )
+        .await;
+    Ok(serde_json::json!({
+        "restored_files": count,
+        "backup": backup,
+        "version": restored_name,
+        "version_code": restored_code,
+    }))
+}
+
+/// Lee `versionCode` y `versionName` del primer módulo Gradle de la extensión.
+fn read_extension_versions(dir: &std::path::Path) -> (Option<i32>, Option<String>) {
+    let Ok(langs) = std::fs::read_dir(dir.join("src")) else {
+        return (None, None);
+    };
+    for lang in langs.flatten() {
+        let Ok(modules) = std::fs::read_dir(lang.path()) else {
+            continue;
+        };
+        for module in modules.flatten() {
+            let gradle = module.path().join("build.gradle.kts");
+            let Ok(content) = std::fs::read_to_string(&gradle) else {
+                continue;
+            };
+            let code = regex::Regex::new(r"versionCode\s*=\s*(\d+)")
+                .ok()
+                .and_then(|re| re.captures(&content))
+                .and_then(|caps| caps.get(1))
+                .and_then(|m| m.as_str().parse::<i32>().ok());
+            let name = regex::Regex::new(r#"versionName\s*=\s*"([^"]*)""#)
+                .ok()
+                .and_then(|re| re.captures(&content))
+                .and_then(|caps| caps.get(1))
+                .map(|m| m.as_str().to_string());
+            if code.is_some() || name.is_some() {
+                return (code, name);
+            }
+        }
+    }
+    (None, None)
+}
+
+#[derive(serde::Serialize)]
+pub struct BuildToolchain {
+    pub os: String,
+    pub java: bool,
+    pub java_path: Option<String>,
+    pub java_version: Option<String>,
+    pub java_home: Option<String>,
+    pub kotlinc: bool,
+    pub kotlinc_version: Option<String>,
+    pub gradle: bool,
+    pub gradle_path: Option<String>,
+    pub gradle_version: Option<String>,
+    pub android_sdk: bool,
+    pub android_sdk_path: Option<String>,
+    pub can_build: bool,
+    pub missing: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn check_build_toolchain() -> Result<BuildToolchain, String> {
+    tauri::async_runtime::spawn_blocking(detect_toolchain)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Compila el módulo con Gradle + Android SDK si están instalados. Es una
+/// compilación real (firma incluida); nunca simulamos un APK inexistente.
+#[tauri::command]
+pub async fn compile_extension(
+    state: State<'_, AppState>,
+    pkg_id: String,
+) -> Result<serde_json::Value, String> {
+    let dir = local_extension_dir(&state, &pkg_id);
+    if !dir.is_dir() {
+        return Err(format!(
+            "No hay código local para compilar. Descarga el ZIP o regenera la extensión ({}).",
+            dir.display()
+        ));
+    }
+    if !dir.join("settings.gradle.kts").exists() {
+        return Err(
+            "El proyecto local no tiene settings.gradle.kts. Regenera la extensión con esta versión de AEXT."
+                .to_string(),
+        );
+    }
+
+    let toolchain = tauri::async_runtime::spawn_blocking(detect_toolchain)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !toolchain.can_build {
+        return Err(format!(
+            "Faltan herramientas para compilar: {}",
+            toolchain.missing.join(", ")
+        ));
+    }
+
+    let parts: Vec<&str> = pkg_id.split('.').filter(|p| !p.is_empty()).collect();
+    if parts.len() < 2 {
+        return Err("No se pudo deducir la ruta del módulo Gradle.".to_string());
+    }
+    let module = format!(
+        ":src:{}:{}",
+        parts[parts.len() - 2],
+        parts[parts.len() - 1]
+    );
+
+    let gradle = toolchain
+        .gradle_path
+        .clone()
+        .ok_or_else(|| "No se encontró Gradle.".to_string())?;
+    let sdk = toolchain
+        .android_sdk_path
+        .clone()
+        .ok_or_else(|| "No se encontró el Android SDK.".to_string())?;
+    let java_home = toolchain.java_home.clone();
+
+    // local.properties apunta al SDK real del usuario.
+    let local_properties = format!("sdk.dir={}\n", sdk.replace('\\', "/"));
+    fs::write(dir.join("local.properties"), local_properties)
+        .map_err(|e| format!("No se pudo escribir local.properties: {}", e))?;
+
+    let app_state = state.inner().clone();
+    app_state
+        .add_log(
+            "INFO",
+            &format!(
+                "Compilando {}:assembleRelease (puede tardar varios minutos)…",
+                module
+            ),
+        )
+        .await;
+
+    let build_dir = dir.clone();
+    let build_module = module.clone();
+    let build_sdk = sdk.clone();
+    let build_java = java_home.clone();
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let mut command = build_tool_command(&gradle);
+        command
+            .arg("--no-daemon")
+            .arg("--console=plain")
+            .arg(format!("{}:assembleRelease", build_module))
+            .current_dir(&build_dir)
+            .env("ANDROID_HOME", &build_sdk)
+            .env("ANDROID_SDK_ROOT", &build_sdk);
+        if let Some(home) = build_java {
+            command.env("JAVA_HOME", home);
+        }
+        command.output()
+    })
+    .await
+    .map_err(|e| format!("La compilación se interrumpió: {}", e))?;
+
+    let output = result.map_err(|e| {
+        format!(
+            "No se pudo ejecutar Gradle ({}). Verifica que Java, Gradle y el Android SDK estén instalados.",
+            e
+        )
+    })?;
+
+    let mut combined = String::from_utf8_lossy(&output.stdout).to_string();
+    combined.push('\n');
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+
+    let tail: Vec<&str> = combined.lines().rev().take(160).collect();
+    let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
+
+    let apk = find_apk(&dir.join("src"));
+    let success = output.status.success() && apk.is_some();
+
+    let log_level = if success { "SUCCESS" } else { "ERROR" };
+    let log_message = if success {
+        format!(
+            "APK compilado en {}",
+            apk.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+        )
+    } else {
+        format!("La compilación de {} falló", pkg_id)
+    };
+    app_state.add_log(log_level, &log_message).await;
+
+    Ok(serde_json::json!({
+        "success": success,
+        "apk_path": apk.map(|p| p.display().to_string()),
+        "exit_code": output.status.code(),
+        "output": tail
+    }))
+}
+
+fn build_tool_command(program: &str) -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let lower = program.to_ascii_lowercase();
+        if lower.ends_with(".bat") || lower.ends_with(".cmd") {
+            let mut command = std::process::Command::new("cmd");
+            command.arg("/C").arg(program);
+            command.creation_flags(CREATE_NO_WINDOW);
+            return command;
+        }
+        let mut command = std::process::Command::new(program);
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new(program)
+    }
+}
+
+fn which_tool(program: &str) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    let output = {
+        use std::os::windows::process::CommandExt;
+        let mut command = std::process::Command::new("where");
+        command.arg(program).creation_flags(0x0800_0000);
+        command.output().ok()?
+    };
+    #[cfg(not(target_os = "windows"))]
+    let output = std::process::Command::new("which")
+        .arg(program)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.trim())
+        .find(|line| !line.is_empty())
+        .map(|line| line.to_string())
+}
+
+fn run_version(program: &str, args: &[&str]) -> Option<String> {
+    let output = build_tool_command(program).args(args).output().ok()?;
+    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if text.trim().is_empty() {
+        text = stderr;
+    }
+    text.lines()
+        .map(|line| line.trim())
+        .find(|line| !line.is_empty())
+        .map(|line| line.to_string())
+}
+
+fn find_file_under(root: &Path, file_name: &str, depth: usize) -> Option<std::path::PathBuf> {
+    if depth == 0 || !root.is_dir() {
+        return None;
+    }
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .file_name()
+                .map(|name| name.to_string_lossy().as_ref() == file_name)
+                .unwrap_or(false)
+        {
+            return Some(path);
+        }
+        if path.is_dir() {
+            if let Some(found) = find_file_under(&path, file_name, depth - 1) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from)
+}
+
+fn detect_toolchain() -> BuildToolchain {
+    let mut missing = Vec::new();
+    let mut notes = Vec::new();
+
+    // Java (el JBR de Android Studio también sirve).
+    let java_from_home = std::env::var_os("JAVA_HOME").map(std::path::PathBuf::from).and_then(|home| {
+        let exe = if cfg!(windows) { "java.exe" } else { "java" };
+        let candidate = home.join("bin").join(exe);
+        if candidate.is_file() {
+            Some((candidate.display().to_string(), home.display().to_string()))
+        } else {
+            None
+        }
+    });
+
+    let studio_java = [
+        "C:/Program Files/Android/Android Studio/jbr",
+        "/Applications/Android Studio.app/Contents/jbr/Contents/Home",
+        "/opt/android-studio/jbr",
+    ]
+    .iter()
+    .find_map(|base| {
+        let home = std::path::PathBuf::from(base);
+        let exe = if cfg!(windows) { "java.exe" } else { "java" };
+        let candidate = home.join("bin").join(exe);
+        if candidate.is_file() {
+            Some((candidate.display().to_string(), home.display().to_string()))
+        } else {
+            None
+        }
+    });
+
+    let java_path = java_from_home
+        .clone()
+        .map(|(path, _)| path)
+        .or_else(|| which_tool("java"))
+        .or_else(|| studio_java.clone().map(|(path, _)| path));
+    let java_home = java_from_home
+        .map(|(_, home)| home)
+        .or_else(|| studio_java.map(|(_, home)| home))
+        .or_else(|| {
+            java_path.as_ref().and_then(|path| {
+                std::path::Path::new(path)
+                    .parent()
+                    .and_then(|bin| bin.parent())
+                    .map(|home| home.display().to_string())
+            })
+        });
+
+    let java_version = java_path.as_deref().and_then(|path| run_version(path, &["-version"]));
+    let java = java_path.is_some();
+    if !java {
+        missing.push("Java (JDK 17)".to_string());
+    }
+
+    let kotlinc_path = which_tool("kotlinc").or_else(|| which_tool("kotlinc.bat"));
+    let kotlinc_version = kotlinc_path
+        .as_deref()
+        .and_then(|path| run_version(path, &["-version"]));
+    let kotlinc = kotlinc_path.is_some();
+
+    // Gradle del PATH o una distribución descargada por el wrapper.
+    let gradle_path = which_tool("gradle").or_else(|| {
+        let home = home_dir()?;
+        let wrapper = home.join(".gradle").join("wrapper").join("dists");
+        find_file_under(
+            &wrapper,
+            if cfg!(windows) { "gradle.bat" } else { "gradle" },
+            6,
+        )
+        .map(|path| path.display().to_string())
+    });
+    let gradle_version = gradle_path
+        .as_deref()
+        .and_then(|path| run_version(path, &["-version"]));
+    let gradle = gradle_path.is_some();
+    if !gradle {
+        missing.push("Gradle".to_string());
+    }
+
+    // Android SDK.
+    let android_sdk_path = std::env::var_os("ANDROID_HOME")
+        .or_else(|| std::env::var_os("ANDROID_SDK_ROOT"))
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("LOCALAPPDATA")
+                .map(|base| std::path::PathBuf::from(base).join("Android").join("Sdk"))
+        })
+        .or_else(|| home_dir().map(|home| home.join("Android").join("Sdk")))
+        .or_else(|| Some(std::path::PathBuf::from(
+            "/Users/Shared/Android/sdk",
+        )))
+        .filter(|path| path.is_dir());
+    let android_sdk = android_sdk_path.is_some();
+    if !android_sdk {
+        missing.push("Android SDK".to_string());
+    }
+
+    if !kotlinc {
+        notes.push(
+            "Kotlin no es imprescindible: Gradle descarga el compilador si hace falta."
+                .to_string(),
+        );
+    }
+    if !android_sdk {
+        notes.push(
+            "Instala Android Studio (incluye SDK, JDK y Gradle) o exporta ANDROID_HOME."
+                .to_string(),
+        );
+    }
+
+    let can_build = java && gradle && android_sdk;
+
+    BuildToolchain {
+        os: std::env::consts::OS.to_string(),
+        java,
+        java_path,
+        java_version,
+        java_home,
+        kotlinc,
+        kotlinc_version,
+        gradle,
+        gradle_path,
+        gradle_version,
+        android_sdk,
+        android_sdk_path: android_sdk_path.map(|path| path.display().to_string()),
+        can_build,
+        missing,
+        notes,
+    }
+}
+
+fn find_apk(root: &Path) -> Option<std::path::PathBuf> {
+    if !root.is_dir() {
+        return None;
+    }
+    let entries = fs::read_dir(root).ok()?;
+    let mut best: Option<std::path::PathBuf> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_apk(&path) {
+                let newer = fs::metadata(&found)
+                    .and_then(|m| m.modified())
+                    .ok();
+                let current = best.as_ref().and_then(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
+                if best.is_none() || newer > current {
+                    best = Some(found);
+                }
+            }
+        } else if path.extension().map(|ext| ext == "apk").unwrap_or(false) {
+            best = Some(path);
+        }
+    }
+    best
 }
 
 // ============================== HELPERS ==============================
@@ -992,6 +1628,31 @@ fn write_icons_to_dir(
         fs::write(&icon_path, icon_bytes)
             .map_err(|e| format!("No se pudo escribir {}: {}", icon_path.display(), e))?;
     }
+    Ok(())
+}
+
+/// Copia el icono también a `icon/` en la raíz del proyecto. El índice del
+/// repositorio (gh-pages) y Nekoyomi esperan `icon/ic_launcher.png` e
+/// `icon/<pkg_id>.png`; sin ellos el ZIP local parecía tener "iconos faltantes".
+fn write_repo_icons(
+    target_dir: &Path,
+    pkg_id: &str,
+    mipmaps: &std::collections::HashMap<String, Vec<u8>>,
+) -> Result<(), String> {
+    let Some(icon_bytes) = mipmaps
+        .get("mipmap-xxxhdpi")
+        .or_else(|| mipmaps.get("mipmap-xxhdpi"))
+    else {
+        return Ok(());
+    };
+
+    let icon_dir = target_dir.join("icon");
+    fs::create_dir_all(&icon_dir)
+        .map_err(|e| format!("No se pudo crear {}: {}", icon_dir.display(), e))?;
+    fs::write(icon_dir.join("ic_launcher.png"), icon_bytes)
+        .map_err(|e| format!("No se pudo escribir el icono genérico: {}", e))?;
+    fs::write(icon_dir.join(format!("{}.png", pkg_id)), icon_bytes)
+        .map_err(|e| format!("No se pudo escribir el icono del paquete: {}", e))?;
     Ok(())
 }
 

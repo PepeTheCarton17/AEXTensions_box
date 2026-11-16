@@ -858,6 +858,15 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
     }
 "##;
 
+fn kt_path_literal(value: Option<&str>) -> String {
+    value
+        .unwrap_or("")
+        .trim()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace(['\n', '\r', '\t'], " ")
+}
+
 fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_name: &str, pkg_slug: &str, lang: &str, pkg_lang: &str, pkg_prefix: &str) -> String {
     let base_url = &analysis.url;
     let name = display_name;
@@ -865,6 +874,15 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
     let title_sel = &analysis.title_selector;
     let next_sel = &analysis.next_page_selector;
     let i18n = get_i18n(lang);
+
+    // Rutas reales detectadas. Si no se detectaron, se dejan vacías y el
+    // código generado usa la URL de entrada en vez de inventar `/animes`.
+    let popular_path = kt_path_literal(analysis.popular_path.as_deref());
+    let latest_path = kt_path_literal(analysis.latest_path.as_deref());
+    let search_path = kt_path_literal(analysis.search_path.as_deref());
+    let search_param = kt_path_literal(analysis.search_param.as_deref());
+    let page_style = analysis.page_style.as_str();
+    let supports_latest = if latest_path.is_empty() { "false" } else { "true" };
 
     let pref_audio_title = i18n.pref_audio_title;
     let pref_audio_entries = i18n.pref_audio_entries.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
@@ -879,6 +897,7 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
 
 import android.app.Application
 import android.content.SharedPreferences
+import android.net.Uri
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.MultiSelectListPreference
@@ -910,9 +929,38 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
 
     override val lang = "{lang}"
 
-    override val supportsLatest = true
+    override val supportsLatest = {supports_latest}
 
     override val client: OkHttpClient = network.cloudflareClient
+
+    // Rutas detectadas durante el análisis (vacías si no se encontraron).
+    private val listingPath = "{popular_path}"
+    private val latestPath = "{latest_path}"
+    private val searchPath = "{search_path}"
+    private val searchParam = "{search_param}"
+
+    private fun pageUrl(path: String, page: Int): String {{
+        val clean = if (path.isEmpty()) "/" else if (path.startsWith("/")) path else "/$path"
+        val base = "$baseUrl$clean"
+        return when ("{page_style}") {{
+            "path" -> if (page <= 1) base else "$baseUrl${{clean.trimEnd('/')}}/page/$page/"
+            "query" -> if (page <= 1) base
+                else "$base${{if (base.contains("?")) "&" else "?"}}page=$page"
+            else -> base
+        }}
+    }}
+
+    private fun searchUrl(query: String, page: Int): String {{
+        val path = if (searchPath.isEmpty()) "/" else if (searchPath.startsWith("/")) searchPath else "/$searchPath"
+        if (searchPath.isEmpty() || searchParam.isEmpty()) {{
+            return pageUrl(listingPath, page)
+        }}
+        val base = "$baseUrl$path"
+        val sep = if (base.contains("?")) "&" else "?"
+        val encoded = Uri.encode(query)
+        val first = "$base$sep$searchParam=$encoded"
+        return if (page <= 1) first else "$first&page=$page"
+    }}
 
     private val preferences: SharedPreferences by lazy {{
         Injekt.get<Application>().getSharedPreferences("source_$id", 0)
@@ -923,7 +971,7 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
         .add("Referer", "$baseUrl/")
 
     // ============================== POPULAR ANIME ==============================
-    override fun popularAnimeRequest(page: Int): Request = GET("$baseUrl/animes?page=$page", headers)
+    override fun popularAnimeRequest(page: Int): Request = GET(pageUrl(listingPath, page), headers)
 
     override fun popularAnimeSelector(): String = "{card_sel}"
 
@@ -935,19 +983,19 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
             ?: element.selectFirst("img")?.attr("abs:data-src")
     }}
 
-    override fun popularAnimeNextPageSelector(): String = "{next_sel}"
+    override fun popularAnimeNextPageSelector(): String? = "{next_sel}".ifBlank {{ null }}
 
     override fun popularAnimeParse(response: Response): AnimesPage =
         filterBlacklistedAnimes(super.popularAnimeParse(response))
 
     // ============================== LATEST UPDATES ==============================
-    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/recientes?page=$page", headers)
+    override fun latestUpdatesRequest(page: Int): Request = GET(pageUrl(latestPath, page), headers)
 
     override fun latestUpdatesSelector(): String = "{card_sel}"
 
     override fun latestUpdatesFromElement(element: Element): SAnime = popularAnimeFromElement(element)
 
-    override fun latestUpdatesNextPageSelector(): String = "{next_sel}"
+    override fun latestUpdatesNextPageSelector(): String? = "{next_sel}".ifBlank {{ null }}
 
     override fun latestUpdatesParse(response: Response): AnimesPage =
         filterBlacklistedAnimes(super.latestUpdatesParse(response))
@@ -965,9 +1013,9 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
         }}
 
         val url = if (finalQuery.isNotBlank()) {{
-            "$baseUrl/animes?search=$finalQuery&page=$page"
+            searchUrl(finalQuery, page)
         }} else {{
-            "$baseUrl/animes?page=$page"
+            pageUrl(listingPath, page)
         }}
         return GET(url, headers)
     }}
@@ -976,7 +1024,7 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
 
     override fun searchAnimeFromElement(element: Element): SAnime = popularAnimeFromElement(element)
 
-    override fun searchAnimeNextPageSelector(): String = "{next_sel}"
+    override fun searchAnimeNextPageSelector(): String? = "{next_sel}".ifBlank {{ null }}
 
     override fun searchAnimeParse(response: Response): AnimesPage =
         filterBlacklistedAnimes(super.searchAnimeParse(response))
@@ -1099,8 +1147,16 @@ fn generate_manga_source(
     let title_sel = &analysis.title_selector;
     let next_sel = &analysis.next_page_selector;
 
+    let popular_path = kt_path_literal(analysis.popular_path.as_deref());
+    let latest_path = kt_path_literal(analysis.latest_path.as_deref());
+    let search_path = kt_path_literal(analysis.search_path.as_deref());
+    let search_param = kt_path_literal(analysis.search_param.as_deref());
+    let page_style = analysis.page_style.as_str();
+    let supports_latest = if latest_path.is_empty() { "false" } else { "true" };
+
     format!(r#"package {pkg_prefix}.{pkg_lang}.{pkg_slug}
 
+import android.net.Uri
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.Page
@@ -1122,15 +1178,44 @@ class {class_name} : ParsedHttpSource() {{
 
     override val lang = "{lang}"
 
-    override val supportsLatest = true
+    override val supportsLatest = {supports_latest}
 
     override val client: OkHttpClient = network.cloudflareClient
+
+    // Rutas detectadas durante el análisis (vacías si no se encontraron).
+    private val listingPath = "{popular_path}"
+    private val latestPath = "{latest_path}"
+    private val searchPath = "{search_path}"
+    private val searchParam = "{search_param}"
+
+    private fun pageUrl(path: String, page: Int): String {{
+        val clean = if (path.isEmpty()) "/" else if (path.startsWith("/")) path else "/$path"
+        val base = "$baseUrl$clean"
+        return when ("{page_style}") {{
+            "path" -> if (page <= 1) base else "$baseUrl${{clean.trimEnd('/')}}/page/$page/"
+            "query" -> if (page <= 1) base
+                else "$base${{if (base.contains("?")) "&" else "?"}}page=$page"
+            else -> base
+        }}
+    }}
+
+    private fun searchUrl(query: String, page: Int): String {{
+        val path = if (searchPath.isEmpty()) "/" else if (searchPath.startsWith("/")) searchPath else "/$searchPath"
+        if (searchPath.isEmpty() || searchParam.isEmpty()) {{
+            return pageUrl(listingPath, page)
+        }}
+        val base = "$baseUrl$path"
+        val sep = if (base.contains("?")) "&" else "?"
+        val encoded = Uri.encode(query)
+        val first = "$base$sep$searchParam=$encoded"
+        return if (page <= 1) first else "$first&page=$page"
+    }}
 
     override fun headersBuilder(): Headers.Builder = super.headersBuilder()
         .add("Referer", "$baseUrl/")
 
     // ============================== POPULAR ==============================
-    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/page/$page/", headers)
+    override fun popularMangaRequest(page: Int): Request = GET(pageUrl(listingPath, page), headers)
 
     override fun popularMangaSelector(): String = "{card_sel}"
 
@@ -1142,26 +1227,26 @@ class {class_name} : ParsedHttpSource() {{
             ?: element.selectFirst("img")?.attr("abs:data-src")
     }}
 
-    override fun popularMangaNextPageSelector(): String = "{next_sel}"
+    override fun popularMangaNextPageSelector(): String? = "{next_sel}".ifBlank {{ null }}
 
     // ============================== LATEST ==============================
-    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/page/$page/", headers)
+    override fun latestUpdatesRequest(page: Int): Request = GET(pageUrl(latestPath, page), headers)
 
     override fun latestUpdatesSelector(): String = "{card_sel}"
 
     override fun latestUpdatesFromElement(element: Element): SManga = popularMangaFromElement(element)
 
-    override fun latestUpdatesNextPageSelector(): String = "{next_sel}"
+    override fun latestUpdatesNextPageSelector(): String? = "{next_sel}".ifBlank {{ null }}
 
     // ============================== SEARCH ==============================
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request =
-        GET("$baseUrl/?s=$query&page=$page", headers)
+        GET(searchUrl(query.trim(), page), headers)
 
     override fun searchMangaSelector(): String = "{card_sel}"
 
     override fun searchMangaFromElement(element: Element): SManga = popularMangaFromElement(element)
 
-    override fun searchMangaNextPageSelector(): String = "{next_sel}"
+    override fun searchMangaNextPageSelector(): String? = "{next_sel}".ifBlank {{ null }}
 
     override fun getFilterList(): FilterList = {class_name}Filters.getFilterList()
 
@@ -1268,20 +1353,16 @@ fn generate_android_manifest(pkg_id: &str, class_name: &str, app_label: &str, ex
     };
 
     format!(r#"<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="{pkg_id}">
-
-    <uses-feature android:name="{tag}" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application
         android:label="{app_label}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="true"
+        android:supportsRtl="true">
         <meta-data
             android:name="{tag}.class"
             android:value="{pkg_id}.{class_name}" />
-        <meta-data
-            android:name="{tag}.factory"
-            android:value="" />
         <meta-data
             android:name="{tag}.hasSettings"
             android:value="true" />

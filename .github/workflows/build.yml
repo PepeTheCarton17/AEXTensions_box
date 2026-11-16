@@ -18,6 +18,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set application version
+        shell: bash
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          echo "Building AEXT v$VERSION"
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='$VERSION';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          sed -i '0,/^version = ".*"/s//version = "'"$VERSION"'"/' src-tauri/Cargo.toml
+          node -e "const fs=require('fs');const c=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));c.version='$VERSION';fs.writeFileSync('src-tauri/tauri.conf.json',JSON.stringify(c,null,2)+'\n')"
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package-lock.json','utf8'));p.version='$VERSION';if(p.packages&&p.packages['']){p.packages[''].version='$VERSION'}fs.writeFileSync('package-lock.json',JSON.stringify(p,null,2)+'\n')"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -74,6 +84,16 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Set application version
+        shell: bash
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          echo "Building AEXT v$VERSION"
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='$VERSION';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          sed -i '0,/^version = ".*"/s//version = "'"$VERSION"'"/' src-tauri/Cargo.toml
+          node -e "const fs=require('fs');const c=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));c.version='$VERSION';fs.writeFileSync('src-tauri/tauri.conf.json',JSON.stringify(c,null,2)+'\n')"
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package-lock.json','utf8'));p.version='$VERSION';if(p.packages&&p.packages['']){p.packages[''].version='$VERSION'}fs.writeFileSync('package-lock.json',JSON.stringify(p,null,2)+'\n')"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -162,7 +182,7 @@ jobs:
           body: |
             ## AEXT v1.0.${{ github.run_number }} - Creador Automatizado de Extensiones Nekoyomi
 
-            Aplicación oficial multiplataforma (Android, Windows, Linux) para automatizar la creación de extensiones compatibles con Nekoyomi y Aniyomi, con servidor API y protocolo MCP embebido para asistencia con Inteligencia Artificial.
+            Aplicación oficial multiplataforma (Android, Windows, Linux) para automatizar la creación de extensiones compatibles con Nekoyomi y Aniyomi, con servidor API local y servidor MCP embebido para herramientas de diagnóstico externas.
 
             ### Archivos de Instalación Disponibles:
 
@@ -175,11 +195,21 @@ jobs:
             | **Linux (PC AppImage)** | `AEXT-v1.0.${{ github.run_number }}-linux-x86_64.AppImage` | x86_64 |
             | **Linux (PC Debian/Ubuntu)**| `AEXT-v1.0.${{ github.run_number }}-linux-amd64.deb` | x86_64 |
 
+            ### Novedades de esta versión
+
+            - Versión de la aplicación sincronizada con la release (la app ya no muestra una versión antigua).
+            - Selector de repositorio con opción «Ninguno» y campo para escribir otro repositorio.
+            - Panel de generación desplazable en pantallas pequeñas.
+            - Compilación local opcional con Gradle + Android SDK (detecta Java, Kotlin, Gradle y SDK).
+            - Confirmación de descarga y acceso directo a la carpeta del código generado.
+            - Copias de seguridad automáticas antes de cada parche, con restauración desde la app.
+            - Interfaz en español e inglés (cambio inmediato).
+
             ---
 
             ### Aviso Legal / Disclaimer
             > **IMPORTANTE**: Este software es una herramienta de código abierto desarrollada **exclusivamente con fines educativos y de investigación**.
-            > 
+            >
             > 1. **Sin Alojamiento de Contenido**: Ni esta aplicación ni sus desarrolladores alojan, poseen, retransmiten o distribuyen ningún tipo de contenido multimedia, video, audio o manga.
             > 2. **Servidores de Terceros**: Las extensiones generadas son scrapers que se comunican exclusivamente con servidores web públicos e independientes operados por terceros no afiliados.
             > 3. **Propiedad Intelectual**: Todas las marcas comerciales, logotipos e imágenes pertenecen a sus respectivos propietarios legales.

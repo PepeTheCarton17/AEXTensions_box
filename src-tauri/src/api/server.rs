@@ -198,7 +198,7 @@ async fn analyze_url_handler(
     }
 }
 
-// ==================== ENDPOINTS DE ASISTENCIA IA & MCP ====================
+// ==================== ENDPOINTS DE PARCHE MANUAL & MCP ====================
 
 async fn get_ai_diagnostics_handler(State(state): State<AppState>) -> Response {
     let logs = state.logs.read().await;
@@ -243,7 +243,7 @@ async fn apply_ai_patch_handler(
     state
         .add_log(
             "INFO",
-            &format!("Aplicando parche de IA a la extensión: {}", patch.pkg_id),
+            &format!("Aplicando parche manual a la extensión: {}", patch.pkg_id),
         )
         .await;
 
@@ -265,6 +265,15 @@ async fn apply_ai_patch_handler(
     ext.version = next_version.clone();
 
     let dir = crate::commands::local_extension_dir(&state, &ext.pkg_id);
+    // Copia de seguridad antes de tocar nada: permite volver al estado
+    // original desde "Herramientas → Versiones del código".
+    let backup = if dir.is_dir() {
+        crate::engine::backup::create_backup(&dir, "before-patch")
+            .ok()
+            .map(|info| info.name)
+    } else {
+        None
+    };
     let persisted = apply_patch_to_files(&dir, &patch, next_code, &next_version);
 
     drop(extensions);
@@ -275,7 +284,7 @@ async fn apply_ai_patch_handler(
             .add_log(
                 "SUCCESS",
                 &format!(
-                    "Extensión {} actualizada con parche de IA a v{} (archivos locales reescritos)",
+                    "Extensión {} actualizada con parche manual a v{} (archivos locales reescritos)",
                     patch.pkg_id, next_version
                 ),
             )
@@ -302,7 +311,8 @@ async fn apply_ai_patch_handler(
         Json(serde_json::json!({
             "status": "patched",
             "version": next_version,
-            "files_patched": persisted.unwrap_or(false)
+            "files_patched": persisted.unwrap_or(false),
+            "backup": backup
         })),
     )
         .into_response()
@@ -388,8 +398,8 @@ fn apply_patch_to_files(
 
         if let Some(code) = patch.custom_video_code.as_deref() {
             if !code.trim().is_empty() {
-                let marker = "\n// ============================== AEXT IA PATCH ==============================\n";
-                if !patched.contains("AEXT IA PATCH") {
+                let marker = "\n// ============================== AEXT MANUAL PATCH ==============================\n";
+                if !patched.contains("AEXT MANUAL PATCH") {
                     patched.push_str(marker);
                     patched.push_str(code);
                     patched.push('\n');
@@ -491,7 +501,7 @@ fn collect_files_with_extension(dir: &FsPath, extension: &str, out: &mut Vec<Pat
 async fn mcp_manifest_handler() -> Response {
     let manifest = serde_json::json!({
         "name": "AEXT MCP Server",
-        "description": "Servidor MCP nativo de AEXT para permitir a modelos de IA inspeccionar el estado en dispositivos móviles y asistir en la resolución de extensiones",
+        "description": "Servidor MCP nativo de AEXT (solo loopback) para que clientes MCP externos inspeccionen el estado y apliquen parches manuales a una extensión",
         "version": app_version(),
         "tools": [
             {
