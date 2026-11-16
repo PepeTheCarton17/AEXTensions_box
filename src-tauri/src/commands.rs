@@ -241,6 +241,7 @@ pub async fn generate_extensions(
                 let target_dir = local_extension_dir(&state, &bundle.pkg_id);
                 // Limpiar restos de una generación anterior (estructura antigua).
                 let _ = fs::remove_dir_all(&target_dir);
+                rewrite_readme_for_local(&mut bundle.files);
                 write_bundle_to_dir(&target_dir, &bundle.files)?;
                 write_icons_to_dir(&target_dir, &bundle.module_path, &mipmaps)?;
                 write_repo_icons(&target_dir, &bundle.pkg_id, &mipmaps)?;
@@ -446,6 +447,14 @@ pub async fn generate_extensions(
                         .await;
                 }
 
+                // Copia local del proyecto: es la fuente del ZIP de código y
+                // permite ver los archivos sin clonar el repositorio.
+                let target_dir = local_extension_dir(&state, &ext_item.pkg_id);
+                let _ = fs::remove_dir_all(&target_dir);
+                write_bundle_to_dir(&target_dir, &bundle.files)?;
+                write_icons_to_dir(&target_dir, &bundle.module_path, &mipmaps)?;
+                write_repo_icons(&target_dir, &ext_item.pkg_id, &mipmaps)?;
+
                 ext_item.github_repo_url = Some(repo.html_url.clone());
                 ext_item.nekoyomi_repo_url = Some(format!(
                     "https://raw.githubusercontent.com/{}/gh-pages/index.min.json",
@@ -551,6 +560,11 @@ pub async fn update_extension(
     // 1. Reescribir siempre la copia local (sirve también como fuente del ZIP).
     let target_dir = local_extension_dir(&state, &bundle.pkg_id);
     let _ = fs::remove_dir_all(&target_dir);
+    if existing.github_repo_url.is_none() {
+        // Sin repositorio no hay rama `gh-pages`: el README local no debe
+        // mostrar enlaces con el placeholder del repositorio.
+        rewrite_readme_for_local(&mut bundle.files);
+    }
     write_bundle_to_dir(&target_dir, &bundle.files)?;
     write_icons_to_dir(&target_dir, &bundle.module_path, &mipmaps)?;
     write_repo_icons(&target_dir, &bundle.pkg_id, &mipmaps)?;
@@ -597,6 +611,12 @@ pub async fn update_extension(
         rewrite_readme_for_repo(&mut bundle.files, &repo.full_name);
         // Igual que al generar: no perder los include() de un repo compartido.
         merge_existing_settings(&client, &repo, &mut bundle).await;
+
+        // La copia local se escribió antes de conocer el repositorio: sincroniza
+        // el README para que el ZIP de código tenga los deep links reales.
+        if let Some(readme) = bundle.files.get("README.md") {
+            let _ = fs::write(target_dir.join("README.md"), readme);
+        }
 
         let mut branch = if repo.empty {
             String::new()
@@ -1679,6 +1699,40 @@ fn rewrite_readme_for_repo(
         .replace("PepeTheCarton17%2F{REPO_NAME}", &encoded)
         .replace("PepeTheCarton17/{REPO_NAME}", repo_full_name);
     *readme = replaced.into_bytes();
+}
+
+/// El README se genera antes de saber si habrá repositorio. En modo local no
+/// existe la rama `gh-pages`, así que la tabla de instalación en 1 clic se
+/// sustituye por una nota: dejar `{REPO_NAME}` dentro de un enlace parece un
+/// error del generador.
+fn rewrite_readme_for_local(files: &mut std::collections::HashMap<String, Vec<u8>>) {
+    let Some(readme) = files.get_mut("README.md") else {
+        return;
+    };
+    let text = String::from_utf8_lossy(readme).to_string();
+    if !text.contains("{REPO_NAME}") {
+        return;
+    }
+    let (Some(start), Some(end)) = (
+        text.find("## Instalación en 1 Clic"),
+        text.find("## Información de la Extensión"),
+    ) else {
+        return;
+    };
+    if start >= end {
+        return;
+    }
+    let mut out = String::with_capacity(text.len());
+    out.push_str(&text[..start]);
+    out.push_str(
+        "## Instalación\n\n\
+         > Este proyecto todavía no está publicado en GitHub, así que no hay enlaces \
+         de instalación todavía. Genera la extensión en **modo GitHub** y AEXT publicará \
+         el repositorio con su rama `gh-pages` y el `index.min.json`.\n\n\
+         ---\n\n",
+    );
+    out.push_str(&text[end..]);
+    *readme = out.into_bytes();
 }
 
 pub fn parse_repo_target(raw: &str) -> (Option<String>, String) {

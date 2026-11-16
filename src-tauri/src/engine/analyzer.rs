@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use scraper::{ElementRef, Html, Selector};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -464,7 +464,108 @@ impl SiteAnalyzer {
             };
         }
 
+        // Portadas hechas con React/Next/Vue no usan `article`/`div.card`: sus
+        // tarjetas son enlaces con una clase generada (p. ej. `a.TileLink__x`).
+        // Si las listas fijas no dieron nada, se agrupa por token de clase.
+        if best.count < 4 {
+            if let Some(fallback) = self.detect_repeated_links(doc, origin, host) {
+                if fallback.count > best.count {
+                    best = fallback;
+                }
+            }
+        }
+
         best
+    }
+
+    /// Detecta una rejilla de tarjetas sin clases conocidas.
+    ///
+    /// Agrupa los enlaces internos por cada token de su atributo `class` y se
+    /// queda con el grupo que más se repite entre enlaces distintos que además
+    /// contienen una imagen. El requisito de la imagen es lo que separa una
+    /// tarjeta de catálogo de un menú de navegación.
+    fn detect_repeated_links(&self, doc: &Html, origin: &str, host: &str) -> Option<CatalogInfo> {
+        let link_sel = Selector::parse("a[href]").ok()?;
+        let img_sel = Selector::parse("img").ok()?;
+
+        let mut groups: HashMap<String, Vec<ElementRef<'_>>> = HashMap::new();
+        for a in doc.select(&link_sel) {
+            let href = a.value().attr("href").unwrap_or("").trim();
+            let Some(path) = Self::same_origin_path(href, origin, host) else { continue };
+            if path == "/" || path.is_empty() {
+                continue;
+            }
+            // Sin imagen no es una tarjeta (descarta menús, breadcrumbs, footer).
+            if a.select(&img_sel).next().is_none() {
+                continue;
+            }
+            let class = a.value().attr("class").unwrap_or("");
+            for token in class.split_whitespace() {
+                if token.len() < 4 {
+                    continue;
+                }
+                groups.entry(token.to_string()).or_default().push(a);
+            }
+        }
+
+        let mut best: Option<(String, usize, Vec<String>)> = None;
+        for (token, cards) in groups {
+            if cards.len() < 6 {
+                continue;
+            }
+
+            let mut hrefs = HashSet::new();
+            let mut samples: Vec<String> = Vec::new();
+            let mut with_alt = 0usize;
+            for card in &cards {
+                let href = card.value().attr("href").unwrap_or("").trim();
+                hrefs.insert(href.to_string());
+                let alt = card
+                    .select(&img_sel)
+                    .next()
+                    .map(|img| img.value().attr("alt").unwrap_or("").trim().to_string())
+                    .unwrap_or_default();
+                if !alt.is_empty() {
+                    with_alt += 1;
+                    if samples.len() < 6 && !samples.contains(&alt) {
+                        samples.push(alt);
+                    }
+                }
+            }
+
+            // Enlaces repetidos de verdad y con texto legible en la mayoría.
+            if hrefs.len() < 6 || with_alt * 2 < cards.len() {
+                continue;
+            }
+            let better = best.as_ref().map(|(_, count, _)| cards.len() > *count).unwrap_or(true);
+            if better {
+                best = Some((token, cards.len(), samples));
+            }
+        }
+
+        let (token, count, samples) = best?;
+        let plain_identifier = token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && !token.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true);
+        let card_selector = if plain_identifier {
+            format!("a.{}", token)
+        } else {
+            format!("a[class*=\"{}\"]", token)
+        };
+
+        let (next_page_selector, page_style) = self.detect_pagination(doc, origin, host);
+
+        Some(CatalogInfo {
+            card_selector,
+            // La tarjeta es el propio enlace: el título está en el `alt` de la
+            // imagen o en el atributo `title`. `img` evita un selector vacío.
+            title_selector: "img".to_string(),
+            next_page_selector,
+            page_style,
+            count,
+            samples,
+        })
     }
 
     fn detect_section_paths(
@@ -942,6 +1043,39 @@ mod tests {
         let (search_path, search_param) = analyzer.detect_search(&doc, origin, host, "generic");
         assert_eq!(search_path.as_deref(), Some("/buscar"));
         assert_eq!(search_param.as_deref(), Some("q"));
+    }
+
+    #[test]
+    fn detects_cards_from_repeated_link_classes() {
+        let analyzer = SiteAnalyzer::new();
+        let doc = Html::parse_document(
+            r#"<!doctype html><html><body>
+<nav>
+  <a class="vds-nav-item" href="/latam/live-tv/">TV</a>
+  <a class="vds-nav-item" href="/latam/movies/">Películas</a>
+  <a class="vds-nav-item" href="/latam/series/">Series</a>
+  <a class="vds-nav-item" href="/latam/kids/">Kids</a>
+  <a class="vds-nav-item" href="/latam/sports/">Deportes</a>
+  <a class="vds-nav-item" href="/latam/news/">Noticias</a>
+</nav>
+<main>
+  <a class="TileLink_tileLink__pIMWG" href="/latam/shows/the-nanny-ptv3/"><img alt="The Nanny" src="/a.jpg"></a>
+  <a class="TileLink_tileLink__pIMWG" href="/latam/shows/csi-miami-ptv1/"><img alt="CSI: Miami" src="/b.jpg"></a>
+  <a class="TileLink_tileLink__pIMWG" href="/latam/shows/friends-ptv2/"><img alt="Friends" src="/c.jpg"></a>
+  <a class="TileLink_tileLink__pIMWG" href="/latam/shows/seinfeld-ptv4/"><img alt="Seinfeld" src="/d.jpg"></a>
+  <a class="TileLink_tileLink__pIMWG" href="/latam/shows/frasier-ptv5/"><img alt="Frasier" src="/e.jpg"></a>
+  <a class="TileLink_tileLink__pIMWG" href="/latam/shows/cheers-ptv6/"><img alt="Cheers" src="/f.jpg"></a>
+</main>
+</body></html>"#,
+        );
+
+        let catalog = analyzer.detect_catalog(&doc, "https://pluto.tv", "pluto.tv");
+        assert_eq!(catalog.count, 6);
+        assert_eq!(catalog.card_selector, "a.TileLink_tileLink__pIMWG");
+        assert_eq!(catalog.title_selector, "img");
+        assert!(catalog.samples.contains(&"Friends".to_string()));
+        // La barra de navegación no tiene imágenes: no debe ganar el grupo.
+        assert!(!catalog.card_selector.contains("vds-nav-item"));
     }
 
     #[test]

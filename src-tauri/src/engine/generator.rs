@@ -871,7 +871,11 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
     let base_url = &analysis.url;
     let name = display_name;
     let card_sel = &analysis.card_selector;
-    let title_sel = &analysis.title_selector;
+    let title_sel = if analysis.title_selector.trim().is_empty() {
+        "img".to_string()
+    } else {
+        analysis.title_selector.clone()
+    };
     let next_sel = &analysis.next_page_selector;
     let i18n = get_i18n(lang);
 
@@ -921,7 +925,7 @@ import org.jsoup.nodes.Element
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
-class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
+class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
 
     override val name = "{name}"
 
@@ -976,11 +980,21 @@ class {class_name} : ConfigurableAnimeSource, ParsedAnimeHttpSource() {{
     override fun popularAnimeSelector(): String = "{card_sel}"
 
     override fun popularAnimeFromElement(element: Element): SAnime = SAnime.create().apply {{
-        val link = element.selectFirst("a")
+        // En muchas portadas la tarjeta ES el enlace (`a.card`): `selectFirst`
+        // solo busca descendientes, así que hay que aceptar el propio nodo.
+        val link = if (element.tagName() == "a") element else element.selectFirst("a")
         setUrlWithoutDomain(link?.attr("href") ?: "")
-        title = element.selectFirst("{title_sel}")?.text() ?: link?.attr("title") ?: "Sin Título"
-        thumbnail_url = element.selectFirst("img")?.attr("abs:src")
-            ?: element.selectFirst("img")?.attr("abs:data-src")
+        title = element.selectFirst("{title_sel}")?.text()?.trim()?.takeIf {{ it.isNotEmpty() }}
+            ?: link?.attr("title")?.trim()?.takeIf {{ it.isNotEmpty() }}
+            ?: element.selectFirst("img[alt]")?.attr("alt")?.trim()?.takeIf {{ it.isNotEmpty() }}
+            ?: "Sin Título"
+        thumbnail_url = element.selectFirst("img")
+            ?.let {{ img ->
+                img.attr("abs:src")
+                    .ifBlank {{ img.attr("abs:data-src") }}
+                    .ifBlank {{ img.attr("abs:data-lazy-src") }}
+            }}
+            ?.takeIf {{ it.isNotEmpty() }}
     }}
 
     override fun popularAnimeNextPageSelector(): String? = "{next_sel}".ifBlank {{ null }}
@@ -1144,7 +1158,11 @@ fn generate_manga_source(
     let base_url = &analysis.url;
     let name = display_name;
     let card_sel = &analysis.card_selector;
-    let title_sel = &analysis.title_selector;
+    let title_sel = if analysis.title_selector.trim().is_empty() {
+        "img".to_string()
+    } else {
+        analysis.title_selector.clone()
+    };
     let next_sel = &analysis.next_page_selector;
 
     let popular_path = kt_path_literal(analysis.popular_path.as_deref());
@@ -1220,11 +1238,21 @@ class {class_name} : ParsedHttpSource() {{
     override fun popularMangaSelector(): String = "{card_sel}"
 
     override fun popularMangaFromElement(element: Element): SManga = SManga.create().apply {{
-        val link = element.selectFirst("a")
+        // La tarjeta puede ser el propio enlace (`a.card`), no un contenedor.
+        val link = if (element.tagName() == "a") element else element.selectFirst("a")
         setUrlWithoutDomain(link?.attr("href") ?: "")
-        title = element.selectFirst("{title_sel}")?.text() ?: link?.text() ?: "Sin Título"
-        thumbnail_url = element.selectFirst("img")?.attr("abs:src")
-            ?: element.selectFirst("img")?.attr("abs:data-src")
+        title = element.selectFirst("{title_sel}")?.text()?.trim()?.takeIf {{ it.isNotEmpty() }}
+            ?: link?.attr("title")?.trim()?.takeIf {{ it.isNotEmpty() }}
+            ?: element.selectFirst("img[alt]")?.attr("alt")?.trim()?.takeIf {{ it.isNotEmpty() }}
+            ?: link?.text()?.trim()?.takeIf {{ it.isNotEmpty() }}
+            ?: "Sin Título"
+        thumbnail_url = element.selectFirst("img")
+            ?.let {{ img ->
+                img.attr("abs:src")
+                    .ifBlank {{ img.attr("abs:data-src") }}
+                    .ifBlank {{ img.attr("abs:data-lazy-src") }}
+            }}
+            ?.takeIf {{ it.isNotEmpty() }}
     }}
 
     override fun popularMangaNextPageSelector(): String? = "{next_sel}".ifBlank {{ null }}
@@ -1489,6 +1517,8 @@ build/
 .idea/
 *.iml
 local.properties
+__pycache__/
+*.pyc
 "#;
 
 
@@ -1554,9 +1584,13 @@ fn generate_repo_index_script() -> String {
 """Genera el repositorio de extensiones para Nekoyomi / Aniyomi.
 
 Lee los APK compilados por Gradle y produce:
-  - index.json / index.min.json / index.pb
+  - index.json / index.min.json (formato JSON, el canónico)
   - repo.json (con huella de firma)
   - copia de APKs e iconos para descarga directa
+
+No se publica `index.pb`: Nekoyomi puede descargarlo con prioridad y un
+protobuf inválido (JSON copiado) rompería el repositorio. Sin `index.pb` y con
+`index_v2` en null, los clientes usan `index.min.json`, que sí es válido.
 """
 
 import argparse
@@ -1699,6 +1733,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generador de índice de repositorio Nekoyomi")
     parser.add_argument("--out", default="repo_dist", help="Carpeta de salida publicada en gh-pages")
     parser.add_argument("--repo-name", default="Nekoyomi Extensions", help="Nombre visible del repositorio")
+    parser.add_argument("--repo-url", default="https://github.com", help="URL pública del repositorio")
     args = parser.parse_args()
 
     output_dir = Path(args.out)
@@ -1738,6 +1773,8 @@ def main() -> None:
                 "code": meta["code"],
                 "version": meta["version"],
                 "nsfw": 0,
+                "hasReadme": 0,
+                "hasChangelog": 0,
                 "sha256": sha256_file(apk),
                 "size": apk.stat().st_size,
                 "sources": [
@@ -1759,14 +1796,24 @@ def main() -> None:
     with open(index_min, "w", encoding="utf-8") as handle:
         json.dump(extensions, handle, separators=(",", ":"), ensure_ascii=False)
 
-    (output_dir / "index.pb").write_bytes(index_min.read_bytes())
+    # No se escribe index.pb a propósito (ver docstring): un pb inválido hace
+    # que los clientes que lo piden primero descarten el repositorio entero.
+    stale_pb = output_dir / "index.pb"
+    if stale_pb.exists():
+        stale_pb.unlink()
 
     repo_meta = {
         "index_v2": None,
         "meta": {
             "name": args.repo_name,
             "shortName": args.repo_name.lower().replace(" ", ""),
-            "website": "https://github.com",
+            # GitHub Actions expone "owner/repo"; fuera de Actions se deja el
+            # valor de --repo-url si se pasó.
+            "website": (
+                f"https://github.com/{os.environ['GITHUB_REPOSITORY']}"
+                if os.environ.get("GITHUB_REPOSITORY")
+                else args.repo_url
+            ),
             "signingKeyFingerprint": fingerprint,
         },
     }

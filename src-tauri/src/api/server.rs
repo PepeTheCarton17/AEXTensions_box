@@ -149,6 +149,17 @@ async fn download_extension_handler(
     response
 }
 
+/// Directorios que no deben entrar en el ZIP de código: son regenerables
+/// (`build`), locales (`.aext-backups`) o temporales (`__pycache__`).
+const SKIPPED_ZIP_DIRS: &[&str] = &[
+    ".aext-backups",
+    ".gradle",
+    ".git",
+    ".idea",
+    "build",
+    "__pycache__",
+];
+
 fn collect_dir_entries(root: &FsPath, current: &FsPath, out: &mut Vec<(String, Vec<u8>)>) {
     let Ok(read_dir) = fs::read_dir(current) else {
         return;
@@ -156,6 +167,10 @@ fn collect_dir_entries(root: &FsPath, current: &FsPath, out: &mut Vec<(String, V
     for entry in read_dir.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            let dir_name = entry.file_name().to_string_lossy().to_string();
+            if SKIPPED_ZIP_DIRS.iter().any(|skip| skip.eq_ignore_ascii_case(&dir_name)) {
+                continue;
+            }
             collect_dir_entries(root, &path, out);
         } else if path.is_file() {
             let Ok(relative) = path.strip_prefix(root) else {
