@@ -877,6 +877,13 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
         analysis.title_selector.clone()
     };
     let next_sel = &analysis.next_page_selector;
+    // Selector de episodios comprobado en una ficha real; si el sondeo no pudo
+    // abrir una, se mantiene el genérico.
+    let episode_sel = if analysis.episode_selector.trim().is_empty() {
+        "li.episode, a[href*=/ver/], div.episodios a".to_string()
+    } else {
+        analysis.episode_selector.clone()
+    };
     let i18n = get_i18n(lang);
 
     // Rutas reales detectadas. Si no se detectaron, se dejan vacías y el
@@ -1066,23 +1073,45 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
 
     // ============================== DETAILS ==============================
     override fun animeDetailsParse(document: Document): SAnime = SAnime.create().apply {{
-        title = document.selectFirst("h1, .title, .entry-title")?.text() ?: "Anime"
-        description = document.selectFirst("p.sinopsis, div.description, .entry-content p")?.text()
+        title = document.selectFirst("h1, .title, .entry-title")?.text()?.trim()
+            ?.takeIf {{ it.isNotEmpty() }}
+            ?: document.selectFirst("meta[property=og:title]")?.attr("content")
+            ?: "Anime"
+        description = document.selectFirst("p.sinopsis, div.description, .entry-content p")?.text()?.trim()
+            ?.takeIf {{ it.isNotEmpty() }}
+            ?: document.selectFirst("meta[name=description], meta[property=og:description]")?.attr("content")
         genre = document.select("a[href*=/genero/], a[href*=/genre/], .genres a").joinToString(", ") {{ it.text() }}
         status = SAnime.UNKNOWN
         thumbnail_url = document.selectFirst("img.poster, .poster img")?.attr("abs:src")
+            ?: document.selectFirst("meta[property=og:image]")?.attr("content")
+            ?: document.selectFirst("article img, main img")?.attr("abs:src")
     }}
 
     // ============================== EPISODES ==============================
-    override fun episodeListSelector(): String = "li.episode, a[href*=/ver/], div.episodios a"
+    override fun episodeListSelector(): String = "{episode_sel}"
 
     override fun episodeFromElement(element: Element): SEpisode = SEpisode.create().apply {{
+        // La tarjeta puede ser el propio enlace.
         val link = if (element.tagName() == "a") element else element.selectFirst("a")
         setUrlWithoutDomain(link?.attr("href") ?: "")
-        name = element.selectFirst(".title, span")?.text() ?: link?.text() ?: "Episodio"
-        val numRegex = Regex("""(?:episodio|capitulo|cap|ep)[\s-]*(\d+)""", RegexOption.IGNORE_CASE)
-        val match = numRegex.find(name)
-        episode_number = match?.groupValues?.get(1)?.toFloatOrNull() ?: 1f
+        // Nombre: un título explícito o los dos primeros textos cortos. En
+        // tarjetas como las de Pluto TV el primero es "T1 E1" y el segundo el
+        // título del episodio; así no se cuela la sinopsis completa.
+        val explicitTitle = element.selectFirst(".title, [class*=episodeTitle], h3, h4")
+            ?.text()?.trim()?.takeIf {{ it.isNotEmpty() }}
+        val shortTexts = element.select("span")
+            .map {{ it.text().trim() }}
+            .filter {{ it.isNotEmpty() && it.length <= 60 }}
+            .take(2)
+            .joinToString(" ")
+        name = explicitTitle
+            ?: shortTexts.takeIf {{ it.isNotEmpty() }}
+            ?: link?.text()?.trim()?.takeIf {{ it.isNotEmpty() }}
+            ?: "Episodio"
+        val seasonEpisode = Regex("""[TS]\s*\d+\s*[Ee]\s*(\d+)""", RegexOption.IGNORE_CASE).find(name)
+        val wordEpisode = Regex("""(?:episodio|capitulo|capítulo|ep)\s*[-#:]?\s*(\d+)""", RegexOption.IGNORE_CASE).find(name)
+        episode_number = (seasonEpisode?.groupValues?.get(1) ?: wordEpisode?.groupValues?.get(1))
+            ?.toFloatOrNull() ?: 1f
     }}
 
     override fun videoFromElement(element: Element): Video = throw UnsupportedOperationException()

@@ -32,6 +32,10 @@ pub struct AnalysisResult {
     pub page_style: String,
     /// True si la portada contiene tarjetas de catálogo reconocibles.
     pub catalog_detected: bool,
+    /// Selector de episodios detectado en una ficha de ejemplo. Vacío si no se
+    /// pudo comprobar; el generador usa entonces el selector genérico.
+    #[serde(default)]
+    pub episode_selector: String,
     /// Muestra de títulos encontrados en la portada (para confirmar en la UI).
     pub sample_items: Vec<String>,
     /// Avisos honestos sobre lo que no se pudo detectar o verificar.
@@ -40,6 +44,21 @@ pub struct AnalysisResult {
 
 pub struct SiteAnalyzer {
     client: reqwest::Client,
+}
+
+/// Resultado de abrir una página de detalle de ejemplo.
+///
+/// El generador usa selectores genéricos para detalle y episodios. Este sondeo
+/// no los mejora: sirve para saber si el sitio expone episodios en el HTML y
+/// avisar en la UI cuando no, en lugar de dar por hecho que la extensión
+/// funcionará.
+struct DetailProbe {
+    url: String,
+    fetched: bool,
+    episode_links: usize,
+    has_embed: bool,
+    /// Selector CSS que sí encuentra los episodios en esa ficha.
+    episode_selector: Option<String>,
 }
 
 impl SiteAnalyzer {
@@ -52,6 +71,41 @@ impl SiteAnalyzer {
     }
 
     pub async fn analyze(&self, url: &str) -> Result<AnalysisResult, String> {
+        let (mut result, demo_href) = self.analyze_page(url).await?;
+
+        // El sondeo del detalle se hace aquí, fuera de `analyze_page`, porque
+        // `scraper::Html` no es `Send` y no puede sobrevivir a un `await`.
+        if let Some(path) = demo_href {
+            let probe = self
+                .probe_detail(&format!("{}{}", result.url, path))
+                .await;
+            if let Some(selector) = &probe.episode_selector {
+                result.episode_selector = selector.clone();
+            }
+            if !probe.fetched {
+                result.warnings.push(format!(
+                    "No se pudo abrir una página de detalle de ejemplo ({}) para comprobar episodios.",
+                    probe.url
+                ));
+            } else if probe.episode_links == 0 {
+                result.warnings.push(format!(
+                    "La página de detalle de ejemplo ({}) no contiene enlaces de episodios: la ficha y la lista de episodios generadas son genéricas y necesitarán ajustes manuales.",
+                    probe.url
+                ));
+            } else if !probe.has_embed {
+                result.warnings.push(format!(
+                    "La página de detalle de ejemplo tiene {} enlaces de episodios, pero el HTML no incluye ningún reproductor (.m3u8/iframe): los servidores pueden cargarse por JavaScript y la reproducción no está verificada.",
+                    probe.episode_links
+                ));
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Analiza el HTML de la portada. Devuelve además la ruta de una ficha de
+    /// ejemplo (si hay catálogo) para sondearla después.
+    async fn analyze_page(&self, url: &str) -> Result<(AnalysisResult, Option<String>), String> {
         let parsed = Url::parse(url.trim()).map_err(|e| format!("URL inválida '{}': {}", url, e))?;
         if parsed.scheme() != "http" && parsed.scheme() != "https" {
             return Err(format!("Solo se admiten URLs http/https: {}", url));
@@ -139,6 +193,14 @@ impl SiteAnalyzer {
             "none".to_string()
         };
 
+        // 7.5 Ficha de ejemplo: el generador usa selectores genéricos para el
+        //     detalle, así que se guarda una URL para sondearla en `analyze`.
+        let demo_href = if catalog_detected {
+            Self::first_card_href(&doc, &card_selector, &origin, &host)
+        } else {
+            None
+        };
+
         // 8. Avisos honestos: mejor advertir que generar rutas falsas.
         let mut warnings = Vec::new();
         let looks_spa = body.contains("__NEXT_DATA__")
@@ -190,29 +252,117 @@ impl SiteAnalyzer {
             ));
         }
 
-        Ok(AnalysisResult {
-            url: origin,
-            entry_url,
-            name,
-            lang: "es".to_string(),
-            ext_type,
-            cms,
-            favicon_url,
-            detected_hosts,
-            has_sub_dub,
-            protections,
-            card_selector,
-            title_selector,
-            next_page_selector,
-            popular_path,
-            latest_path,
-            search_path,
-            search_param,
-            page_style,
-            catalog_detected,
-            sample_items: catalog.samples,
-            warnings,
-        })
+        Ok((
+            AnalysisResult {
+                url: origin,
+                entry_url,
+                name,
+                lang: "es".to_string(),
+                ext_type,
+                cms,
+                favicon_url,
+                detected_hosts,
+                has_sub_dub,
+                protections,
+                card_selector,
+                title_selector,
+                next_page_selector,
+                popular_path,
+                latest_path,
+                search_path,
+                search_param,
+                page_style,
+                catalog_detected,
+                episode_selector: String::new(),
+                sample_items: catalog.samples,
+                warnings,
+            },
+            demo_href,
+        ))
+    }
+
+    /// Primer enlace interno de una tarjeta del catálogo. Se usa solo como
+    /// muestra para sondeos; nunca se escribe en la extensión.
+    fn first_card_href(doc: &Html, card_selector: &str, origin: &str, host: &str) -> Option<String> {
+        let sel = Selector::parse(card_selector).ok()?;
+        let anchor_sel = Selector::parse("a[href]").ok()?;
+        for card in doc.select(&sel) {
+            let anchor = if card.value().name() == "a" {
+                Some(card)
+            } else {
+                card.select(&anchor_sel).next()
+            };
+            let Some(anchor) = anchor else { continue };
+            let href = anchor.value().attr("href").unwrap_or("");
+            if let Some(path) = Self::same_origin_path(href, origin, host) {
+                if path != "/" {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
+    /// Abre una ficha de ejemplo, cuenta enlaces de episodios y deduce un
+    /// selector que sí los encuentre. No modifica el análisis: solo aporta
+    /// evidencia para los avisos y para la lista de episodios generada.
+    async fn probe_detail(&self, detail_url: &str) -> DetailProbe {
+        let mut probe = DetailProbe {
+            url: detail_url.to_string(),
+            fetched: false,
+            episode_links: 0,
+            has_embed: false,
+            episode_selector: None,
+        };
+
+        let Ok(resp) = self.client.get(detail_url).send().await else {
+            return probe;
+        };
+        if !resp.status().is_success() {
+            return probe;
+        }
+        let Ok(body) = resp.text().await else {
+            return probe;
+        };
+        probe.fetched = true;
+        probe.has_embed = body.contains(".m3u8") || body.contains("<iframe");
+        if let Some((selector, count)) = Self::detect_episode_selector(&body) {
+            probe.episode_selector = Some(selector);
+            probe.episode_links = count;
+        }
+
+        probe
+    }
+
+    /// Deduce un selector de episodios a partir de una ficha. Se agrupa por el
+    /// segmento de ruta que delata un episodio; `watch` se queda fuera a
+    /// propósito porque en Pluto TV es el menú de TV en directo.
+    fn detect_episode_selector(body: &str) -> Option<(String, usize)> {
+        let doc = Html::parse_document(body);
+        let sel = Selector::parse("a[href]").ok()?;
+
+        let hints = ["/episode/", "/episodio/", "/episodios/", "/capitulo/", "/capítulo/", "/ver/"];
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for anchor in doc.select(&sel) {
+            let href = anchor.value().attr("href").unwrap_or("").to_lowercase();
+            if !href.starts_with('/') && !href.starts_with("http") {
+                continue;
+            }
+            for hint in hints {
+                let Some(pos) = href.find(hint) else { continue };
+                // Debe haber algo después del segmento (`/ver/` a secas es menú).
+                if href[pos + hint.len()..].trim_matches('/').is_empty() {
+                    continue;
+                }
+                *counts.entry(hint).or_default() += 1;
+            }
+        }
+
+        let (hint, count) = counts
+            .into_iter()
+            .filter(|(_, count)| *count >= 2)
+            .max_by_key(|(_, count)| *count)?;
+        Some((format!("a[href*='{}']", hint), count))
     }
 
     fn same_origin_path(href: &str, origin: &str, host: &str) -> Option<String> {
@@ -1076,6 +1226,32 @@ mod tests {
         assert!(catalog.samples.contains(&"Friends".to_string()));
         // La barra de navegación no tiene imágenes: no debe ganar el grupo.
         assert!(!catalog.card_selector.contains("vds-nav-item"));
+    }
+
+    #[test]
+    fn detects_episode_selector_ignoring_live_tv_menu() {
+        let html = r#"<!doctype html><html><body>
+<nav><a href="/latam/watch/live-tv/">TV en directo</a></nav>
+<a class="EpisodeLink" href="/latam/shows/970009058/episode/6adb6f6e73415cc4ae5a4168/">T1 E1</a>
+<a class="EpisodeLink" href="/latam/shows/970009058/episode/6adb6f7073415cc4ae5ab46a/">T1 E2</a>
+<a class="EpisodeLink" href="/latam/shows/970009058/episode/6ada68747102b85b829f2ecb/">T1 E3</a>
+<a href="/latam/shows/970009058/season/1/">Temporada 1</a>
+</body></html>"#;
+
+        let (selector, count) = SiteAnalyzer::detect_episode_selector(html).unwrap();
+        assert_eq!(selector, "a[href*='/episode/']");
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn no_episode_selector_when_only_menu_links() {
+        let html = r#"<!doctype html><html><body>
+<a href="/ver/">Ver</a>
+<a href="/latam/watch/live-tv/">TV en directo</a>
+<a href="/series/">Series</a>
+</body></html>"#;
+
+        assert!(SiteAnalyzer::detect_episode_selector(html).is_none());
     }
 
     #[test]

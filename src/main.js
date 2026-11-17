@@ -901,6 +901,10 @@ function renderAnalysisCard(site) {
     <div class="space-y-1 pt-2 border-t border-surface-800">
       <span class="text-slate-500 block text-[10px]">${escapeHtml(t('analysis.detected_paths'))}</span>
       <div class="grid grid-cols-3 gap-2">${routesHtml}</div>
+      <div class="pt-1">
+        <span class="text-slate-500 block text-[10px]">${escapeHtml(t('analysis.episodes'))}</span>
+        <span class="font-mono text-[10px] ${site.episode_selector ? 'text-emerald-300' : 'text-amber-300'}">${escapeHtml(site.episode_selector && site.episode_selector.trim() ? site.episode_selector : t('analysis.episodes_generic'))}</span>
+      </div>
     </div>
 
     ${samplesHtml}
