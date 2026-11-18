@@ -555,19 +555,110 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
     private val plutoHashPtvStart = "1f49cc7143a332451387d2145bcbddca135fdc970042f748d3e423e484ec4ecc"
     private val plutoHashStreaming = "d2210e84a51ed4a4382c15720a7366ee955d6354ee76039f58a34ecf274134b7"
 
-    private fun plutoGqlGet(operation: String, hash: String, variables: String, source: String, cookie: String? = null): Response {
+    // Pluto bloquea los User-Agent de okhttp con BOT_SESSION_BLOCKED. Forzamos
+    // cabeceras de navegador en cada petición GraphQL (el client base podría
+    // sobrescribir el UA) y una variante reforzada para los reintentos.
+    private val plutoBrowserUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+    private fun plutoGqlGet(
+        operation: String,
+        hash: String,
+        variables: String,
+        source: String,
+        cookie: String? = null,
+        browser: Boolean = false,
+        cacheBust: Boolean = false,
+    ): Response {
         val url = plutoGql.toHttpUrl().newBuilder().apply {
             addQueryParameter("operationName", operation)
             addQueryParameter("variables", variables)
             addQueryParameter("extensions", "{\"tnPersistedDocumentHash\":\"$hash\"}")
+            if (cacheBust) addQueryParameter("_cb", System.currentTimeMillis().toString())
         }.build()
         val h = headers.newBuilder()
-            .add("Accept", "application/json")
+            .set("User-Agent", plutoBrowserUa)
+            .set("Referer", "https://pluto.tv/")
+            .set("Accept", "application/json")
+            .set("Accept-Language", "es-MX,es;q=0.9,en;q=0.8")
             .add("apollo-require-preflight", "true")
             .add("x-apollo-operation-name", operation)
             .add("request-source", source)
+        if (browser) {
+            h.set("Origin", "https://pluto.tv")
+                .set("Sec-Fetch-Dest", "empty")
+                .set("Sec-Fetch-Mode", "cors")
+                .set("Sec-Fetch-Site", "same-origin")
+                .set("Cache-Control", "no-cache")
+        }
         if (cookie != null) h.add("Cookie", cookie)
         return client.newCall(Request.Builder().url(url).headers(h.build()).get().build()).execute()
+    }
+
+    /**
+     * CBS_COM no siempre viene en x-external-set-cookie: algunos nodos CDN
+     * sirven el body con el JWT desde caché y omiten esa cabecera. La buscamos
+     * también en el resto de cookies y en el propio JSON.
+     */
+    private fun plutoCbsCookie(resp: Response, body: String): String? {
+        val re = Regex("""CBS_COM=([^;,"'\s]+)""")
+        fun extract(value: String): String? = re.find(value)?.groupValues?.get(1)
+        resp.header("x-external-set-cookie")?.let { extract(it) }?.let { return it }
+        for (value in resp.headers("Set-Cookie")) extract(value)?.let { return it }
+        for (i in 0 until resp.headers.size) {
+            val name = resp.headers.name(i)
+            if (name.contains("cookie", ignoreCase = true)) {
+                extract(resp.headers.value(i))?.let { return it }
+            }
+        }
+        return extract(body)
+    }
+
+    /** La home de Pluto entrega CBS_COM en un Set-Cookie estándar. */
+    private fun plutoCbsFromHome(): String? {
+        var found: String? = null
+        try {
+            client.newCall(Request.Builder().url("https://pluto.tv/").headers(headers).build())
+                .execute().use { r ->
+                    for (value in r.headers("Set-Cookie")) {
+                        Regex("""CBS_COM=([^;]+)""").find(value)?.groupValues?.get(1)?.let { found = it }
+                    }
+                }
+        } catch (_: Exception) {
+        }
+        return found
+    }
+
+    /** PtvStart con reintento ante BOT_SESSION_BLOCKED o cookie ausente. */
+    private fun plutoPtvStart(): Pair<String, String> {
+        var result: Pair<String, String>? = null
+        var lastError = ""
+        for (attempt in 0 until 2) {
+            plutoGqlGet(
+                "PtvStart", plutoHashPtvStart, "{\"params\":{}}", "ptvStart",
+                browser = attempt == 1, cacheBust = attempt == 1
+            ).use { r ->
+                val body = r.body?.string().orEmpty()
+                if (!r.isSuccessful) {
+                    lastError = "Pluto PtvStart HTTP ${r.code}"
+                } else if (body.contains("BOT_SESSION_BLOCKED")) {
+                    lastError = "Pluto PtvStart bloqueó la sesión (BOT_SESSION_BLOCKED)"
+                } else {
+                    val token = Regex("\"jwt\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+                    if (token == null) {
+                        lastError = "Pluto PtvStart no devolvió JWT"
+                    } else {
+                        val cbs = plutoCbsCookie(r, body) ?: plutoCbsFromHome()
+                        if (cbs == null) {
+                            lastError = "Pluto PtvStart no devolvió CBS_COM"
+                        } else {
+                            result = token to "CBS_COM=$cbs"
+                        }
+                    }
+                }
+            }
+            if (result != null) break
+        }
+        return result ?: throw Exception(lastError.ifBlank { "Pluto PtvStart no devolvió JWT ni CBS_COM" })
     }
 
     private fun plutoVideos(response: Response): List<Video> {
@@ -575,19 +666,8 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         val contentId = Regex("""/episode/([0-9a-f]{24})""").find(finalUrl)
             ?: throw Exception("No se pudo extraer el contentId de Pluto TV")
 
-        // 1) PtvStart sin cookies -> JWT + CBS_COM (viene en la cabecera).
-        val (jwt, cbsCookie) = plutoGqlGet(
-            "PtvStart", plutoHashPtvStart, "{\"params\":{}}", "ptvStart"
-        ).use { resp ->
-            if (!resp.isSuccessful) throw Exception("Pluto PtvStart HTTP ${resp.code}")
-            val body = resp.body?.string().orEmpty()
-            val token = Regex("\"jwt\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
-                ?: throw Exception("Pluto PtvStart no devolvió JWT")
-            val cbs = Regex("""CBS_COM=([^;]+)""")
-                .find(resp.header("x-external-set-cookie") ?: "")?.groupValues?.get(1)
-                ?: throw Exception("Pluto PtvStart no devolvió CBS_COM")
-            token to "CBS_COM=$cbs"
-        }
+        // 1) PtvStart -> JWT + CBS_COM (reintento y extracción robusta).
+        val (jwt, cbsCookie) = plutoPtvStart()
 
         // 2) StreamingUrl con la cookie CBS_COM -> ruta del máster.
         val path = plutoGqlGet(
@@ -1584,6 +1664,34 @@ mod manifest_tests {
 
         assert!(manifest.contains(r#"<uses-feature android:name="tachiyomi.extension" />"#));
         assert!(manifest.contains(r#"android:name="tachiyomi.extension""#));
+    }
+}
+
+#[cfg(test)]
+mod video_engine_tests {
+    use super::VIDEO_ENGINE_KT;
+
+    #[test]
+    fn ptv_start_is_resilient_to_bot_block_and_missing_cookie() {
+        // El UA de okhttp provoca BOT_SESSION_BLOCKED y algunos CDN omiten
+        // x-external-set-cookie; el generador debe contemplar ambos casos.
+        for marker in [
+            "plutoBrowserUa",
+            "BOT_SESSION_BLOCKED",
+            "plutoCbsCookie",
+            "resp.headers(\"Set-Cookie\")",
+            "plutoCbsFromHome",
+            "plutoPtvStart()",
+            "cacheBust",
+        ] {
+            assert!(
+                VIDEO_ENGINE_KT.contains(marker),
+                "falta el marcador de resiliencia en VIDEO_ENGINE_KT: {}",
+                marker
+            );
+        }
+        assert!(VIDEO_ENGINE_KT.contains("val (jwt, cbsCookie) = plutoPtvStart()"),
+            "plutoVideos debe usar el helper resistente, no una llamada directa");
     }
 }
 
