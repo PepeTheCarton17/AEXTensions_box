@@ -15,6 +15,12 @@ use tauri::State;
 
 const LOCAL_API_BASE: &str = "http://localhost:45731";
 
+// Mensajes de commit genéricos: nunca incluir el package ni el nombre de la
+// extensión (p. ej. eu.kanade.tachiyomi.animeextension.es.pluto3). El historial
+// del repo destino debe hablar de AEXT, no del contenido generado.
+const COMMIT_MSG_GENERATE: &str = "AEXT: add generated extension";
+const COMMIT_MSG_UPDATE: &str = "AEXT: update generated extension";
+
 // ============================== COMANDOS GITHUB ==============================
 
 #[tauri::command]
@@ -378,7 +384,7 @@ pub async fn generate_extensions(
                         &repo.owner,
                         &repo.name,
                         &all_files,
-                        &format!("AEXT: generar {} v{}", bundle.pkg_id, bundle.version),
+                        COMMIT_MSG_GENERATE,
                         &branch,
                     )
                     .await
@@ -641,7 +647,7 @@ pub async fn update_extension(
                 &repo.owner,
                 &repo.name,
                 &all_files,
-                &format!("AEXT: actualizar {} a v{}", bundle.pkg_id, bundle.version),
+                COMMIT_MSG_UPDATE,
                 &branch,
             )
             .await
@@ -2448,5 +2454,29 @@ mod tests {
         assert!(version_is_newer("1.2.0", "1.1.9"));
         assert!(!version_is_newer("1.0.0", "1.0.0"));
         assert!(!version_is_newer("1.0.0", "1.0.1"));
+    }
+
+    /// Regresión: los commits que AEXT escribe en el repo destino nunca deben
+    /// llevar el package ni el nombre de la extensión.
+    #[test]
+    fn commit_messages_never_include_extension_identity() {
+        for msg in [COMMIT_MSG_GENERATE, COMMIT_MSG_UPDATE] {
+            let lower = msg.to_lowercase();
+            assert!(
+                !lower.contains('.'),
+                "el mensaje parece incluir un package: {}",
+                msg
+            );
+            assert!(
+                !lower.contains("pluto"),
+                "el mensaje incluye un nombre de extensión: {}",
+                msg
+            );
+            assert!(
+                lower.starts_with("aext:"),
+                "se esperaba un mensaje genérico de AEXT: {}",
+                msg
+            );
+        }
     }
 }
