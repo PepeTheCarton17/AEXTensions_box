@@ -452,6 +452,110 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         return if (height in 144..4320) height.toString() + "p" else null
     }
 
+    // ============================== VERIFICACIÓN DE STREAMS ==============================
+    // Un HTTP 200 en el máster no garantiza que el reproductor pueda abrir el
+    // stream: pueden fallar las cabeceras, la clave AES-128 o un segmento.
+    // Comprobamos la cadena completa antes de entregar el Video al reproductor.
+    private data class StreamProbe(
+        val ok: Boolean,
+        val detail: String,
+        val size: Int = 0,
+        val body: String = "",
+        val inconclusive: Boolean = false,
+    )
+
+    private val browserHeaders: Headers by lazy {
+        Headers.Builder()
+            .set("User-Agent", userAgent)
+            .set("Referer", baseUrl)
+            .set("Accept", "*/*")
+            .set("Accept-Language", "es-ES,es;q=0.9,en;q=0.8")
+            .build()
+    }
+
+    private val hlsKeyRegex = Regex("#EXT-X-KEY[^\\r\\n]*URI=\"([^\"]+)\"")
+
+    private fun isPlaylist(url: String): Boolean =
+        url.substringBefore("?").endsWith(".m3u8", ignoreCase = true)
+
+    private fun probeOnce(url: String, extra: Headers, readBody: Boolean = false): StreamProbe = try {
+        val request = Request.Builder().url(url).headers(extra).header("Range", "bytes=0-4095").build()
+        client.newCall(request).execute().use { response ->
+            val body = if (readBody || isPlaylist(url)) response.body?.string().orEmpty() else ""
+            val contentType = response.header("Content-Type").orEmpty()
+            when {
+                !response.isSuccessful -> StreamProbe(false, "HTTP ${response.code}")
+                contentType.startsWith("text/html", ignoreCase = true) -> StreamProbe(false, "HTML en vez de stream")
+                isPlaylist(url) && !body.contains("#EXTM3U") -> StreamProbe(false, "playlist no válida")
+                else -> StreamProbe(true, "HTTP ${response.code}", body.length, body)
+            }
+        }
+    } catch (e: Exception) {
+        // Un fallo de red no prueba que el stream esté roto: conservamos el
+        // candidato y dejamos constancia de que no se pudo verificar.
+        StreamProbe(false, e.message ?: "error de red", inconclusive = true)
+    }
+
+    private fun checkStream(url: String, extra: Headers): StreamProbe {
+        val first = probeOnce(url, extra, readBody = true)
+        if (!first.ok || !isPlaylist(url)) return first
+        val childLine = first.body.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.isNotBlank() && !it.startsWith("#") }
+            ?: return first
+        val childUrl = absolutize(url, childLine)
+        val child = probeOnce(childUrl, extra, readBody = true)
+        if (!child.ok && !child.inconclusive) {
+            return StreamProbe(false, "variante: ${child.detail}", inconclusive = child.inconclusive)
+        }
+        val keyRef = hlsKeyRegex.find(child.body)?.groupValues?.get(1)
+            ?: hlsKeyRegex.find(first.body)?.groupValues?.get(1)
+        if (keyRef != null) {
+            val key = probeOnce(absolutize(childUrl, keyRef), extra)
+            if (!key.ok && !key.inconclusive) return StreamProbe(false, "clave AES: ${key.detail}")
+        }
+        return StreamProbe(true, "HLS verificado", first.size)
+    }
+
+    private fun capabilityRank(video: Video): Int {
+        val url = video.videoUrl.orEmpty()
+        val format = when {
+            isPlaylist(url) -> "hls"
+            url.contains(".mpd", ignoreCase = true) -> "dash"
+            url.contains(".mp4", ignoreCase = true) -> "mp4"
+            else -> ""
+        }
+        return if (format.isNotEmpty() && siteStreamFormats.contains(format)) 0 else 1
+    }
+
+    /** Verifica cada candidato; si falla con sus cabeceras, reintenta con
+     *  cabeceras de navegador y entrega el Video con las que sí funcionaron.
+     *  Si ninguno funciona, lanza un error concreto en vez de dejar que el
+     *  reproductor muestre un genérico `loading failed`. */
+    private fun verifyCandidates(candidates: List<Video>): List<Video> {
+        if (candidates.isEmpty()) return candidates
+        val verified = mutableListOf<Video>()
+        val failures = mutableListOf<String>()
+        for (video in candidates.sortedBy(::capabilityRank)) {
+            val url = video.videoUrl ?: continue
+            val own = checkStream(url, video.headers ?: headers)
+            if (own.ok || own.inconclusive) {
+                verified.add(video)
+                continue
+            }
+            val browser = checkStream(url, browserHeaders)
+            if (browser.ok || browser.inconclusive) {
+                verified.add(if (browser.ok) Video(url, video.name, video.quality, browserHeaders) else video)
+                continue
+            }
+            failures.add("${video.name}: ${own.detail}; con cabeceras de navegador: ${browser.detail}")
+        }
+        if (verified.isEmpty()) {
+            throw Exception("AEXT no pudo verificar ningún stream (${failures.take(3).joinToString(" | ")})")
+        }
+        return distinctVideos(verified)
+    }
+
     /**
      * Mapa url -> audio ("SUB"/"DUB") leyendo los bloques `SUB:[{server:...,url:...}]`
      * del payload. Sin esto, un iframe del reproductor por defecto puede etiquetarse
@@ -477,7 +581,7 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         // resuelve mediante GraphQL (verificado 2026-11-17). El cuerpo aún no
         // se ha consumido, así que podemos pasarlo al extractor de Pluto.
         if (baseUrl.contains("pluto.tv") || response.request.url.toString().contains("pluto.tv")) {
-            return plutoVideos(response)
+            return verifyCandidates(plutoVideos(response))
         }
 
         val html = response.body?.string().orEmpty()
@@ -541,7 +645,7 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
             }
         }
 
-        return sortVideos(videos)
+        return verifyCandidates(sortVideos(videos))
     }
 
     // ---- Pluto TV: flujo de reproducción verificado (LATAM, 2026-11-17) ----
@@ -1082,6 +1186,10 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
     let search_param = kt_path_literal(analysis.search_param.as_deref());
     let page_style = analysis.page_style.as_str();
     let supports_latest = if latest_path.is_empty() { "false" } else { "true" };
+    let site_cap_formats = analysis.capabilities.stream_formats.iter()
+        .map(|f| format!("\"{}\"", f))
+        .collect::<Vec<_>>()
+        .join(", ");
 
     let pref_audio_title = i18n.pref_audio_title;
     let pref_audio_entries = i18n.pref_audio_entries.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
@@ -1307,6 +1415,10 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
     override fun videoListSelector(): String = throw UnsupportedOperationException()
     override fun videoUrlParse(document: Document): String = throw UnsupportedOperationException()
 
+    // Capacidades detectadas por AEXT en el análisis del sitio. No sustituyen
+    // a la verificación real: sólo ordenan los candidatos a probar.
+    private val siteStreamFormats = setOf({site_cap_formats})
+
 {video_engine}
 
     // ============================== PREFERENCES ==============================
@@ -1361,7 +1473,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         screen.addPreference(genreBlacklistPref)
     }}
 }}
-"#, video_engine = VIDEO_ENGINE_KT)
+"#, video_engine = VIDEO_ENGINE_KT, site_cap_formats = site_cap_formats)
 }
 
 fn generate_manga_source(
@@ -1691,6 +1803,30 @@ mod video_engine_tests {
         }
         assert!(VIDEO_ENGINE_KT.contains("val (jwt, cbsCookie) = plutoPtvStart()"),
             "plutoVideos debe usar el helper resistente, no una llamada directa");
+    }
+
+    #[test]
+    fn generated_videos_are_verified_with_real_fallbacks() {
+        for marker in [
+            "private data class StreamProbe",
+            "private fun probeOnce(",
+            "private fun checkStream(",
+            "private fun verifyCandidates(",
+            "private val browserHeaders",
+            "con cabeceras de navegador",
+            "return verifyCandidates(plutoVideos(response))",
+            "return verifyCandidates(sortVideos(videos))",
+        ] {
+            assert!(
+                VIDEO_ENGINE_KT.contains(marker),
+                "falta verificación en VIDEO_ENGINE_KT: {}",
+                marker
+            );
+        }
+        assert!(
+            VIDEO_ENGINE_KT.contains("siteStreamFormats.contains(format)"),
+            "las capacidades detectadas deben ordenar la verificación"
+        );
     }
 }
 

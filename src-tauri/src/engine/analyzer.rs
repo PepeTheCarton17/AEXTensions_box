@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use scraper::{ElementRef, Html, Selector};
 use std::collections::{HashMap, HashSet};
+use regex::Regex;
 use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +41,35 @@ pub struct AnalysisResult {
     pub sample_items: Vec<String>,
     /// Avisos honestos sobre lo que no se pudo detectar o verificar.
     pub warnings: Vec<String>,
+    /// Capacidades reales del sitio (formatos, calidades, idiomas, APIs).
+    /// Se obtienen del HTML de entrada y de la ficha de ejemplo sondeada.
+    #[serde(default)]
+    pub capabilities: SiteCapabilities,
+}
+
+/// Lo que el sitio *realmente* expone para reproducción, no lo que la plantilla
+/// supone. Se consume en el Kotlin generado para ordenar la verificación y en
+/// la UI para dejar de afirmar capacidades que no se han visto.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SiteCapabilities {
+    /// `hls` | `dash` | `mp4` | `iframe`, según aparezca en el HTML.
+    #[serde(default)]
+    pub stream_formats: Vec<String>,
+    /// Calidades reales leídas de un máster HLS embebido (p. ej. `720p`).
+    #[serde(default)]
+    pub qualities: Vec<String>,
+    /// Pistas de audio detectadas (`#EXT-X-MEDIA:TYPE=AUDIO`), con idioma.
+    #[serde(default)]
+    pub audio_languages: Vec<String>,
+    /// Pistas de subtítulos detectadas (`TYPE=SUBTITLES`), con idioma.
+    #[serde(default)]
+    pub subtitle_languages: Vec<String>,
+    /// Endpoints API/GraphQL encontrados en HTML/JS del sitio.
+    #[serde(default)]
+    pub api_endpoints: Vec<String>,
+    /// Lo que no se pudo confirmar; se muestra como aviso, no como capacidad.
+    #[serde(default)]
+    pub unverified: Vec<String>,
 }
 
 pub struct SiteAnalyzer {
@@ -59,6 +89,8 @@ struct DetailProbe {
     has_embed: bool,
     /// Selector CSS que sí encuentra los episodios en esa ficha.
     episode_selector: Option<String>,
+    /// HTML de la ficha; permite detectar capacidades detrás del catálogo.
+    html: String,
 }
 
 impl SiteAnalyzer {
@@ -86,6 +118,10 @@ impl SiteAnalyzer {
             if let Some(selector) = &probe.episode_selector {
                 result.episode_selector = selector.clone();
             }
+            if !probe.html.is_empty() {
+                let detail_caps = Self::detect_capabilities(&probe.html);
+                Self::merge_capabilities(&mut result.capabilities, &detail_caps);
+            }
             if !probe.fetched {
                 result.warnings.push(format!(
                     "No se pudo abrir una página de detalle de ejemplo ({}) para comprobar episodios.",
@@ -102,6 +138,22 @@ impl SiteAnalyzer {
                     probe.episode_links
                 ));
             }
+        }
+
+        // Avisos finales sobre capacidades, ya con la ficha de ejemplo mezclada.
+        if result.capabilities.stream_formats.is_empty() {
+            result.capabilities.unverified.push(
+                "No se detectó ningún formato de stream (HLS/DASH/MP4/iframe): la reproducción no está verificada.".to_string(),
+            );
+        }
+        if result.capabilities.qualities.is_empty() {
+            result.capabilities.unverified.push(
+                "No se detectaron calidades reales: el reproductor decidirá automáticamente.".to_string(),
+            );
+        }
+        let capability_notes = result.capabilities.unverified.clone();
+        for note in &capability_notes {
+            result.warnings.push(note.clone());
         }
 
         Ok(result)
@@ -256,6 +308,10 @@ impl SiteAnalyzer {
             ));
         }
 
+        // Capacidades según lo que este HTML expone realmente. La ficha de
+        // ejemplo puede añadir más en `analyze()`.
+        let capabilities = Self::detect_capabilities(&body);
+
         Ok((
             AnalysisResult {
                 url: origin,
@@ -280,6 +336,7 @@ impl SiteAnalyzer {
                 episode_selector: String::new(),
                 sample_items: catalog.samples,
                 warnings,
+                capabilities,
             },
             demo_href,
         ))
@@ -307,6 +364,95 @@ impl SiteAnalyzer {
         None
     }
 
+    /// Detecta capacidades reales a partir del HTML disponible. Es
+    /// determinista y conservador: sólo afirma lo que aparece en el cuerpo.
+    fn detect_capabilities(body: &str) -> SiteCapabilities {
+        let mut caps = SiteCapabilities::default();
+        let lower = body.to_lowercase();
+
+        fn push_unique(list: &mut Vec<String>, value: String) {
+            if !value.is_empty() && !list.contains(&value) && list.len() < 12 {
+                list.push(value);
+            }
+        }
+
+        if lower.contains(".m3u8") || lower.contains("application/vnd.apple.mpegurl") || lower.contains("#extm3u") {
+            caps.stream_formats.push("hls".to_string());
+        }
+        if lower.contains(".mpd") || lower.contains("application/dash+xml") || lower.contains("dash.js") {
+            caps.stream_formats.push("dash".to_string());
+        }
+        if lower.contains(".mp4") {
+            caps.stream_formats.push("mp4".to_string());
+        }
+        if lower.contains("<iframe") {
+            caps.stream_formats.push("iframe".to_string());
+        }
+
+        // Calidades e idiomas de un máster HLS embebido en el propio HTML.
+        if let Ok(re) = Regex::new(r#"RESOLUTION\s*=\s*\d+x(\d+)"#) {
+            for cap in re.captures_iter(body) {
+                if let Some(height) = cap.get(1) {
+                    push_unique(&mut caps.qualities, format!("{}p", height.as_str()));
+                }
+            }
+        }
+        if let Ok(re) = Regex::new(r#"#EXT-X-MEDIA:([^\r\n]+)"#) {
+            for cap in re.captures_iter(body) {
+                let mut attrs = HashMap::new();
+                if let Ok(pairs) = Regex::new(r#"([A-Za-z0-9-]+)\s*=\s*"([^"]*)""#) {
+                    for pair in pairs.captures_iter(cap.get(1).map(|m| m.as_str()).unwrap_or("")) {
+                        attrs.insert(pair[1].to_uppercase(), pair[2].to_string());
+                    }
+                }
+                let kind = attrs.get("TYPE").map(|s| s.as_str()).unwrap_or("");
+                let lang = attrs.get("LANGUAGE").cloned().unwrap_or_default();
+                let name = attrs.get("NAME").cloned().unwrap_or_else(|| lang.clone());
+                let label = if !lang.is_empty() && lang != "und" {
+                    format!("{} ({})", name, lang)
+                } else {
+                    name
+                };
+                if kind.eq_ignore_ascii_case("AUDIO") {
+                    push_unique(&mut caps.audio_languages, label);
+                } else if kind.eq_ignore_ascii_case("SUBTITLES") {
+                    push_unique(&mut caps.subtitle_languages, label);
+                }
+            }
+        }
+
+        // Endpoints API/GraphQL citados en HTML o JS embebido.
+        if let Ok(re) = Regex::new(r#"https?://[^"'\s<>\\]+"#) {
+            for cap in re.captures_iter(body) {
+                let url = cap[0].trim_end_matches(|c: char| matches!(c, ',' | ';' | ')' | '}' | ']' | '`'));
+                let lower_url = url.to_lowercase();
+                if (lower_url.contains("/api/") || lower_url.contains("/graphql") || lower_url.contains("api."))
+                    && url.len() < 200
+                {
+                    push_unique(&mut caps.api_endpoints, url.to_string());
+                }
+            }
+        }
+
+        caps
+    }
+
+    /// Combina lo visto en la portada con lo visto en una ficha de ejemplo.
+    fn merge_capabilities(base: &mut SiteCapabilities, extra: &SiteCapabilities) {
+        fn merge(base: &mut Vec<String>, extra: &[String]) {
+            for value in extra {
+                if !base.contains(value) {
+                    base.push(value.clone());
+                }
+            }
+        }
+        merge(&mut base.stream_formats, &extra.stream_formats);
+        merge(&mut base.qualities, &extra.qualities);
+        merge(&mut base.audio_languages, &extra.audio_languages);
+        merge(&mut base.subtitle_languages, &extra.subtitle_languages);
+        merge(&mut base.api_endpoints, &extra.api_endpoints);
+    }
+
     /// Abre una ficha de ejemplo, cuenta enlaces de episodios y deduce un
     /// selector que sí los encuentre. No modifica el análisis: solo aporta
     /// evidencia para los avisos y para la lista de episodios generada.
@@ -317,6 +463,7 @@ impl SiteAnalyzer {
             episode_links: 0,
             has_embed: false,
             episode_selector: None,
+            html: String::new(),
         };
 
         let Ok(resp) = self.client.get(detail_url).send().await else {
@@ -330,6 +477,7 @@ impl SiteAnalyzer {
         };
         probe.fetched = true;
         probe.has_embed = body.contains(".m3u8") || body.contains("<iframe");
+        probe.html = body.clone();
         if let Some((selector, count)) = Self::detect_episode_selector(&body) {
             probe.episode_selector = Some(selector);
             probe.episode_links = count;
@@ -1288,5 +1436,31 @@ mod tests {
             analyzer.detect_search(&doc, "https://wp.example.com", "wp.example.com", "dooplay");
         assert_eq!(path.as_deref(), Some("/"));
         assert_eq!(param.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn detects_real_stream_capabilities_from_a_master_hls() {
+        let html = r#"<html><body><script>
+          const master = "https://cdn.example.com/hls/master.m3u8";
+          const gql = "https://example.com/api/tn/app-shell/graphql/";
+          //#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE="en",NAME="English [Original]"
+          //#EXT-X-MEDIA:TYPE=SUBTITLES,LANGUAGE="es",NAME="Español"
+          //#EXT-X-STREAM-INF:BANDWIDTH=1042180,RESOLUTION=1280x720
+        </script></body></html>"#;
+
+        let caps = SiteAnalyzer::detect_capabilities(html);
+        assert!(caps.stream_formats.contains(&"hls".to_string()));
+        assert!(caps.qualities.contains(&"720p".to_string()));
+        assert!(caps.audio_languages.iter().any(|v| v.contains("English")));
+        assert!(caps.subtitle_languages.iter().any(|v| v.contains("es")));
+        assert!(caps.api_endpoints.iter().any(|v| v.contains("/graphql")));
+    }
+
+    #[test]
+    fn capabilities_do_not_claim_formats_that_are_not_in_the_html() {
+        let caps = SiteAnalyzer::detect_capabilities("<html><body>hola</body></html>");
+        assert!(caps.stream_formats.is_empty());
+        assert!(caps.qualities.is_empty());
+        assert!(caps.api_endpoints.is_empty());
     }
 }

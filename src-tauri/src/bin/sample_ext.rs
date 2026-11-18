@@ -8,7 +8,7 @@
 //! `gradle assembleRelease` sobre ellos. Sin este paso, un error de compilación
 //! en las plantillas solo se descubría al usar la extensión en Nekoyomi.
 
-use aext_lib::engine::analyzer::AnalysisResult;
+use aext_lib::engine::analyzer::{AnalysisResult, SiteCapabilities};
 use aext_lib::engine::generator::ExtensionGenerator;
 use image::{Rgba, RgbaImage};
 use std::collections::HashMap;
@@ -38,6 +38,11 @@ fn anime_fixture(name: &str, host: &str, episode_selector: &str, catalog: bool) 
         episode_selector: episode_selector.to_string(),
         sample_items: Vec::new(),
         warnings: Vec::new(),
+        capabilities: SiteCapabilities {
+            stream_formats: vec!["hls".to_string()],
+            qualities: vec!["720p".to_string()],
+            ..Default::default()
+        },
     }
 }
 
@@ -65,6 +70,7 @@ fn manga_fixture() -> AnalysisResult {
         episode_selector: String::new(),
         sample_items: Vec::new(),
         warnings: Vec::new(),
+        capabilities: SiteCapabilities::default(),
     }
 }
 

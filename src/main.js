@@ -858,6 +858,25 @@ function renderAnalysisCard(site) {
     ? site.protections.map(p => `<span class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/20">${escapeHtml(p)}</span>`).join(' ')
     : '<span class="text-slate-500 text-[10px]">Ninguna</span>';
 
+  const caps = site.capabilities || {};
+  const capBadges = (values, colors) => (Array.isArray(values) && values.length > 0)
+    ? values.map(v => {
+        const text = String(v);
+        const short = text.length > 46 ? text.slice(0, 46) + '…' : text;
+        return `<span class="px-1.5 py-0.5 rounded text-[10px] ${colors}" title="${escapeHtml(text)}">${escapeHtml(short)}</span>`;
+      }).join(' ')
+    : '<span class="text-slate-500 text-[10px]">No detectado</span>';
+
+  const capabilitiesHtml = `
+    <div class="space-y-1 pt-1 border-t border-surface-800">
+      <span class="text-slate-500 block text-[10px]">${escapeHtml(t('analysis.capabilities'))}</span>
+      <div><span class="text-[10px] text-slate-400">Formatos:</span> ${capBadges(caps.stream_formats, 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20')}</div>
+      <div><span class="text-[10px] text-slate-400">Calidades:</span> ${capBadges(caps.qualities, 'bg-sky-500/10 text-sky-300 border border-sky-500/20')}</div>
+      <div><span class="text-[10px] text-slate-400">Audio:</span> ${capBadges(caps.audio_languages, 'bg-violet-500/10 text-violet-300 border border-violet-500/20')}</div>
+      <div><span class="text-[10px] text-slate-400">Subtítulos:</span> ${capBadges(caps.subtitle_languages, 'bg-violet-500/10 text-violet-300 border border-violet-500/20')}</div>
+      <div><span class="text-[10px] text-slate-400">APIs:</span> ${capBadges(caps.api_endpoints, 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/20')}</div>
+    </div>`;
+
   const warnings = Array.isArray(site.warnings) ? site.warnings : [];
   const samples = Array.isArray(site.sample_items) ? site.sample_items : [];
   const searchValue = site.search_path
@@ -948,6 +967,8 @@ function renderAnalysisCard(site) {
       <span class="text-slate-500 block text-[10px]">Protecciones WAF / Cloudflare:</span>
       <div class="flex flex-wrap gap-1">${protectionsBadges}</div>
     </div>
+
+    ${capabilitiesHtml}
 
     ${warningsHtml}
   `;
