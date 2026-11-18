@@ -2002,6 +2002,43 @@ if __name__ == "__main__":
 "#.to_string()
 }
 
+/// README mínimo y estable para repositorios creados por AEXT.
+///
+/// No incluye el nombre de la extensión: el mismo contenido sirve para un repo
+/// con una o con veinte extensiones y no cambia en cada generación. Si el repo
+/// ya tiene un README propio, AEXT lo respeta y no usa esta plantilla.
+pub fn generate_repo_readme(owner: &str, repo: &str, html_url: &str) -> String {
+    let install_url = format!(
+        "https://raw.githubusercontent.com/{}/{}/gh-pages/index.min.json",
+        owner, repo
+    );
+    format!(
+        r#"# Extensiones Nekoyomi
+
+Repositorio de extensiones para Nekoyomi / Aniyomi.
+
+## Instalación
+
+Añade esta URL como repositorio de extensiones en Nekoyomi o Aniyomi:
+
+{install_url}
+
+## Información
+
+- Repositorio: {html_url}
+- El índice de extensiones se publica en la rama `gh-pages` mediante GitHub Actions.
+
+## Descargo de responsabilidad
+
+Las extensiones se distribuyen «tal cual», sin garantía de funcionamiento. El contenido de los sitios web de terceros es responsabilidad de sus respectivos propietarios.
+
+## Licencia
+
+El código de este repositorio se distribuye bajo licencia MIT salvo que se indique lo contrario en un archivo `LICENSE`.
+"#
+    )
+}
+
 pub fn decode_base64(input: &str) -> Vec<u8> {
     let mut output = Vec::new();
     let mut buffer = 0u32;

@@ -1,7 +1,7 @@
 use crate::engine::{AnalysisResult, ExtensionGenerator, IconEngine, SiteAnalyzer};
 use crate::engine::generator::{
-    decode_base64, GRADLEW_BAT, GRADLEW_SH, GRADLE_WRAPPER_JAR_B64, GRADLE_WRAPPER_PROPERTIES,
-    ROOT_BUILD_GRADLE,
+    decode_base64, generate_repo_readme, GRADLEW_BAT, GRADLEW_SH, GRADLE_WRAPPER_JAR_B64,
+    GRADLE_WRAPPER_PROPERTIES, ROOT_BUILD_GRADLE,
 };
 use crate::github::{GithubApiClient, GithubAuthManager, RepoInfo, RepoSummary};
 use crate::models::{
@@ -328,15 +328,17 @@ pub async fn generate_extensions(
                     )
                     .await?;
 
-                // Un repo existente es del usuario: AEXT solo añade/actualiza
-                // el módulo de esta extensión. NUNCA sobrescribe su README, su
-                // keystore, su workflow, su wrapper ni sus build files raíz.
-                if !repo.empty {
-                    bundle.files.retain(|path, _| !is_repo_scaffold(path));
-                }
-
-                // Conservar los include() de los módulos ya presentes.
-                merge_existing_settings(&client, &repo, &mut bundle).await;
+                // El README genérico solo se usa si el repo no tiene uno propio
+                // (o tiene únicamente el placeholder de `auto_init`).
+                bundle.files.insert(
+                    "README.md".to_string(),
+                    generate_repo_readme(&repo.owner, &repo.name, &repo.html_url).into_bytes(),
+                );
+                // Comprobar los archivos del scaffold uno por uno: un repo
+                // recién creado con `auto_init` NO está vacío, pero sí necesita
+                // workflow, wrapper, keystore y build files. En cambio, los que
+                // ya existen pertenecen al usuario y no se tocan.
+                reconcile_repo_files(&client, &repo, &mut bundle).await?;
 
                 state
                     .add_log(
@@ -473,6 +475,19 @@ pub async fn get_created_extensions(state: State<'_, AppState>) -> Result<Vec<Ex
         {
             ext.build_status = None;
         }
+        // Un «compilando» persistido tras cerrar la app no es fiable: lo
+        // mostramos como pendiente y invitamos a verificar el run real.
+        if ext.github_repo_url.is_some()
+            && ext.actions_commit_sha.is_some()
+            && ext.build_status.as_deref() == Some("building")
+        {
+            ext.build_status = Some("pending".to_string());
+            if ext.build_error.is_none() {
+                ext.build_error = Some(
+                    "La compilación no terminó en la sesión anterior. Pulsa «Verificar Actions» para consultar el run real.".to_string(),
+                );
+            }
+        }
     }
     Ok(list)
 }
@@ -594,12 +609,13 @@ pub async fn update_extension(
             .ensure_repository(&owner, &repo_name, false, &gh_user.username)
             .await?;
 
-        // Igual que al generar: NUNCA sobrescribir README, firma, workflow ni
-        // build files del usuario. Solo el módulo de la extensión + iconos.
-        if !repo.empty {
-            bundle.files.retain(|path, _| !is_repo_scaffold(path));
-        }
-        merge_existing_settings(&client, &repo, &mut bundle).await;
+        // Igual que al generar: completar el scaffold solo donde falte y
+        // respetar README, firma, workflow y build files que ya existan.
+        bundle.files.insert(
+            "README.md".to_string(),
+            generate_repo_readme(&repo.owner, &repo.name, &repo.html_url).into_bytes(),
+        );
+        reconcile_repo_files(&client, &repo, &mut bundle).await?;
 
         let mut all_files: Vec<(String, Vec<u8>)> = bundle
             .files
@@ -1224,7 +1240,12 @@ async fn verify_github_actions(
 ) {
     const MAX_WAIT_SECS: u64 = 90;
     const POLL_SECS: u64 = 10;
+    const NO_RUN_GRACE_SECS: u64 = 30;
     let started = std::time::Instant::now();
+    let short_sha = &commit_sha[..commit_sha.len().min(7)];
+    let actions_url = format!("https://github.com/{}/{}/actions", owner, repo);
+    let mut saw_run = false;
+    let mut last_error = String::new();
 
     loop {
         match client
@@ -1232,6 +1253,8 @@ async fn verify_github_actions(
             .await
         {
             Ok(Some(run)) => {
+                saw_run = true;
+                last_error.clear();
                 let finished = run.status == "completed";
                 let conclusion = run.conclusion.clone().unwrap_or_default();
                 {
@@ -1251,6 +1274,7 @@ async fn verify_github_actions(
                                     "GitHub Actions: {} — {}",
                                     conclusion, run.html_url
                                 ));
+                                ext.build_apk_path = None;
                             }
                         } else {
                             ext.build_status = Some("building".to_string());
@@ -1271,10 +1295,7 @@ async fn verify_github_actions(
                             level,
                             &format!(
                                 "GitHub Actions para {} ({}): {} — {}",
-                                pkg_id,
-                                &commit_sha[..commit_sha.len().min(7)],
-                                conclusion,
-                                run.html_url
+                                pkg_id, short_sha, conclusion, run.html_url
                             ),
                         )
                         .await;
@@ -1282,30 +1303,72 @@ async fn verify_github_actions(
                 }
             }
             Ok(None) => {
-                let mut list = state.extensions.write().await;
-                if let Some(ext) = list.iter_mut().find(|e| e.pkg_id == pkg_id || e.id == pkg_id) {
-                    ext.build_status = Some("building".to_string());
+                let no_run_message = format!(
+                    "GitHub Actions no inició ningún run para el commit {} en {}/{} tras {} s. Comprueba que exista `.github/workflows/build_push.yml` y que Actions esté habilitado en el repo; después pulsa «Verificar Actions». Revisa: {}",
+                    short_sha, owner, repo, NO_RUN_GRACE_SECS, actions_url
+                );
+                let timed_out_no_run = !saw_run && started.elapsed().as_secs() >= NO_RUN_GRACE_SECS;
+                {
+                    let mut list = state.extensions.write().await;
+                    if let Some(ext) = list.iter_mut().find(|e| e.pkg_id == pkg_id || e.id == pkg_id) {
+                        if ext.actions_run_url.is_none() {
+                            ext.actions_run_url = Some(actions_url.clone());
+                        }
+                        if timed_out_no_run {
+                            ext.build_status = Some("error".to_string());
+                            ext.build_error = Some(no_run_message.clone());
+                            ext.build_apk_path = None;
+                        } else {
+                            ext.build_status = Some("building".to_string());
+                            ext.build_error = None;
+                        }
+                    }
                 }
-                drop(list);
                 state.persist_extensions().await;
+                if timed_out_no_run {
+                    state.add_log("ERROR", &no_run_message).await;
+                    return;
+                }
             }
             Err(e) => {
+                last_error = e;
                 state
-                    .add_log("WARN", &format!("No se pudo consultar Actions: {}", e))
+                    .add_log(
+                        "WARN",
+                        &format!("No se pudo consultar Actions ({}): {}", short_sha, last_error),
+                    )
                     .await;
             }
         }
 
         if started.elapsed().as_secs() >= MAX_WAIT_SECS {
-            state
-                .add_log(
-                    "WARN",
-                    &format!(
-                        "GitHub Actions sigue compilando {} tras {}s. Pulsa «Verificar» en Mis extensiones para ver el resultado final.",
-                        pkg_id, MAX_WAIT_SECS
-                    ),
+            // Nunca dejar «compilando» forever: si hay un run activo sigue en
+            // curso; si ni siquiera pudimos consultar, marcamos pendiente con
+            // un mensaje accionable y el enlace a Actions.
+            let detail = if last_error.is_empty() {
+                format!(
+                    "El run de GitHub Actions para {} sigue activo tras {} s. AEXT no puede afirmar que haya terminado; pulsa «Verificar Actions» para consultar el resultado final.",
+                    short_sha, MAX_WAIT_SECS
                 )
-                .await;
+            } else {
+                format!(
+                    "No se pudo confirmar el resultado de GitHub Actions para {} tras {} s ({}). Revisa el repo y pulsa «Verificar Actions».",
+                    short_sha, MAX_WAIT_SECS, last_error
+                )
+            };
+            {
+                let mut list = state.extensions.write().await;
+                if let Some(ext) = list.iter_mut().find(|e| e.pkg_id == pkg_id || e.id == pkg_id) {
+                    if ext.actions_run_url.is_none() {
+                        ext.actions_run_url = Some(actions_url.clone());
+                    }
+                    ext.build_status = Some("pending".to_string());
+                    ext.build_error = Some(detail.clone());
+                    ext.build_apk_path = None;
+                }
+            }
+            state.persist_extensions().await;
+            state.add_log("WARN", &detail).await;
             return;
         }
         tokio::time::sleep(std::time::Duration::from_secs(POLL_SECS)).await;
@@ -1969,33 +2032,106 @@ fn remove_dir_with_retries(path: &Path) -> Result<(), String> {
     Err(last)
 }
 
+/// Archivos que AEXT genera a nivel de repositorio. Se comprueba su
+/// existencia remota uno por uno: si están, son del usuario; si faltan, se
+/// suben para que el repo pueda compilar en Actions.
+const REPO_SCAFFOLD_FILES: &[&str] = &[
+    "README.md",
+    "build.gradle.kts",
+    "settings.gradle.kts",
+    "gradle.properties",
+    ".gitignore",
+    "gradlew",
+    "gradlew.bat",
+    "gradle/wrapper/gradle-wrapper.properties",
+    "gradle/wrapper/gradle-wrapper.jar",
+    ".github/workflows/build_push.yml",
+    ".github/scripts/generate-repo-index.py",
+    "signingkey.jks",
+    "icon/ic_launcher.png",
+];
+
+/// Decide, archivo por archivo, qué scaffold hay que subir.
+///
+/// `repo.empty` no es suficiente: GitHub crea los repos con `auto_init` y un
+/// README, así que un repo recién creado parece no vacío aunque no tenga
+/// workflow ni wrapper. Al revés, un repo antiguo del usuario puede no tener
+/// README propio: en ese caso sí generamos uno mínimo y genérico.
+async fn reconcile_repo_files(
+    client: &GithubApiClient,
+    repo: &RepoInfo,
+    bundle: &mut crate::engine::ExtensionBundle,
+) -> Result<(), String> {
+    for path in REPO_SCAFFOLD_FILES {
+        if !is_repo_scaffold(path) {
+            return Err(format!("Ruta de scaffold no protegida: {}", path));
+        }
+        if !client
+            .file_exists(&repo.owner, &repo.name, path, &repo.default_branch)
+            .await?
+        {
+            continue; // Falta: se conserva la versión generada.
+        }
+
+        match *path {
+            "settings.gradle.kts" => {
+                // Es el único scaffold que se EDITA: añade el include del
+                // módulo nuevo sin borrar los anteriores.
+                merge_existing_settings(client, repo, bundle).await?;
+            }
+            "README.md" => {
+                let existing = client
+                    .get_file_content(
+                        &repo.owner,
+                        &repo.name,
+                        path,
+                        &repo.default_branch,
+                    )
+                    .await?;
+                if !existing
+                    .as_deref()
+                    .map(|content| is_auto_init_readme(content, &repo.name))
+                    .unwrap_or(false)
+                {
+                    bundle.files.remove(*path);
+                }
+            }
+            _ => {
+                // README aparte, el resto es propiedad del usuario: firma,
+                // workflow, wrapper y build files nunca se sobrescriben.
+                bundle.files.remove(*path);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Al reutilizar un repositorio con varias extensiones, añade el `include()`
 /// del nuevo módulo sin borrar los que ya existían.
 async fn merge_existing_settings(
     client: &GithubApiClient,
     repo: &RepoInfo,
     bundle: &mut crate::engine::ExtensionBundle,
-) {
-    if repo.empty {
-        return;
-    }
-
-    let existing = match client
+) -> Result<(), String> {
+    let existing = client
         .get_file_content(
             &repo.owner,
             &repo.name,
             "settings.gradle.kts",
             &repo.default_branch,
         )
-        .await
-    {
-        Ok(Some(content)) => content,
-        _ => return,
-    };
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "GitHub informó de settings.gradle.kts en {}/{} pero no devolvió su contenido",
+                repo.owner, repo.name
+            )
+        })?;
 
     let include = format!("include(\":{}\")", bundle.module_path.replace('/', ":"));
     if existing.contains(&include) {
-        return;
+        bundle.files.remove("settings.gradle.kts");
+        return Ok(());
     }
 
     let mut merged = existing.trim_end().to_string();
@@ -2005,6 +2141,25 @@ async fn merge_existing_settings(
     bundle
         .files
         .insert("settings.gradle.kts".to_string(), merged.into_bytes());
+    Ok(())
+}
+
+/// El README de `auto_init` de GitHub contiene solo el título con el nombre
+/// del repo y la descripción que AEXT puso al crearlo. Se puede reemplazar
+/// por el README mínimo; cualquier otro README se respeta.
+fn is_auto_init_readme(content: &str, repo_name: &str) -> bool {
+    let lines: Vec<String> = content
+        .lines()
+        .map(|line| line.trim().to_ascii_lowercase())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let Some(first) = lines.first() else {
+        return false;
+    };
+    if first != &format!("# {}", repo_name.to_ascii_lowercase()) {
+        return false;
+    }
+    lines.len() == 1 || lines.iter().skip(1).any(|line| line.contains("aext"))
 }
 
 fn write_bundle_to_dir(
@@ -2103,7 +2258,33 @@ fn is_repo_scaffold(path: &str) -> bool {
 
 #[cfg(test)]
 mod scaffold_tests {
-    use super::is_repo_scaffold;
+    use super::{is_auto_init_readme, is_repo_scaffold, REPO_SCAFFOLD_FILES};
+
+    #[test]
+    fn scaffold_list_covers_every_protected_root_file() {
+        for path in REPO_SCAFFOLD_FILES {
+            assert!(
+                is_repo_scaffold(path),
+                "el scaffold debe proteger archivos del repo: {}",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn detects_auto_init_readme_only() {
+        let placeholder = "# nekoyomi-ext-pluto\nRepositorio de extensiones Nekoyomi generado automáticamente por AEXT\n\n";
+        assert!(is_auto_init_readme(placeholder, "nekoyomi-ext-pluto"));
+        assert!(is_auto_init_readme("# MiRepo\n", "mirepo"));
+        assert!(!is_auto_init_readme(
+            "# MiRepo\nDocumentación del proyecto\n",
+            "mirepo"
+        ));
+        assert!(!is_auto_init_readme(
+            "# Otro repo\nGenerado por AEXT\n",
+            "mirepo"
+        ));
+    }
 
     #[test]
     fn protects_user_owned_repo_files() {

@@ -274,6 +274,47 @@ impl GithubApiClient {
         Ok(Some(String::from_utf8_lossy(&bytes).to_string()))
     }
 
+    /// Indica si un archivo existe en la rama indicada. Se usa para decidir,
+    /// archivo por archivo, qué partes del scaffold faltan en un repositorio
+    /// existente: las presentes son del usuario y jamás se sobrescriben.
+    pub async fn file_exists(
+        &self,
+        owner: &str,
+        repo: &str,
+        path: &str,
+        branch: &str,
+    ) -> Result<bool, String> {
+        let url = format!(
+            "https://api.github.com/repos/{}/{}/contents/{}",
+            owner,
+            repo,
+            encode_path(path)
+        );
+        let mut request = self.client.get(&url);
+        if !branch.is_empty() {
+            request = request.query(&[("ref", branch)]);
+        }
+        let resp = request.send().await.map_err(|e| {
+            format!("Error comprobando {} en GitHub: {}", path, e)
+        })?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!(
+                "No se pudo comprobar {} en {}/{} (HTTP {}): {}",
+                path,
+                owner,
+                repo,
+                status,
+                truncate(&body, 200)
+            ));
+        }
+        Ok(true)
+    }
+
     /// Crea o actualiza un archivo. Pasa `branch` vacío para el primer commit
     /// de un repositorio que todavía no tiene ramas.
     pub async fn put_file_content(

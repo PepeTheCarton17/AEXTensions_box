@@ -2,6 +2,10 @@
 
 import { initLanguage, setLanguage, getLanguage, t, applyLanguage } from './i18n.js';
 
+// «Ninguno» es una opción explícita (crear repo nuevo), distinta de «todavía
+// no se eligió nada» (donde aplica el repo predeterminado de los ajustes).
+const REPO_NONE_VALUE = '__none__';
+
 let tauriCore = null;
 
 async function initTauri() {
@@ -214,6 +218,7 @@ const elements = {
   successExtType: document.getElementById('success-ext-type'),
   successExtVersion: document.getElementById('success-ext-version'),
   successDownloadStatus: document.getElementById('success-download-status'),
+  successActionsStatus: document.getElementById('success-actions-status'),
   successBuildSection: document.getElementById('success-build-section'),
   successToolchainStatus: document.getElementById('success-toolchain-status'),
   successCompileOutput: document.getElementById('success-compile-output'),
@@ -1011,7 +1016,7 @@ elements.btnCancelGenMode.addEventListener('click', () => {
 async function loadGithubRepos() {
   if (!elements.selectExistingRepo) return;
   if (!state.currentUser) {
-    elements.selectExistingRepo.innerHTML = `<option value="">${escapeHtml(t('modal.repo_none'))}</option>`;
+    elements.selectExistingRepo.innerHTML = `<option value="${REPO_NONE_VALUE}">${escapeHtml(t('modal.repo_none'))}</option>`;
     syncRepoSelection();
     return;
   }
@@ -1020,12 +1025,12 @@ async function loadGithubRepos() {
     const repos = await invokeBackend('list_github_repos') || [];
     state.githubRepos = repos;
     if (repos.length === 0) {
-      elements.selectExistingRepo.innerHTML = `<option value="">${escapeHtml(t('modal.repo_none'))}</option>`;
+      elements.selectExistingRepo.innerHTML = `<option value="${REPO_NONE_VALUE}">${escapeHtml(t('modal.repo_none'))}</option>`;
       syncRepoSelection();
       return;
     }
     const saved = (localStorage.getItem('aext_default_repo') || '').toLowerCase();
-    elements.selectExistingRepo.innerHTML = `<option value="">${escapeHtml(t('modal.repo_none'))}</option>` +
+    elements.selectExistingRepo.innerHTML = `<option value="${REPO_NONE_VALUE}">${escapeHtml(t('modal.repo_none'))}</option>` +
       repos.map(repo => {
         const value = escapeHtml(repo.full_name);
         const selected = repo.full_name.toLowerCase() === saved ? ' selected' : '';
@@ -1035,7 +1040,7 @@ async function loadGithubRepos() {
     syncRepoSelection();
   } catch (e) {
     console.warn('No se pudieron listar los repositorios:', e);
-    elements.selectExistingRepo.innerHTML = `<option value="">${escapeHtml(t('modal.repo_none'))}</option>`;
+    elements.selectExistingRepo.innerHTML = `<option value="${REPO_NONE_VALUE}">${escapeHtml(t('modal.repo_none'))}</option>`;
     syncRepoSelection();
   }
 }
@@ -1046,7 +1051,7 @@ function syncRepoSelection() {
   if (!elements.selectExistingRepo || !elements.inputCustomRepoName) return;
   const selected = elements.selectExistingRepo.value.trim();
   const input = elements.inputCustomRepoName;
-  if (selected) {
+  if (selected && selected !== REPO_NONE_VALUE) {
     input.value = '';
     input.disabled = true;
     input.placeholder = t('modal.repo_using');
@@ -1081,11 +1086,14 @@ document.querySelectorAll('input[name="gen-mode"]').forEach(radio => {
 elements.btnConfirmGenMode.addEventListener('click', async () => {
   const urls = getEnteredUrls();
   const selectedMode = document.querySelector('input[name="gen-mode"]:checked').value;
-  const selectedRepo = elements.selectExistingRepo?.value?.trim() || '';
+  const selectedRepoRaw = elements.selectExistingRepo?.value?.trim() || '';
   const typedRepo = elements.inputCustomRepoName?.value?.trim() || '';
-  // «Ninguno» + campo vacío = crear repositorio nuevo. No se usa el repo
-  // guardado en ajustes en silencio: solo se prellena y el usuario decide.
-  const customRepoName = selectedRepo || typedRepo || null;
+  const explicitNone = selectedRepoRaw === REPO_NONE_VALUE;
+  const selectedRepo = explicitNone ? '' : selectedRepoRaw;
+  // Si no se eligió ni se tecleó nada, aplica el repo predeterminado guardado.
+  // Elegir «Ninguno» explícitamente sí fuerza la creación de uno nuevo.
+  const savedDefaultRepo = (localStorage.getItem('aext_default_repo') || '').trim();
+  const customRepoName = selectedRepo || typedRepo || (!explicitNone ? savedDefaultRepo : '') || null;
   const isPrivate = elements.checkPrivateRepo?.checked || false;
 
   const customName = elements.inputConfirmExtName?.value?.trim() || null;
@@ -1143,7 +1151,17 @@ elements.btnConfirmGenMode.addEventListener('click', async () => {
     };
 
     const createdExtensions = await invokeBackend('generate_extensions', { request });
-    appendTerminalLog('SUCCESS', t('logs.gen_success', { count: createdExtensions.length }));
+    const actionsFailed = createdExtensions.filter(ext => ext.build_status === 'error').length;
+    const actionsPending = createdExtensions.filter(
+      ext => ext.build_status === 'pending' || ext.build_status === 'building'
+    ).length;
+    if (actionsFailed > 0) {
+      appendTerminalLog('ERROR', t('logs.gen_actions_failed', { count: actionsFailed }));
+    } else if (actionsPending > 0) {
+      appendTerminalLog('WARN', t('logs.gen_actions_pending', { count: actionsPending }));
+    } else {
+      appendTerminalLog('SUCCESS', t('logs.gen_success', { count: createdExtensions.length }));
+    }
 
     for (const ext of createdExtensions) {
       if (ext.github_repo_url) {
@@ -1187,6 +1205,17 @@ function showGenerationSuccess(ext) {
   if (elements.successDownloadStatus) {
     elements.successDownloadStatus.classList.add('hidden');
     elements.successDownloadStatus.textContent = '';
+  }
+  if (elements.successActionsStatus) {
+    elements.successActionsStatus.classList.add('hidden');
+    elements.successActionsStatus.className = 'hidden text-[11px] leading-relaxed';
+    elements.successActionsStatus.textContent = '';
+    if (ext.github_repo_url && (ext.build_status === 'error' || ext.build_status === 'pending')) {
+      const isError = ext.build_status === 'error';
+      elements.successActionsStatus.className = `text-[11px] leading-relaxed ${isError ? 'text-rose-300' : 'text-amber-300'}`;
+      elements.successActionsStatus.textContent = ext.build_error
+        || (isError ? t('ext.build_error') : t('ext.pending'));
+    }
   }
   if (elements.successCompileOutput) {
     elements.successCompileOutput.classList.add('hidden');
@@ -1374,6 +1403,8 @@ function renderExtensionsGrid(list) {
     let buildBadge = '';
     if (ext.build_status === 'building') {
       buildBadge = `<span class="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-amber-300"><span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>${escapeHtml(t('ext.building'))}</span>`;
+    } else if (ext.build_status === 'pending') {
+      buildBadge = `<span class="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-amber-300" title="${escapeHtml(ext.build_error || '')}"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>${escapeHtml(t('ext.pending'))}</span>`;
     } else if (ext.build_status === 'success') {
       buildBadge = `<span class="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-300"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>${escapeHtml(t('ext.build_ok'))}</span>`;
     } else if (ext.build_status === 'error') {
