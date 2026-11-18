@@ -52,13 +52,15 @@ La pestana **Ajustes & Descargas** muestra la tabla de assets reales de la ultim
 - Preferencias del reproductor: servidor preferido, calidad preferida y lista negra de servidores. El orden final es audio -> servidor -> resolucion descendente.
 
 ### 3. Firma inmutable
-Cada extension generada incorpora el keystore `signingkey.jks` (alias `unbox`) con huella SHA-256 inmutable:
+Cada extension generada incorpora el keystore `signingkey.jks` (alias `aext`), una clave **propia de AEXT**, autofirmada y publica por diseno (viaja en el repositorio generado para que las actualizaciones conserven la firma). Huella SHA-256 del certificado:
 
 ```text
-8c36c461d49b9a49053fc14f67785e1bd91f79eb1b6ff382d384eb9735266de3
+fb69d41317176e8690fb80115730b31964748aabbf2fd4fc5b830888ae950306
 ```
 
 Asi las actualizaciones se instalan encima de la version anterior sin el error "Firma diferente al actualizar".
+
+La huella se puede comprobar con `apksigner verify --print-certs <apk>` o `keytool -list -v -keystore signingkey.jks -storepass aextsigning`.
 
 ### 4. Doble flujo de creacion
 - **Modo local (codigo fuente)**: escribe la extension en `%APPDATA%/AEXT/extensions/<pkg_id>` (o el directorio de datos de la app) y permite descargar un **ZIP real del codigo fuente** (`application/zip`). Tambien puedes abrir la carpeta del codigo desde la app.
@@ -70,6 +72,7 @@ Asi las actualizaciones se instalan encima de la version anterior sin el error "
 - Si falta algo, el boton explica que falta y enlaza al flujo correcto (Android Studio o GitHub Actions).
 - El ZIP del codigo fuente **no es un APK**. AEXT no afirma compilar APK en el dispositivo: en Android se usa GitHub Actions o Android Studio en un PC.
 - La compilacion escribe `local.properties` con `sdk.dir`, ejecuta `:<modulo>:assembleRelease` y muestra la salida de Gradle en la propia app.
+- El CI de AEXT genera tres proyectos de ejemplo (anime con episodios verificados, anime generico y manga), los compila con Gradle y verifica la firma del APK **antes** de publicar la release. Si una plantilla deja de compilar, la version no sale.
 
 ### 6. Copias de seguridad y reversibilidad
 - Antes de aplicar cualquier parche se guarda una copia del codigo en:

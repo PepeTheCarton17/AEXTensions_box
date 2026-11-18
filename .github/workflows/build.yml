@@ -146,9 +146,65 @@ jobs:
           name: AEXT-Android-APK
           path: release_dist/*
 
+  generated-extension-check:
+    name: Generated Extension Compiles
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.5
+
+      - name: Ensure Android SDK 34
+        run: |
+          test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
+
+      # Genera tres proyectos con las plantillas reales (anime verificado, anime
+      # genérico y manga). Si una plantilla no compila, este job falla antes de
+      # publicar una versión de AEXT que produciría extensiones rotas.
+      - name: Generate sample extensions
+        run: cargo run --manifest-path src-tauri/Cargo.toml --bin sample_ext -- "$RUNNER_TEMP/samples"
+
+      - name: Compile sample extensions
+        run: |
+          for project in "$RUNNER_TEMP"/samples/*/; do
+            echo "== Compilando $project"
+            gradle -p "$project" assembleRelease --no-daemon --console=plain
+          done
+
+      - name: Check the generated APKs exist and are signed
+        run: |
+          find "$RUNNER_TEMP/samples" -name "*.apk" -print
+          count=$(find "$RUNNER_TEMP/samples" -name "*.apk" | wc -l)
+          test "$count" -eq 3
+          for apk in $(find "$RUNNER_TEMP/samples" -name "*.apk"); do
+            "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$apk" | head -n 3
+          done
+
   publish-release:
     name: Publish Official GitHub Release
-    needs: [build-desktop, build-android]
+    needs: [build-desktop, build-android, generated-extension-check]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -198,6 +254,8 @@ jobs:
             ### Novedades de esta versión
 
             - Versión de la aplicación sincronizada con la release (la app ya no muestra una versión antigua).
+            - El CI genera y **compila** extensiones de ejemplo (anime y manga) con Gradle antes de publicar: si una plantilla deja de compilar, la release no se publica.
+            - Firma propia de AEXT (`signingkey.jks`, alias `aext`) incluida en cada proyecto generado, para que las actualizaciones no den error de firma.
             - Selector de repositorio con opción «Ninguno» y campo para escribir otro repositorio.
             - Panel de generación desplazable en pantallas pequeñas.
             - Compilación local opcional con Gradle + Android SDK (detecta Java, Kotlin, Gradle y SDK).

@@ -71,8 +71,8 @@ impl ExtensionGenerator {
         };
         let pkg_id = format!("{}.{}.{}", pkg_prefix, pkg_lang, pkg_slug);
         let source_dir = pkg_prefix.replace('.', "/");
-        // Estructura multi-módulo compatible con el repo de referencia
-        // (`repo_unbox`): cada extensión es un módulo Gradle propio.
+        // Estructura multi-módulo habitual en los repos de extensiones de
+        // Aniyomi/Nekoyomi: cada extensión es un módulo Gradle propio.
         let module_path = format!("src/{}/{}", pkg_lang, pkg_slug);
 
         let mut files = HashMap::new();
@@ -132,6 +132,7 @@ impl ExtensionGenerator {
             version_name,
             &pkg_lang,
             &pkg_slug,
+            &ext_type,
         );
         files.insert(
             format!("{}/build.gradle.kts", module_path),
@@ -165,6 +166,8 @@ impl ExtensionGenerator {
         files.insert(".github/scripts/generate-repo-index.py".to_string(), index_script.into_bytes());
 
         // 8. Keystore permanente determinista (signingkey.jks) para evitar "Firma diferente"
+        //    Es una clave propia de AEXT, autofirmada y pública por diseño: vive en el
+        //    repositorio generado para que las actualizaciones conserven la firma.
         let keystore_bytes = decode_base64(KEYSTORE_B64);
         files.insert("signingkey.jks".to_string(), keystore_bytes);
 
@@ -628,7 +631,8 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
 
     private fun distinctVideos(videos: List<Video>): List<Video> {
         val seen = mutableSetOf<String>()
-        return videos.filter { seen.add(it.videoUrl.substringBefore("?")) }
+        // `videoUrl` es nullable en extensions-lib: sin `?` esto no compila.
+        return videos.filter { seen.add(it.videoUrl?.substringBefore("?") ?: "") }
     }
 
     private fun mp4uploadVideos(url: String, prefix: String, baseHeaders: Headers): List<Video> {
@@ -1437,7 +1441,16 @@ fn generate_build_gradle(
     version_name: &str,
     pkg_lang: &str,
     pkg_slug: &str,
+    ext_type: &str,
 ) -> String {
+    // extensions-lib de Aniyomi solo trae `animesource`. Los scrapers de manga
+    // usan la API `eu.kanade.tachiyomi.source` de Mihon/Tachiyomi, que está en
+    // la librería original; sin esto el proyecto de manga no compila.
+    let extensions_lib = if ext_type == "manga" {
+        "com.github.tachiyomiorg:extensions-lib:1.4.4"
+    } else {
+        "com.github.aniyomiorg:extensions-lib:14"
+    };
     format!(r#"plugins {{
     id("com.android.application")
     kotlin("android")
@@ -1463,9 +1476,9 @@ android {{
     signingConfigs {{
         create("release") {{
             storeFile = rootProject.file("signingkey.jks")
-            storePassword = "unboxpassword"
-            keyAlias = "unbox"
-            keyPassword = "unboxpassword"
+            storePassword = "aextsigning"
+            keyAlias = "aext"
+            keyPassword = "aextsigning"
         }}
     }}
 
@@ -1489,7 +1502,7 @@ android {{
 }}
 
 dependencies {{
-    compileOnly("com.github.aniyomiorg:extensions-lib:14")
+    compileOnly("{extensions_lib}")
     compileOnly("androidx.preference:preference:1.2.1")
     compileOnly("uy.kohesive.injekt:injekt-core:1.16.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
@@ -1632,7 +1645,9 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-DEFAULT_FINGERPRINT = "2f4cdf7ed264f6e6aa0d7655b7d6222df6d9f0ffde924f0eea4c57be2dc8c75c"
+ROOT = Path(__file__).resolve().parents[2]
+
+DEFAULT_FINGERPRINT = "fb69d41317176e8690fb80115730b31964748aabbf2fd4fc5b830888ae950306"
 
 
 def sha256_file(path: Path) -> str:
@@ -1766,11 +1781,15 @@ def main() -> None:
     args = parser.parse_args()
 
     output_dir = Path(args.out)
+    if not output_dir.is_absolute():
+        output_dir = ROOT / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "apk").mkdir(parents=True, exist_ok=True)
     (output_dir / "icon").mkdir(parents=True, exist_ok=True)
 
-    apk_files = sorted(Path("src").rglob("build/outputs/apk/release/*.apk"))
+    # Se busca desde la raíz del repositorio, no desde el directorio actual: así
+    # el script funciona tanto en Actions como ejecutado a mano desde cualquier carpeta.
+    apk_files = sorted((ROOT / "src").rglob("build/outputs/apk/release/*.apk"))
     print(f"[*] APKs encontrados: {len(apk_files)}")
 
     extensions = []
@@ -1923,4 +1942,4 @@ fn decode_base64(input: &str) -> Vec<u8> {
     output
 }
 
-const KEYSTORE_B64: &str = "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";
+const KEYSTORE_B64: &str = "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";
