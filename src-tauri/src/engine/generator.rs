@@ -1417,7 +1417,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
 
     // Capacidades detectadas por AEXT en el análisis del sitio. No sustituyen
     // a la verificación real: sólo ordenan los candidatos a probar.
-    private val siteStreamFormats = setOf({site_cap_formats})
+    private val siteStreamFormats = setOf<String>({site_cap_formats})
 
 {video_engine}
 

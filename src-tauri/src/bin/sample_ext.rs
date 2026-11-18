@@ -38,9 +38,11 @@ fn anime_fixture(name: &str, host: &str, episode_selector: &str, catalog: bool) 
         episode_selector: episode_selector.to_string(),
         sample_items: Vec::new(),
         warnings: Vec::new(),
+        // Un fixture con capacidades y otro sin ellas: el caso vacío es el
+        // que rompió Pluto3 (`setOf()` sin tipo inferible).
         capabilities: SiteCapabilities {
-            stream_formats: vec!["hls".to_string()],
-            qualities: vec!["720p".to_string()],
+            stream_formats: if catalog { vec!["hls".to_string()] } else { Vec::new() },
+            qualities: if catalog { vec!["720p".to_string()] } else { Vec::new() },
             ..Default::default()
         },
     }
