@@ -545,10 +545,10 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
             }
             val browser = checkStream(url, browserHeaders)
             if (browser.ok || browser.inconclusive) {
-                verified.add(if (browser.ok) Video(url, video.name, video.quality, browserHeaders) else video)
+                verified.add(if (browser.ok) video.copy(headers = browserHeaders) else video)
                 continue
             }
-            failures.add("${video.name}: ${own.detail}; con cabeceras de navegador: ${browser.detail}")
+            failures.add("${url.substringBefore('?')}: ${own.detail}; con cabeceras de navegador: ${browser.detail}")
         }
         if (verified.isEmpty()) {
             throw Exception("AEXT no pudo verificar ningún stream (${failures.take(3).joinToString(" | ")})")
