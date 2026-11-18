@@ -1527,11 +1527,17 @@ fn generate_android_manifest(pkg_id: &str, class_name: &str, app_label: &str, ex
     format!(r#"<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Marcador usado por Nekoyomi/Aniyomi para distinguir extensiones de apps normales. -->
+    <uses-feature android:name="{tag}" />
+
     <application
         android:label="{app_label}"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
         android:supportsRtl="true">
+        <meta-data
+            android:name="{tag}"
+            android:value="true" />
         <meta-data
             android:name="{tag}.class"
             android:value="{pkg_id}.{class_name}" />
@@ -1544,6 +1550,41 @@ fn generate_android_manifest(pkg_id: &str, class_name: &str, app_label: &str, ex
     </application>
 </manifest>
 "#)
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    use super::generate_android_manifest;
+
+    #[test]
+    fn anime_manifest_declares_extension_marker() {
+        let manifest = generate_android_manifest(
+            "eu.kanade.tachiyomi.animeextension.es.pluto",
+            "Pluto",
+            "Pluto",
+            "anime",
+        );
+
+        assert!(manifest.contains(r#"<uses-feature android:name="tachiyomi.animeextension" />"#));
+        assert!(manifest.contains(r#"android:name="tachiyomi.animeextension""#));
+        assert!(manifest.contains(r#"android:value="true""#));
+        assert!(manifest.contains(
+            r#"android:value="eu.kanade.tachiyomi.animeextension.es.pluto.Pluto""#
+        ));
+    }
+
+    #[test]
+    fn manga_manifest_declares_extension_marker() {
+        let manifest = generate_android_manifest(
+            "eu.kanade.tachiyomi.extension.es.manga",
+            "Manga",
+            "Manga",
+            "manga",
+        );
+
+        assert!(manifest.contains(r#"<uses-feature android:name="tachiyomi.extension" />"#));
+        assert!(manifest.contains(r#"android:name="tachiyomi.extension""#));
+    }
 }
 
 fn generate_build_gradle(
