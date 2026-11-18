@@ -42,7 +42,8 @@ pub fn run() {
             commands::list_extension_backups,
             commands::restore_extension_backup,
             commands::check_build_toolchain,
-            commands::compile_extension
+            commands::compile_extension,
+            commands::refresh_github_actions
         ])
         .run(tauri::generate_context!())
         .expect("error while running AEXT application");

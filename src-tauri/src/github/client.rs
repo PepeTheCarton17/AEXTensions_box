@@ -42,6 +42,7 @@ pub struct WorkflowRun {
     pub status: String,
     pub conclusion: Option<String>,
     pub html_url: String,
+    pub head_sha: String,
 }
 
 impl GithubApiClient {
@@ -341,6 +342,181 @@ impl GithubApiClient {
         Ok(())
     }
 
+    /// Sube TODOS los archivos en un único commit mediante la API Git Data.
+    ///
+    /// El anterior `put_file_content` por archivo generaba un commit (y por tanto
+    /// un run de Actions) por cada archivo: decenas de runs cancelados y mucho
+    /// ruido. Aquí creamos blobs + un árbol + un commit + un ref en una sola
+    /// operación lógica. Devuelve el SHA del commit para poder localizar el run.
+    pub async fn commit_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        files: &[(String, Vec<u8>)],
+        message: &str,
+        branch: &str,
+    ) -> Result<String, String> {
+        if files.is_empty() {
+            return Err("No hay archivos para subir".to_string());
+        }
+        let api = format!("https://api.github.com/repos/{}/{}", owner, repo);
+        let branch = if branch.is_empty() { "main" } else { branch };
+
+        // Commit base: si no existe (repo vacío) creamos el árbol sin base_tree
+        // y el commit sin padres, y luego la rama con createRef.
+        let mut base_commit: Option<String> = None;
+        let ref_url = format!("{}/git/ref/heads/{}", api, encode_path(branch));
+        if let Ok(resp) = self.client.get(&ref_url).send().await {
+            if resp.status().is_success() {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    base_commit = json
+                        .get("object")
+                        .and_then(|o| o.get("sha"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                }
+            }
+        }
+
+        // 1) Un blob por archivo.
+        let mut tree = Vec::with_capacity(files.len());
+        for (path, content) in files {
+            let url = format!("{}/git/blobs", api);
+            let body = serde_json::json!({
+                "content": base64_encode(content),
+                "encoding": "base64",
+            });
+            let resp = self.client.post(&url).json(&body).send().await
+                .map_err(|e| format!("Error creando blob para {}: {}", path, e))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let err = resp.text().await.unwrap_or_default();
+                return Err(format!("Fallo creando blob para {} (HTTP {}): {}", path, status, truncate(&err, 200)));
+            }
+            let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+            let sha = json.get("sha").and_then(|v| v.as_str())
+                .ok_or_else(|| format!("GitHub no devolvió SHA para {}", path))?;
+            tree.push(serde_json::json!({
+                "path": path,
+                "mode": "100644",
+                "type": "blob",
+                "sha": sha,
+            }));
+        }
+
+        // 2) Árbol: encima del árbol del commit base para no borrar lo demás.
+        let mut tree_body = serde_json::json!({ "tree": tree });
+        if let Some(ref commit_sha) = base_commit {
+            let commit_url = format!("{}/git/commits/{}", api, commit_sha);
+            if let Ok(resp) = self.client.get(&commit_url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        if let Some(tree_sha) = json.get("tree").and_then(|v| v.get("sha")).and_then(|v| v.as_str()) {
+                            tree_body["base_tree"] = serde_json::Value::String(tree_sha.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        let resp = self.client.post(format!("{}/git/trees", api)).json(&tree_body).send().await
+            .map_err(|e| format!("Error creando árbol: {}", e))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err = resp.text().await.unwrap_or_default();
+            return Err(format!("Fallo creando árbol (HTTP {}): {}", status, truncate(&err, 300)));
+        }
+        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        let tree_sha = json.get("sha").and_then(|v| v.as_str())
+            .ok_or_else(|| "GitHub no devolvió SHA del árbol".to_string())?.to_string();
+
+        // 3) Commit con los blobs anteriores.
+        let mut commit_body = serde_json::json!({
+            "message": message,
+            "tree": tree_sha,
+        });
+        if let Some(ref parent) = base_commit {
+            commit_body["parents"] = serde_json::json!([parent]);
+        }
+        let resp = self.client.post(format!("{}/git/commits", api)).json(&commit_body).send().await
+            .map_err(|e| format!("Error creando commit: {}", e))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err = resp.text().await.unwrap_or_default();
+            return Err(format!("Fallo creando commit (HTTP {}): {}", status, truncate(&err, 300)));
+        }
+        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        let commit_sha = json.get("sha").and_then(|v| v.as_str())
+            .ok_or_else(|| "GitHub no devolvió SHA del commit".to_string())?.to_string();
+
+        // 4) Mover la rama (o crearla si el repo estaba vacío).
+        let (url, ref_body) = if base_commit.is_some() {
+            (
+                format!("{}/git/refs/heads/{}", api, encode_path(branch)),
+                serde_json::json!({ "sha": commit_sha, "force": false }),
+            )
+        } else {
+            (
+                format!("{}/git/refs", api),
+                serde_json::json!({
+                    "ref": format!("refs/heads/{}", branch),
+                    "sha": commit_sha,
+                }),
+            )
+        };
+        let resp = if base_commit.is_some() {
+            self.client.patch(&url).json(&ref_body).send().await
+        } else {
+            self.client.post(&url).json(&ref_body).send().await
+        }.map_err(|e| format!("Error actualizando la rama: {}", e))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err = resp.text().await.unwrap_or_default();
+            return Err(format!("Fallo actualizando la rama {} (HTTP {}): {}", branch, status, truncate(&err, 300)));
+        }
+
+        Ok(commit_sha)
+    }
+
+    /// Busca el run de Actions disparado por un commit concreto.
+    pub async fn get_workflow_run_for_sha(
+        &self,
+        owner: &str,
+        repo: &str,
+        head_sha: &str,
+    ) -> Result<Option<WorkflowRun>, String> {
+        let url = format!("https://api.github.com/repos/{}/{}/actions/runs", owner, repo);
+        let resp = self.client.get(&url)
+            .query(&[("head_sha", head_sha), ("per_page", "20")])
+            .send().await
+            .map_err(|e| format!("Error consultando Actions: {}", e))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err = resp.text().await.unwrap_or_default();
+            return Err(format!("Actions HTTP {}: {}", status, truncate(&err, 200)));
+        }
+        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        let Some(runs) = json.get("workflow_runs").and_then(|v| v.as_array()) else {
+            return Ok(None);
+        };
+        // Un repo puede tener otros workflows (p. ej. un health check
+        // programado) disparados para el mismo SHA. El run que nos interesa es
+        // el provocado por nuestro push, no el de un cron.
+        let Some(chosen) = runs
+            .iter()
+            .find(|r| r.get("event").and_then(|v| v.as_str()) == Some("push"))
+            .or_else(|| runs.first())
+        else {
+            return Ok(None);
+        };
+        Ok(Some(WorkflowRun {
+            id: chosen.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
+            status: chosen.get("status").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+            conclusion: chosen.get("conclusion").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            html_url: chosen.get("html_url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            head_sha: chosen.get("head_sha").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        }))
+    }
+
     pub async fn get_latest_workflow_run(
         &self,
         owner: &str,
@@ -380,11 +556,17 @@ impl GithubApiClient {
                     .unwrap_or("")
                     .to_string();
 
+                let head_sha = first
+                    .get("head_sha")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 return Ok(Some(WorkflowRun {
                     id,
                     status,
                     conclusion,
                     html_url,
+                    head_sha,
                 }));
             }
         }

@@ -241,7 +241,16 @@ pub async fn generate_extensions(
             build_status: None,
             build_error: None,
             build_apk_path: None,
+            actions_run_url: None,
+            actions_commit_sha: None,
         };
+
+        // Datos del commit subido a GitHub, para verificar el run de Actions
+        // después de que el modo GitHub haya terminado de subir el código.
+        let mut actions_commit_sha: Option<String> = None;
+        let mut actions_client: Option<GithubApiClient> = None;
+        let mut actions_owner = String::new();
+        let mut actions_repo = String::new();
 
         match request.mode {
             GenerationMode::LocalOnly => {
@@ -319,12 +328,14 @@ pub async fn generate_extensions(
                     )
                     .await?;
 
-                // El README generado trae un placeholder de repo: lo sustituimos
-                // por el repositorio real para que los deep links funcionen.
-                rewrite_readme_for_repo(&mut bundle.files, &repo.full_name);
+                // Un repo existente es del usuario: AEXT solo añade/actualiza
+                // el módulo de esta extensión. NUNCA sobrescribe su README, su
+                // keystore, su workflow, su wrapper ni sus build files raíz.
+                if !repo.empty {
+                    bundle.files.retain(|path, _| !is_repo_scaffold(path));
+                }
 
-                // En un repo reutilizado, conservar los módulos ya incluidos
-                // para no romper las demás extensiones del repositorio.
+                // Conservar los include() de los módulos ya presentes.
                 merge_existing_settings(&client, &repo, &mut bundle).await;
 
                 state
@@ -338,120 +349,55 @@ pub async fn generate_extensions(
                     )
                     .await;
 
-                let mut branch = if repo.empty {
-                    String::new()
-                } else {
-                    repo.default_branch.clone()
-                };
-                let total_files = bundle.files.len();
-                let mut uploaded = 0usize;
-                let mut last_error: Option<String> = None;
-
-                for (rel_path, content) in &bundle.files {
-                    match client
-                        .put_file_content(
-                            &repo.owner,
-                            &repo.name,
-                            rel_path,
-                            content,
-                            &format!("AEXT: Añadir {}", rel_path),
-                            &branch,
-                        )
-                        .await
-                    {
-                        Ok(()) => {
-                            uploaded += 1;
-                            if branch.is_empty() {
-                                branch = repo.default_branch.clone();
-                            }
-                        }
-                        Err(e) => {
-                            // Si el repo estaba vacío y GitHub rechazó el primer
-                            // commit, reintentamos ya con la rama por defecto.
-                            if branch.is_empty() {
-                                branch = repo.default_branch.clone();
-                                if client
-                                    .put_file_content(
-                                        &repo.owner,
-                                        &repo.name,
-                                        rel_path,
-                                        content,
-                                        &format!("AEXT: Añadir {}", rel_path),
-                                        &branch,
-                                    )
-                                    .await
-                                    .is_ok()
-                                {
-                                    uploaded += 1;
-                                    continue;
-                                }
-                            }
-                            last_error = Some(e);
-                        }
-                    }
-                }
-
+                // Un único commit con todos los archivos e iconos. Antes cada
+                // archivo producía su propio commit y, con él, un run de Actions
+                // distinto: decenas de runs (casi todos cancelados) y mucho ruido.
+                let mut all_files: Vec<(String, Vec<u8>)> = bundle
+                    .files
+                    .iter()
+                    .map(|(path, content)| (path.clone(), content.clone()))
+                    .collect();
                 for (res_dir, icon_bytes) in &mipmaps {
-                    let p = format!(
-                        "{}/src/main/res/{}/ic_launcher.png",
-                        bundle.module_path, res_dir
-                    );
-                    let _ = client
-                        .put_file_content(
-                            &repo.owner,
-                            &repo.name,
-                            &p,
-                            icon_bytes,
-                            "AEXT: Añadir icono launcher",
-                            &branch,
-                        )
-                        .await;
-
+                    all_files.push((
+                        format!(
+                            "{}/src/main/res/{}/ic_launcher.png",
+                            bundle.module_path, res_dir
+                        ),
+                        icon_bytes.clone(),
+                    ));
                     if res_dir == "mipmap-xxxhdpi" || res_dir == "mipmap-xxhdpi" {
-                        let _ = client
-                            .put_file_content(
-                                &repo.owner,
-                                &repo.name,
-                                &format!("icon/{}.png", bundle.pkg_id),
-                                icon_bytes,
-                                "AEXT: Añadir icono del paquete para Nekoyomi",
-                                &branch,
-                            )
-                            .await;
-                        let _ = client
-                            .put_file_content(
-                                &repo.owner,
-                                &repo.name,
-                                "icon/ic_launcher.png",
-                                icon_bytes,
-                                "AEXT: Añadir icono genérico para repositorio",
-                                &branch,
-                            )
-                            .await;
+                        all_files.push((format!("icon/{}.png", bundle.pkg_id), icon_bytes.clone()));
+                        all_files.push(("icon/ic_launcher.png".to_string(), icon_bytes.clone()));
                     }
                 }
-
-                if uploaded == 0 {
-                    return Err(format!(
-                        "No se pudo subir ningún archivo a {}/{}: {}",
-                        repo.owner,
-                        repo.name,
-                        last_error.unwrap_or_else(|| "error desconocido de GitHub".to_string())
-                    ));
-                }
-                if uploaded < total_files {
-                    state
-                        .add_log(
-                            "WARN",
-                            &format!(
-                                "Se subieron {}/{} archivos; último error: {}",
-                                uploaded,
-                                total_files,
-                                last_error.unwrap_or_default()
-                            ),
-                        )
-                        .await;
-                }
+                let branch = repo.default_branch.clone();
+                let commit_sha = client
+                    .commit_files(
+                        &repo.owner,
+                        &repo.name,
+                        &all_files,
+                        &format!("AEXT: generar {} v{}", bundle.pkg_id, bundle.version),
+                        &branch,
+                    )
+                    .await
+                    .map_err(|e| format!("No se pudo subir la extensión a GitHub: {}", e))?;
+                actions_owner = repo.owner.clone();
+                actions_repo = repo.name.clone();
+                actions_commit_sha = Some(commit_sha.clone());
+                ext_item.actions_commit_sha = Some(commit_sha.clone());
+                actions_client = Some(client);
+                state
+                    .add_log(
+                        "INFO",
+                        &format!(
+                            "Subidos {} archivos en un solo commit ({}) a {}/{}",
+                            all_files.len(),
+                            &commit_sha[..commit_sha.len().min(7)],
+                            repo.owner,
+                            repo.name
+                        ),
+                    )
+                    .await;
 
                 // Copia local del proyecto: es la fuente del ZIP de código y
                 // permite ver los archivos sin clonar el repositorio.
@@ -472,10 +418,10 @@ pub async fn generate_extensions(
 
                 state
                     .add_log(
-                        "SUCCESS",
+                        "INFO",
                         &format!(
-                            "Extensión subida a GitHub: {}. La compilación del APK corre en Actions.",
-                            repo.html_url
+                            "Código de {} subido a GitHub: {}. Verificando el resultado de Actions…",
+                            ext_item.pkg_id, repo.html_url
                         ),
                     )
                     .await;
@@ -488,6 +434,23 @@ pub async fn generate_extensions(
             list.push(ext_item.clone());
         }
         state.persist_extensions().await;
+
+        // Comprobación REAL: localizar el run disparado por nuestro commit y
+        // reflejar su conclusión. AEXT ya no dice "funcionó" solo por subir el
+        // código; si Actions falla, se muestra el error y el enlace al run.
+        if let (Some(sha), Some(gh_client)) = (actions_commit_sha.take(), actions_client.take()) {
+            verify_github_actions(&state, &gh_client, &actions_owner, &actions_repo, &sha, &ext_item.pkg_id).await;
+            if let Some(updated) = state
+                .extensions
+                .read()
+                .await
+                .iter()
+                .find(|x| x.pkg_id == ext_item.pkg_id)
+                .cloned()
+            {
+                ext_item = updated;
+            }
+        }
         created.push(ext_item);
     }
 
@@ -498,8 +461,20 @@ pub async fn generate_extensions(
 
 #[tauri::command]
 pub async fn get_created_extensions(state: State<'_, AppState>) -> Result<Vec<ExtensionItem>, String> {
-    let list = state.extensions.read().await;
-    Ok(list.clone())
+    let mut list = state.extensions.read().await.clone();
+    for ext in &mut list {
+        // Entradas antiguas: antes AEXT marcaba "success" en cuanto subía el
+        // código, sin mirar Actions. Sin run verificado no podemos afirmar que
+        // compiló, así que no mostramos el badge verde.
+        if ext.github_repo_url.is_some()
+            && ext.actions_run_url.is_none()
+            && ext.build_apk_path.is_none()
+            && ext.build_status.as_deref() == Some("success")
+        {
+            ext.build_status = None;
+        }
+    }
+    Ok(list)
 }
 
 /// Regenera una extensión existente (re-analiza su sitio, sube la versión y
@@ -590,6 +565,7 @@ pub async fn update_extension(
     }
 
     // 2. Si vive en GitHub, subir la nueva versión al repo existente.
+    let mut update_actions: Option<(GithubApiClient, String, String, String)> = None;
     if let Some(repo_url) = existing.github_repo_url.clone() {
         let auth = GithubAuthManager::new();
         let token = match auth.get_saved_token() {
@@ -618,92 +594,60 @@ pub async fn update_extension(
             .ensure_repository(&owner, &repo_name, false, &gh_user.username)
             .await?;
 
-        rewrite_readme_for_repo(&mut bundle.files, &repo.full_name);
-        // Igual que al generar: no perder los include() de un repo compartido.
+        // Igual que al generar: NUNCA sobrescribir README, firma, workflow ni
+        // build files del usuario. Solo el módulo de la extensión + iconos.
+        if !repo.empty {
+            bundle.files.retain(|path, _| !is_repo_scaffold(path));
+        }
         merge_existing_settings(&client, &repo, &mut bundle).await;
 
-        // La copia local se escribió antes de conocer el repositorio: sincroniza
-        // el README para que el ZIP de código tenga los deep links reales.
-        if let Some(readme) = bundle.files.get("README.md") {
-            let _ = fs::write(target_dir.join("README.md"), readme);
-        }
-
-        let mut branch = if repo.empty {
-            String::new()
-        } else {
-            repo.default_branch.clone()
-        };
-        let mut uploaded = 0usize;
-        let mut last_error: Option<String> = None;
-
-        for (rel_path, content) in &bundle.files {
-            match client
-                .put_file_content(
-                    &repo.owner,
-                    &repo.name,
-                    rel_path,
-                    content,
-                    &format!("AEXT: Actualizar {} a v{}", rel_path, bundle.version),
-                    &branch,
-                )
-                .await
-            {
-                Ok(()) => {
-                    uploaded += 1;
-                    if branch.is_empty() {
-                        branch = repo.default_branch.clone();
-                    }
-                }
-                Err(e) => last_error = Some(e),
-            }
-        }
-
+        let mut all_files: Vec<(String, Vec<u8>)> = bundle
+            .files
+            .iter()
+            .map(|(path, content)| (path.clone(), content.clone()))
+            .collect();
         for (res_dir, icon_bytes) in &mipmaps {
-            let _ = client
-                .put_file_content(
-                    &repo.owner,
-                    &repo.name,
-                    &format!(
-                        "{}/src/main/res/{}/ic_launcher.png",
-                        bundle.module_path, res_dir
-                    ),
-                    icon_bytes,
-                    "AEXT: Actualizar icono launcher",
-                    &branch,
-                )
-                .await;
+            all_files.push((
+                format!(
+                    "{}/src/main/res/{}/ic_launcher.png",
+                    bundle.module_path, res_dir
+                ),
+                icon_bytes.clone(),
+            ));
             if res_dir == "mipmap-xxxhdpi" || res_dir == "mipmap-xxhdpi" {
-                let _ = client
-                    .put_file_content(
-                        &repo.owner,
-                        &repo.name,
-                        &format!("icon/{}.png", bundle.pkg_id),
-                        icon_bytes,
-                        "AEXT: Actualizar icono del paquete",
-                        &branch,
-                    )
-                    .await;
-                let _ = client
-                    .put_file_content(
-                        &repo.owner,
-                        &repo.name,
-                        "icon/ic_launcher.png",
-                        icon_bytes,
-                        "AEXT: Actualizar icono genérico",
-                        &branch,
-                    )
-                    .await;
+                all_files.push((format!("icon/{}.png", bundle.pkg_id), icon_bytes.clone()));
+                all_files.push(("icon/ic_launcher.png".to_string(), icon_bytes.clone()));
             }
         }
-
-        if uploaded == 0 {
-            return Err(format!(
-                "No se pudo subir la actualización a {}/{}: {}",
-                repo.owner,
-                repo.name,
-                last_error.unwrap_or_else(|| "error desconocido de GitHub".to_string())
-            ));
-        }
+        let branch = repo.default_branch.clone();
+        let commit_sha = client
+            .commit_files(
+                &repo.owner,
+                &repo.name,
+                &all_files,
+                &format!("AEXT: actualizar {} a v{}", bundle.pkg_id, bundle.version),
+                &branch,
+            )
+            .await
+            .map_err(|e| format!("No se pudo actualizar GitHub: {}", e))?;
+        updated.actions_commit_sha = Some(commit_sha.clone());
+        update_actions = Some((
+            client,
+            repo.owner.clone(),
+            repo.name.clone(),
+            commit_sha.clone(),
+        ));
+        state
+            .add_log(
+                "INFO",
+                &format!(
+                    "Actualización subida en un solo commit ({}) a {}/{}. Verificando Actions…",
+                    &commit_sha[..commit_sha.len().min(7)],
+                    repo.owner,
+                    repo.name
+                ),
+            )
+            .await;
 
         updated.github_repo_url = Some(repo.html_url.clone());
         updated.nekoyomi_repo_url = Some(format!(
@@ -724,6 +668,22 @@ pub async fn update_extension(
         list.push(updated.clone());
     }
     state.persist_extensions().await;
+
+    // El estado final lo decide GitHub Actions, no la subida del código.
+    if let Some((gh_client, owner, repo_name, sha)) = update_actions {
+        verify_github_actions(&state, &gh_client, &owner, &repo_name, &sha, &updated.pkg_id)
+            .await;
+        if let Some(latest) = state
+            .extensions
+            .read()
+            .await
+            .iter()
+            .find(|e| e.pkg_id == updated.pkg_id || e.id == updated.id)
+            .cloned()
+        {
+            updated = latest;
+        }
+    }
 
     state
         .add_log(
@@ -1249,6 +1209,165 @@ async fn set_build_status(
         }
     }
     state.persist_extensions().await;
+}
+
+/// Comprueba el run de GitHub Actions disparado por `commit_sha` y refleja su
+/// resultado REAL. AEXT no afirma que la compilación funcionó solo porque el
+/// código se subiera: espera a que GitHub devuelva `conclusion == success`.
+async fn verify_github_actions(
+    state: &AppState,
+    client: &GithubApiClient,
+    owner: &str,
+    repo: &str,
+    commit_sha: &str,
+    pkg_id: &str,
+) {
+    const MAX_WAIT_SECS: u64 = 90;
+    const POLL_SECS: u64 = 10;
+    let started = std::time::Instant::now();
+
+    loop {
+        match client
+            .get_workflow_run_for_sha(owner, repo, commit_sha)
+            .await
+        {
+            Ok(Some(run)) => {
+                let finished = run.status == "completed";
+                let conclusion = run.conclusion.clone().unwrap_or_default();
+                {
+                    let mut list = state.extensions.write().await;
+                    if let Some(ext) = list
+                        .iter_mut()
+                        .find(|e| e.pkg_id == pkg_id || e.id == pkg_id)
+                    {
+                        ext.actions_run_url = Some(run.html_url.clone());
+                        if finished {
+                            if conclusion == "success" {
+                                ext.build_status = Some("success".to_string());
+                                ext.build_error = None;
+                            } else {
+                                ext.build_status = Some("error".to_string());
+                                ext.build_error = Some(format!(
+                                    "GitHub Actions: {} — {}",
+                                    conclusion, run.html_url
+                                ));
+                            }
+                        } else {
+                            ext.build_status = Some("building".to_string());
+                            ext.build_error = None;
+                        }
+                    }
+                }
+                state.persist_extensions().await;
+
+                if finished {
+                    let level = if conclusion == "success" {
+                        "SUCCESS"
+                    } else {
+                        "ERROR"
+                    };
+                    state
+                        .add_log(
+                            level,
+                            &format!(
+                                "GitHub Actions para {} ({}): {} — {}",
+                                pkg_id,
+                                &commit_sha[..commit_sha.len().min(7)],
+                                conclusion,
+                                run.html_url
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+            }
+            Ok(None) => {
+                let mut list = state.extensions.write().await;
+                if let Some(ext) = list.iter_mut().find(|e| e.pkg_id == pkg_id || e.id == pkg_id) {
+                    ext.build_status = Some("building".to_string());
+                }
+                drop(list);
+                state.persist_extensions().await;
+            }
+            Err(e) => {
+                state
+                    .add_log("WARN", &format!("No se pudo consultar Actions: {}", e))
+                    .await;
+            }
+        }
+
+        if started.elapsed().as_secs() >= MAX_WAIT_SECS {
+            state
+                .add_log(
+                    "WARN",
+                    &format!(
+                        "GitHub Actions sigue compilando {} tras {}s. Pulsa «Verificar» en Mis extensiones para ver el resultado final.",
+                        pkg_id, MAX_WAIT_SECS
+                    ),
+                )
+                .await;
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(POLL_SECS)).await;
+    }
+}
+
+/// Vuelve a consultar el resultado real de GitHub Actions para el último commit
+/// que AEXT subió. Útil cuando el run tardó más que la espera inicial.
+#[tauri::command]
+pub async fn refresh_github_actions(
+    pkg_id: String,
+    state: State<'_, AppState>,
+) -> Result<ExtensionItem, String> {
+    let ext = state
+        .extensions
+        .read()
+        .await
+        .iter()
+        .find(|e| e.pkg_id == pkg_id || e.id == pkg_id)
+        .cloned()
+        .ok_or_else(|| format!("No se encontró la extensión {}", pkg_id))?;
+
+    let sha = ext.actions_commit_sha.clone().ok_or_else(|| {
+        "Esta extensión no tiene un commit de AEXT registrado: genera la extensión de nuevo para poder verificar Actions.".to_string()
+    })?;
+    let repo_url = ext
+        .github_repo_url
+        .clone()
+        .ok_or_else(|| "Esta extensión no tiene un repositorio de GitHub asociado.".to_string())?;
+    let (owner, repo) = parse_github_url(&repo_url)
+        .ok_or_else(|| format!("URL de repositorio no válida: {}", repo_url))?;
+
+    let auth = GithubAuthManager::new();
+    let token = match auth.get_saved_token() {
+        Some(t) => t,
+        None => auth
+            .extract_and_save_cli_token()
+            .await
+            .map_err(|_| {
+                "Necesitas iniciar sesión en GitHub para consultar Actions.".to_string()
+            })?
+            .0,
+    };
+    let client = GithubApiClient::new(token);
+
+    state
+        .add_log(
+            "INFO",
+            &format!("Consultando de nuevo el resultado de Actions para {}…", ext.pkg_id),
+        )
+        .await;
+    verify_github_actions(&state, &client, &owner, &repo, &sha, &ext.pkg_id).await;
+
+    let updated = state
+        .extensions
+        .read()
+        .await
+        .iter()
+        .find(|e| e.pkg_id == ext.pkg_id || e.id == ext.id)
+        .cloned()
+        .unwrap_or(ext);
+    Ok(updated)
 }
 
 /// Extrae las líneas útiles de Gradle para la terminal (en vez de un genérico
@@ -1955,69 +2074,82 @@ fn write_repo_icons(
     Ok(())
 }
 
-fn rewrite_readme_for_repo(
-    files: &mut std::collections::HashMap<String, Vec<u8>>,
-    repo_full_name: &str,
-) {
-    let Some(readme) = files.get_mut("README.md") else {
-        return;
-    };
-    let text = String::from_utf8_lossy(readme).to_string();
-    let mut encoded = String::new();
-    for byte in repo_full_name.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(*byte as char)
-            }
-            _ => encoded.push_str(&format!("%{:02X}", byte)),
+/// Archivos que pertenecen al repositorio, NO a una extensión concreta.
+///
+/// AEXT los crea cuando el repo está vacío, pero en un repo existente jamás
+/// deben sobrescribirse: el README (con la URL, el disclaimer y las notas del
+/// usuario), la clave de firma (cambiarla rompe las actualizaciones instaladas),
+/// el workflow, el wrapper y los build files raíz.
+fn is_repo_scaffold(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower == "readme.md"
+        || lower == "readme"
+        || lower == "build.gradle.kts"
+        || lower == "build.gradle"
+        || lower == "settings.gradle.kts"
+        || lower == "settings.gradle"
+        || lower == "gradle.properties"
+        || lower == ".gitignore"
+        || lower == "local.properties"
+        || lower == "gradlew"
+        || lower == "gradlew.bat"
+        || lower.starts_with(".github/")
+        || lower.starts_with("gradle/")
+        || lower == "icon/ic_launcher.png"
+        || lower.starts_with("signingkey")
+        || lower.ends_with(".jks")
+        || lower.ends_with(".keystore")
+}
+
+#[cfg(test)]
+mod scaffold_tests {
+    use super::is_repo_scaffold;
+
+    #[test]
+    fn protects_user_owned_repo_files() {
+        for path in [
+            "README.md",
+            "readme",
+            "signingkey.jks",
+            "build.gradle.kts",
+            "settings.gradle.kts",
+            "gradle.properties",
+            "gradlew",
+            "gradlew.bat",
+            "gradle/wrapper/gradle-wrapper.properties",
+            "gradle/wrapper/gradle-wrapper.jar",
+            ".github/workflows/build_push.yml",
+            ".github/scripts/generate-repo-index.py",
+            ".gitignore",
+            "icon/ic_launcher.png",
+        ] {
+            assert!(is_repo_scaffold(path), "debe protegerse: {}", path);
         }
     }
-    let replaced = text
-        .replace("PepeTheCarton17%2F{{REPO_NAME}}", &encoded)
-        .replace("PepeTheCarton17/{{REPO_NAME}}", repo_full_name)
-        .replace("PepeTheCarton17%2F{REPO_NAME}", &encoded)
-        .replace("PepeTheCarton17/{REPO_NAME}", repo_full_name);
-    *readme = replaced.into_bytes();
+
+    #[test]
+    fn allows_extension_owned_files() {
+        for path in [
+            "src/es/miextension/build.gradle.kts",
+            "src/es/miextension/src/main/AndroidManifest.xml",
+            "src/es/miextension/src/main/java/eu/kanade/MiExt.kt",
+            "src/es/miextension/src/main/res/mipmap-hdpi/ic_launcher.png",
+            "icon/eu.kanade.tachiyomi.animeextension.es.miextension.png",
+        ] {
+            assert!(!is_repo_scaffold(path), "debe poder subirse: {}", path);
+        }
+    }
 }
 
 /// Prepara el bundle para una carpeta local: solo lo necesario para compilar
 /// el APK. El workflow de Actions, el script del índice y los iconos de
-/// `icon/` solo tienen sentido en un repositorio con `gh-pages`, así que no se
-/// escriben en modo local.
+/// `icon/` solo tienen sentido en un repositorio con `gh-pages`.
 fn prepare_bundle_for_local(files: &mut std::collections::HashMap<String, Vec<u8>>) {
     files.retain(|path, _| {
         !(path.starts_with(".github/")
             || path.starts_with("icon/")
             || path == "local.properties")
     });
-
-    let Some(readme) = files.get_mut("README.md") else {
-        return;
-    };
-    let text = String::from_utf8_lossy(readme).to_string();
-    if !text.contains("{REPO_NAME}") {
-        return;
-    }
-    let (Some(start), Some(end)) = (
-        text.find("## Instalación en 1 Clic"),
-        text.find("## Información de la Extensión"),
-    ) else {
-        return;
-    };
-    if start >= end {
-        return;
-    }
-    let mut out = String::with_capacity(text.len());
-    out.push_str(&text[..start]);
-    out.push_str(
-        "## Instalación\n\n\
-         > Este proyecto todavía no está publicado en GitHub, así que no hay enlaces \
-         de instalación todavía. Genera la extensión en **modo GitHub** y AEXT publicará \
-         el repositorio con su rama `gh-pages` y el `index.min.json`.\n\n\
-         ---\n\n",
-    );
-    out.push_str(&text[end..]);
-    *readme = out.into_bytes();
 }
 
 pub fn parse_repo_target(raw: &str) -> (Option<String>, String) {

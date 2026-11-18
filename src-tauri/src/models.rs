@@ -45,6 +45,12 @@ pub struct ExtensionItem {
     pub build_error: Option<String>,
     #[serde(default)]
     pub build_apk_path: Option<String>,
+    /// URL del run de GitHub Actions que compila esta extensión (modo GitHub).
+    #[serde(default)]
+    pub actions_run_url: Option<String>,
+    /// SHA del commit que AEXT subió; permite volver a consultar ese run.
+    #[serde(default)]
+    pub actions_commit_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1379,6 +1379,11 @@ function renderExtensionsGrid(list) {
     } else if (ext.build_status === 'error') {
       buildBadge = `<span class="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-rose-300" title="${escapeHtml(ext.build_error || '')}"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>${escapeHtml(t('ext.build_error'))}</span>`;
     }
+    // El badge apunta al run REAL de Actions, no solo al repo, para poder ver
+    // qué falló. Antes AEXT mostraba éxito aunque el run estuviera en rojo.
+    if (buildBadge && ext.actions_run_url) {
+      buildBadge = `<a href="${escapeHtml(ext.actions_run_url)}" target="_blank" rel="noreferrer" class="inline-block" title="Abrir run de GitHub Actions">${buildBadge}</a>`;
+    }
 
     card.innerHTML = `
       <div class="flex items-start justify-between">
@@ -1415,6 +1420,13 @@ function renderExtensionsGrid(list) {
           <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
           <span>${escapeHtml(t('ext.update'))}</span>
         </button>
+
+        ${hasGithub && ext.actions_commit_sha ? `
+          <button data-verify-actions-pkg="${escapeHtml(ext.pkg_id)}" class="btn-verify-actions py-2 px-3 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 flex items-center gap-1.5 transition-all" title="${escapeHtml(t('ext.verify_actions'))}">
+            <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+            <span>${escapeHtml(t('ext.verify_actions'))}</span>
+          </button>
+        ` : ''}
 
         <button data-open-folder-pkg="${escapeHtml(ext.pkg_id)}" class="btn-open-folder py-2 px-3 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 flex items-center gap-1.5 transition-all" title="${escapeHtml(t('ext.open_folder'))}">
           <svg class="w-3.5 h-3.5 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
@@ -1522,6 +1534,31 @@ function renderExtensionsGrid(list) {
         button.disabled = false;
         button.classList.remove('opacity-60', 'cursor-wait');
         if (label) label.textContent = original || t('ext.update');
+      }
+    });
+  });
+
+  // Hook verify-Actions buttons: consulta el run real y actualiza el badge.
+  document.querySelectorAll('.btn-verify-actions').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const button = e.currentTarget;
+      const pkgId = button.getAttribute('data-verify-actions-pkg');
+      if (!pkgId) return;
+      const label = button.querySelector('span');
+      const original = label ? label.textContent : '';
+      button.disabled = true;
+      button.classList.add('opacity-60', 'cursor-wait');
+      if (label) label.textContent = t('ext.verifying');
+      appendTerminalLog('INFO', `↻ ${t('ext.verify_actions')}: ${pkgId}…`);
+      try {
+        await invokeBackend('refresh_github_actions', { pkgId });
+        await loadExtensions();
+      } catch (err) {
+        appendTerminalLog('ERROR', String(err));
+        alert(String(err));
+        button.disabled = false;
+        button.classList.remove('opacity-60', 'cursor-wait');
+        if (label) label.textContent = original || t('ext.verify_actions');
       }
     });
   });
