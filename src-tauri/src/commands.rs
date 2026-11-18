@@ -234,6 +234,9 @@ pub async fn generate_extensions(
             nekoyomi_repo_url: None,
             apk_download_url: None,
             created_at: chrono::Utc::now().to_rfc3339(),
+            build_status: None,
+            build_error: None,
+            build_apk_path: None,
         };
 
         match request.mode {
@@ -241,10 +244,9 @@ pub async fn generate_extensions(
                 let target_dir = local_extension_dir(&state, &bundle.pkg_id);
                 // Limpiar restos de una generación anterior (estructura antigua).
                 let _ = fs::remove_dir_all(&target_dir);
-                rewrite_readme_for_local(&mut bundle.files);
+                prepare_bundle_for_local(&mut bundle.files);
                 write_bundle_to_dir(&target_dir, &bundle.files)?;
                 write_icons_to_dir(&target_dir, &bundle.module_path, &mipmaps)?;
-                write_repo_icons(&target_dir, &bundle.pkg_id, &mipmaps)?;
 
                 ext_item.apk_download_url = Some(format!(
                     "{}/api/download/{}",
@@ -560,14 +562,18 @@ pub async fn update_extension(
     // 1. Reescribir siempre la copia local (sirve también como fuente del ZIP).
     let target_dir = local_extension_dir(&state, &bundle.pkg_id);
     let _ = fs::remove_dir_all(&target_dir);
-    if existing.github_repo_url.is_none() {
-        // Sin repositorio no hay rama `gh-pages`: el README local no debe
-        // mostrar enlaces con el placeholder del repositorio.
-        rewrite_readme_for_local(&mut bundle.files);
+    let has_repo = existing.github_repo_url.is_some();
+    if !has_repo {
+        // Sin repositorio no hay rama `gh-pages`: el bundle local solo lleva
+        // lo necesario para compilar (sin .github/, icon/ ni README con
+        // placeholders de repo).
+        prepare_bundle_for_local(&mut bundle.files);
     }
     write_bundle_to_dir(&target_dir, &bundle.files)?;
     write_icons_to_dir(&target_dir, &bundle.module_path, &mipmaps)?;
-    write_repo_icons(&target_dir, &bundle.pkg_id, &mipmaps)?;
+    if has_repo {
+        write_repo_icons(&target_dir, &bundle.pkg_id, &mipmaps)?;
+    }
     if existing.pkg_id != bundle.pkg_id {
         // El paquete cambió de id: borrar la carpeta local antigua.
         let _ = fs::remove_dir_all(local_extension_dir(&state, &existing.pkg_id));
@@ -727,28 +733,48 @@ pub async fn update_extension(
 
 #[tauri::command]
 pub async fn delete_extension(pkg_id: String, state: State<'_, AppState>) -> Result<bool, String> {
+    let target_pkg = {
+        let list = state.extensions.read().await;
+        list.iter()
+            .find(|e| e.pkg_id == pkg_id || e.id == pkg_id)
+            .map(|e| e.pkg_id.clone())
+    };
+    let Some(pkg) = target_pkg else {
+        return Ok(false);
+    };
+
+    // Borrar primero los archivos. Si falla, NO quitamos la entrada del
+    // catálogo: antes se eliminaba de la lista aunque la carpeta quedara en
+    // disco (huérfanos como `...videospornoypelículas...`).
+    let dir = local_extension_dir(&state, &pkg);
+    if dir.is_dir() {
+        // Los directorios de Gradle suelen tener archivos bloqueados; limpiar
+        // primero los derivados y reintentar aumenta mucho la tasa de éxito.
+        let _ = remove_dir_with_retries(&dir.join("build"));
+        let _ = remove_dir_with_retries(&dir.join(".gradle"));
+        remove_dir_with_retries(&dir).map_err(|e| {
+            format!(
+                "No se pudo borrar la carpeta de {} ({}). Ciérrala en el explorador y vuelve a intentarlo.",
+                pkg, e
+            )
+        })?;
+    }
+
     let mut list = state.extensions.write().await;
     let initial_len = list.len();
-    let target_pkg = list
-        .iter()
-        .find(|e| e.pkg_id == pkg_id || e.id == pkg_id)
-        .map(|e| e.pkg_id.clone());
     list.retain(|e| e.pkg_id != pkg_id && e.id != pkg_id);
     let removed = list.len() < initial_len;
     drop(list);
 
     if removed {
-        // Borrar también los archivos locales para que el ZIP no quede huérfano.
-        if let Some(pkg) = target_pkg {
-            let dir = local_extension_dir(&state, &pkg);
-            let _ = fs::remove_dir_all(dir);
-        }
         state.persist_extensions().await;
         state
-            .add_log("INFO", &format!("Extensión {} eliminada del catálogo", pkg_id))
+            .add_log(
+                "SUCCESS",
+                &format!("Extensión {} y su carpeta eliminadas", pkg_id),
+            )
             .await;
     }
-
     Ok(removed)
 }
 
@@ -1194,6 +1220,81 @@ pub async fn check_build_toolchain() -> Result<BuildToolchain, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Actualiza el estado de compilación que se muestra en "Mis extensiones".
+async fn set_build_status(
+    state: &AppState,
+    pkg_id: &str,
+    status: &str,
+    error: Option<String>,
+    apk_path: Option<String>,
+) {
+    {
+        let mut list = state.extensions.write().await;
+        if let Some(ext) = list
+            .iter_mut()
+            .find(|e| e.pkg_id == pkg_id || e.id == pkg_id)
+        {
+            ext.build_status = Some(status.to_string());
+            if status == "building" {
+                ext.build_error = None;
+                ext.build_apk_path = None;
+            } else {
+                ext.build_error = error;
+                ext.build_apk_path = apk_path;
+            }
+        }
+    }
+    state.persist_extensions().await;
+}
+
+/// Extrae las líneas útiles de Gradle para la terminal (en vez de un genérico
+/// "La compilación falló").
+fn extract_build_error(output: &str) -> String {
+    let mut picked: Vec<String> = Vec::new();
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let lower = line.to_lowercase();
+        let relevant = line.starts_with("e: ")
+            || lower.contains("error:")
+            || lower.contains("failure:")
+            || lower.contains("what went wrong")
+            || lower.contains("execution failed")
+            || lower.contains("cannot mutate")
+            || lower.contains("unresolved reference");
+        if relevant && !picked.iter().any(|p| p == line) {
+            picked.push(line.to_string());
+        }
+        if picked.len() >= 4 {
+            break;
+        }
+    }
+    if picked.is_empty() {
+        "Gradle devolvió un error sin mensaje detallado. Revisa la salida completa abajo."
+            .to_string()
+    } else {
+        picked.join("\n")
+    }
+}
+
+/// Elimina APKs de compilaciones anteriores para no dar un éxito falso cuando
+/// Gradle falla pero el APK viejo sigue en `build/outputs`.
+fn remove_stale_apks(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            remove_stale_apks(&path);
+        } else if path.extension() == Some(std::ffi::OsStr::new("apk")) {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 /// Compila el módulo con Gradle + Android SDK si están instalados. Es una
 /// compilación real (firma incluida); nunca simulamos un APK inexistente.
 #[tauri::command]
@@ -1201,34 +1302,40 @@ pub async fn compile_extension(
     state: State<'_, AppState>,
     pkg_id: String,
 ) -> Result<serde_json::Value, String> {
+    let app_state = state.inner().clone();
     let dir = local_extension_dir(&state, &pkg_id);
     if !dir.is_dir() {
-        return Err(format!(
+        let msg = format!(
             "No hay código local para compilar. Descarga el ZIP o regenera la extensión ({}).",
             dir.display()
-        ));
+        );
+        set_build_status(&app_state, &pkg_id, "error", Some(msg.clone()), None).await;
+        return Err(msg);
     }
     if !dir.join("settings.gradle.kts").exists() {
-        return Err(
-            "El proyecto local no tiene settings.gradle.kts. Regenera la extensión con esta versión de AEXT."
-                .to_string(),
-        );
+        let msg = "El proyecto local no tiene settings.gradle.kts. Regenera la extensión con esta versión de AEXT.".to_string();
+        set_build_status(&app_state, &pkg_id, "error", Some(msg.clone()), None).await;
+        return Err(msg);
     }
 
     let toolchain = tauri::async_runtime::spawn_blocking(detect_toolchain)
         .await
         .map_err(|e| e.to_string())?;
 
-    if !toolchain.can_build {
-        return Err(format!(
+    if !toolchain.java || !toolchain.android_sdk {
+        let msg = format!(
             "Faltan herramientas para compilar: {}",
             toolchain.missing.join(", ")
-        ));
+        );
+        set_build_status(&app_state, &pkg_id, "error", Some(msg.clone()), None).await;
+        return Err(msg);
     }
 
     let parts: Vec<&str> = pkg_id.split('.').filter(|p| !p.is_empty()).collect();
     if parts.len() < 2 {
-        return Err("No se pudo deducir la ruta del módulo Gradle.".to_string());
+        let msg = "No se pudo deducir la ruta del módulo Gradle.".to_string();
+        set_build_status(&app_state, &pkg_id, "error", Some(msg.clone()), None).await;
+        return Err(msg);
     }
     let module = format!(
         ":src:{}:{}",
@@ -1236,22 +1343,43 @@ pub async fn compile_extension(
         parts[parts.len() - 1]
     );
 
-    let gradle = toolchain
-        .gradle_path
-        .clone()
-        .ok_or_else(|| "No se encontró Gradle.".to_string())?;
+    // Preferir SIEMPRE el wrapper del proyecto: fija Gradle 8.5. El Gradle del
+    // PATH puede ser 9.x y romper AGP 8.2.2.
+    let wrapper = if cfg!(windows) {
+        dir.join("gradlew.bat")
+    } else {
+        dir.join("gradlew")
+    };
+    #[cfg(unix)]
+    if wrapper.is_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755));
+    }
+    let gradle = if wrapper.is_file() {
+        wrapper.display().to_string()
+    } else {
+        let detected = toolchain.gradle_path.clone().ok_or_else(|| {
+            "No se encontró Gradle ni un wrapper en el proyecto. Regenera la extensión."
+                .to_string()
+        })?;
+        detected
+    };
     let sdk = toolchain
         .android_sdk_path
         .clone()
         .ok_or_else(|| "No se encontró el Android SDK.".to_string())?;
     let java_home = toolchain.java_home.clone();
 
+    set_build_status(&app_state, &pkg_id, "building", None, None).await;
+
     // local.properties apunta al SDK real del usuario.
     let local_properties = format!("sdk.dir={}\n", sdk.replace('\\', "/"));
     fs::write(dir.join("local.properties"), local_properties)
         .map_err(|e| format!("No se pudo escribir local.properties: {}", e))?;
 
-    let app_state = state.inner().clone();
+    // Un APK anterior no debe hacer que un build fallido parezca exitoso.
+    remove_stale_apks(&dir.join("src"));
+
     app_state
         .add_log(
             "INFO",
@@ -1297,25 +1425,42 @@ pub async fn compile_extension(
 
     let tail: Vec<&str> = combined.lines().rev().take(160).collect();
     let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
+    let error_summary = if output.status.success() {
+        None
+    } else {
+        Some(extract_build_error(&combined))
+    };
 
     let apk = find_apk(&dir.join("src"));
     let success = output.status.success() && apk.is_some();
+    let apk_path = apk.map(|p| p.display().to_string());
 
-    let log_level = if success { "SUCCESS" } else { "ERROR" };
-    let log_message = if success {
-        format!(
-            "APK compilado en {}",
-            apk.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
-        )
+    if success {
+        set_build_status(&app_state, &pkg_id, "success", None, apk_path.clone()).await;
+        app_state
+            .add_log(
+                "SUCCESS",
+                &format!("APK compilado en {}", apk_path.clone().unwrap_or_default()),
+            )
+            .await;
     } else {
-        format!("La compilación de {} falló", pkg_id)
-    };
-    app_state.add_log(log_level, &log_message).await;
+        let detail = error_summary
+            .clone()
+            .unwrap_or_else(|| "Sin detalles de Gradle.".to_string());
+        set_build_status(&app_state, &pkg_id, "error", Some(detail.clone()), None).await;
+        app_state
+            .add_log(
+                "ERROR",
+                &format!("La compilación de {} falló:\n{}", pkg_id, detail),
+            )
+            .await;
+    }
 
     Ok(serde_json::json!({
         "success": success,
-        "apk_path": apk.map(|p| p.display().to_string()),
+        "apk_path": apk_path,
         "exit_code": output.status.code(),
+        "error": error_summary,
         "output": tail
     }))
 }
@@ -1572,6 +1717,24 @@ pub fn local_extension_dir(state: &AppState, pkg_id: &str) -> std::path::PathBuf
     state.storage_dir.join("extensions").join(pkg_id)
 }
 
+/// Borra un directorio reintentando un par de veces: en Windows los archivos
+/// de `build/` pueden seguir abiertos justo después de Gradle.
+fn remove_dir_with_retries(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut last = String::new();
+    for attempt in 0..3 {
+        match fs::remove_dir_all(path) {
+            Ok(()) if !path.exists() => return Ok(()),
+            Ok(()) => last = "el directorio sigue existiendo".to_string(),
+            Err(e) => last = e.to_string(),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200 * (attempt + 1)));
+    }
+    Err(last)
+}
+
 /// Al reutilizar un repositorio con varias extensiones, añade el `include()`
 /// del nuevo módulo sin borrar los que ya existían.
 async fn merge_existing_settings(
@@ -1651,9 +1814,10 @@ fn write_icons_to_dir(
     Ok(())
 }
 
-/// Copia el icono también a `icon/` en la raíz del proyecto. El índice del
-/// repositorio (gh-pages) y Nekoyomi esperan `icon/ic_launcher.png` e
-/// `icon/<pkg_id>.png`; sin ellos el ZIP local parecía tener "iconos faltantes".
+/// Copia el icono también a `icon/` en la raíz del proyecto. Solo aplica al
+/// modo GitHub: el índice de `gh-pages` y Nekoyomi esperan
+/// `icon/ic_launcher.png` e `icon/<pkg_id>.png`. En modo local estos archivos
+/// se omiten porque no hay repositorio que los publique.
 fn write_repo_icons(
     target_dir: &Path,
     pkg_id: &str,
@@ -1701,11 +1865,17 @@ fn rewrite_readme_for_repo(
     *readme = replaced.into_bytes();
 }
 
-/// El README se genera antes de saber si habrá repositorio. En modo local no
-/// existe la rama `gh-pages`, así que la tabla de instalación en 1 clic se
-/// sustituye por una nota: dejar `{REPO_NAME}` dentro de un enlace parece un
-/// error del generador.
-fn rewrite_readme_for_local(files: &mut std::collections::HashMap<String, Vec<u8>>) {
+/// Prepara el bundle para una carpeta local: solo lo necesario para compilar
+/// el APK. El workflow de Actions, el script del índice y los iconos de
+/// `icon/` solo tienen sentido en un repositorio con `gh-pages`, así que no se
+/// escriben en modo local.
+fn prepare_bundle_for_local(files: &mut std::collections::HashMap<String, Vec<u8>>) {
+    files.retain(|path, _| {
+        !(path.starts_with(".github/")
+            || path.starts_with("icon/")
+            || path == "local.properties")
+    });
+
     let Some(readme) = files.get_mut("README.md") else {
         return;
     };

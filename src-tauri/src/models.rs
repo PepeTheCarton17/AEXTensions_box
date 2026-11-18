@@ -38,6 +38,13 @@ pub struct ExtensionItem {
     pub nekoyomi_repo_url: Option<String>,
     pub apk_download_url: Option<String>,
     pub created_at: String,
+    /// Estado de la última compilación local: "building" | "success" | "error".
+    #[serde(default)]
+    pub build_status: Option<String>,
+    #[serde(default)]
+    pub build_error: Option<String>,
+    #[serde(default)]
+    pub build_apk_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

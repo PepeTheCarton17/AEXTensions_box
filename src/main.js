@@ -248,7 +248,7 @@ function appendTerminalLog(level, message) {
   line.innerHTML = `
     <span class="text-slate-600 select-none">${time}</span>
     <span class="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase ${badgeColor}">${level}</span>
-    <span class="${colorClass} flex-1 break-all">${escapeHtml(message)}</span>
+    <span class="${colorClass} flex-1 break-all whitespace-pre-wrap">${escapeHtml(message)}</span>
   `;
 
   elements.terminalLogs.appendChild(line);
@@ -581,6 +581,16 @@ function renderToolchainStatus() {
   }
 }
 
+function markExtensionBuild(pkgId, status, extra = {}) {
+  const item = state.extensions.find(e => e.pkg_id === pkgId || e.id === pkgId);
+  if (item) {
+    item.build_status = status;
+    item.build_error = extra.error || null;
+    item.build_apk_path = extra.apk_path || null;
+  }
+  renderExtensionsGrid(state.extensions);
+}
+
 async function compileSuccessExtension() {
   const ext = state.successExt;
   if (!ext || !elements.btnSuccessCompile) return;
@@ -604,6 +614,10 @@ async function compileSuccessExtension() {
   }
   appendTerminalLog('INFO', t('logs.compile_start', { pkg: ext.pkg_id }));
 
+  // Estado optimista: aunque el usuario cambie de pestaña, la tarjeta ya
+  // muestra "compilando" y el backend persistirá el resultado al terminar.
+  markExtensionBuild(ext.pkg_id, 'building');
+
   try {
     const result = await invokeBackend('compile_extension', { pkgId: ext.pkg_id });
     if (elements.successCompileOutput) {
@@ -611,23 +625,34 @@ async function compileSuccessExtension() {
       elements.successCompileOutput.classList.remove('hidden');
     }
     if (result.success) {
+      markExtensionBuild(ext.pkg_id, 'success', { apk_path: result.apk_path });
       appendTerminalLog('SUCCESS', t('logs.compile_ok', { path: result.apk_path || '' }));
       if (elements.successDownloadStatus) {
         elements.successDownloadStatus.classList.remove('hidden');
         elements.successDownloadStatus.textContent = `APK: ${result.apk_path}`;
       }
+      await loadExtensions();
       await openExtensionFolder(ext.pkg_id);
     } else {
-      appendTerminalLog('ERROR', t('logs.compile_fail', { pkg: ext.pkg_id }));
-      alert(t('alerts.compile_failed'));
+      const detail = result.error || t('logs.compile_fail', { pkg: ext.pkg_id });
+      markExtensionBuild(ext.pkg_id, 'error', { error: detail });
+      appendTerminalLog(
+        'ERROR',
+        `${t('logs.compile_fail', { pkg: ext.pkg_id })}\n${t('logs.compile_detail', { detail })}`
+      );
+      alert(`${t('alerts.compile_failed')}\n\n${detail}`);
+      await loadExtensions();
     }
   } catch (error) {
+    const detail = String(error);
+    markExtensionBuild(ext.pkg_id, 'error', { error: detail });
     if (elements.successCompileOutput) {
       elements.successCompileOutput.classList.remove('hidden');
-      elements.successCompileOutput.textContent = String(error);
+      elements.successCompileOutput.textContent = detail;
     }
-    appendTerminalLog('ERROR', String(error));
-    alert(String(error));
+    appendTerminalLog('ERROR', detail);
+    alert(detail);
+    await loadExtensions();
   } finally {
     button.disabled = false;
     button.classList.remove('opacity-60', 'cursor-wait');
@@ -1346,6 +1371,15 @@ function renderExtensionsGrid(list) {
         </span>`;
     }
 
+    let buildBadge = '';
+    if (ext.build_status === 'building') {
+      buildBadge = `<span class="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-amber-300"><span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>${escapeHtml(t('ext.building'))}</span>`;
+    } else if (ext.build_status === 'success') {
+      buildBadge = `<span class="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-300"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>${escapeHtml(t('ext.build_ok'))}</span>`;
+    } else if (ext.build_status === 'error') {
+      buildBadge = `<span class="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-rose-300" title="${escapeHtml(ext.build_error || '')}"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>${escapeHtml(t('ext.build_error'))}</span>`;
+    }
+
     card.innerHTML = `
       <div class="flex items-start justify-between">
         <div class="flex items-center gap-3">
@@ -1356,6 +1390,7 @@ function renderExtensionsGrid(list) {
               <span class="text-[10px] font-mono px-1.5 py-0.2 rounded bg-surface-800 text-slate-300 font-normal">v${escapeHtml(ext.version)}</span>
             </h3>
             <p class="text-[11px] font-mono text-slate-400">${escapeHtml(ext.pkg_id)}</p>
+            ${buildBadge}
           </div>
         </div>
         <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-brand-500/10 text-brand-300 border border-brand-500/20 uppercase">${escapeHtml(ext.ext_type)}</span>
@@ -1495,10 +1530,16 @@ function renderExtensionsGrid(list) {
   document.querySelectorAll('.btn-delete-ext').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       const pkgId = e.currentTarget.getAttribute('data-delete-pkg');
-      if (confirm(t('alerts.confirm_delete', { pkg: pkgId }))) {
+      if (!confirm(t('alerts.confirm_delete', { pkg: pkgId }))) return;
+      try {
         await invokeBackend('delete_extension', { pkgId });
-        loadExtensions();
+        appendTerminalLog('SUCCESS', `${pkgId}: ${t('ext.delete')}`);
+        await loadExtensions();
         refreshBackupExtensions();
+      } catch (err) {
+        const detail = String(err);
+        appendTerminalLog('ERROR', detail);
+        alert(detail);
       }
     });
   });
