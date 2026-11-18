@@ -696,32 +696,13 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
                 ?: throw Exception("Pluto StreamingUrl sin stitcherPaths")
         }
 
-        // 3) Máster HLS con Bearer. Las variantes se parsean a mano (sin
-        //    PlaylistUtils, que no está en extensions-lib) y llevan ?jwt=...
+        // 3) Máster HLS completo. El máster admite ?jwt= en la query, así que
+        //    no hace falta enviar Authorization al reproductor. MPV gestiona
+        //    las variantes y, sobre todo, la pista de audio (#EXT-X-MEDIA),
+        //    que se perdía si sólo le pasábamos una variante suelta.
         val masterUrl = plutoPlayout + path.trimStart('/')
-        val masterHeaders = headers.newBuilder().add("Authorization", "Bearer $jwt").build()
-        val master = client.newCall(Request.Builder().url(masterUrl).headers(masterHeaders).build())
-            .execute().use { resp ->
-                if (!resp.isSuccessful) throw Exception("Pluto máster HLS HTTP ${resp.code}")
-                resp.body?.string().orEmpty()
-            }
-
-        val videos = mutableListOf<Video>()
-        val lines = master.lines()
-        var bandwidth = ""
-        for (line in lines) {
-            val t = line.trim()
-            if (t.startsWith("#EXT-X-STREAM-INF")) {
-                bandwidth = Regex("""BANDWIDTH=(\d+)""").find(t)?.groupValues?.get(1) ?: ""
-            } else if (t.isNotBlank() && !t.startsWith("#") && bandwidth.isNotBlank()) {
-                val variantUrl = absolutize(masterUrl, t)
-                val kbps = bandwidth.toIntOrNull()?.let { it / 1000 } ?: 0
-                videos.add(Video(variantUrl, "Pluto TV - ${kbps} kbps", "${kbps} kbps", masterHeaders))
-                bandwidth = ""
-            }
-        }
-        if (videos.isEmpty()) throw Exception("Pluto máster HLS sin variantes")
-        return sortVideos(videos)
+        val masterVideoUrl = "$masterUrl?jwt=${Uri.encode(jwt)}"
+        return listOf(Video(masterVideoUrl, "Pluto TV", "HLS", headers))
     }
 
     private fun serverFromUrl(url: String): String {
@@ -1700,6 +1681,7 @@ mod video_engine_tests {
             "CookieJar.NO_COOKIES",
             "resp.request.header(\"Cookie\")",
             "sin CBS_COM tras reintento",
+            "masterVideoUrl = \"$masterUrl?jwt=${Uri.encode(jwt)}\"",
         ] {
             assert!(
                 VIDEO_ENGINE_KT.contains(marker),
