@@ -1379,6 +1379,15 @@ fn upgrade_project_toolchain(dir: &Path) -> Result<(), String> {
                 out.replace_range(line_start..end, NEW_KOTLIN);
             }
         }
+        // El lint de release de AGP 9 intenta resolver dependencias transitivas
+        // muertas del extensions-lib antiguo (injekt-core de JitPack) y rompe
+        // `assembleRelease`. Las extensiones no necesitan lint vital.
+        if !out.contains("checkReleaseBuilds") {
+            if let Some(pos) = out.find("compileOptions {") {
+                let insert = "    lint {\n        checkReleaseBuilds = false\n    }\n\n";
+                out.insert_str(pos, insert);
+            }
+        }
         fs::write(&build_file, out)
             .map_err(|e| format!("No se pudo actualizar {}: {}", build_file.display(), e))?;
     }

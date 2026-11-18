@@ -471,6 +471,13 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
     }
 
     override fun videoListParse(response: Response): List<Video> {
+        // Pluto TV no expone .m3u8/iframe en el HTML estático: el stream se
+        // resuelve mediante GraphQL (verificado 2026-11-17). El cuerpo aún no
+        // se ha consumido, así que podemos pasarlo al extractor de Pluto.
+        if (baseUrl.contains("pluto.tv") || response.request.url.toString().contains("pluto.tv")) {
+            return plutoVideos(response)
+        }
+
         val html = response.body?.string().orEmpty()
         val document = response.asJsoup()
         val videos = mutableListOf<Video>()
@@ -532,6 +539,93 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
             }
         }
 
+        return sortVideos(videos)
+    }
+
+    // ---- Pluto TV: flujo de reproducción verificado (LATAM, 2026-11-17) ----
+    // Las páginas de episodio no contienen .m3u8 ni iframe: el stream se
+    // resuelve con GraphQL. PtvStart entrega un JWT y la cookie CBS_COM;
+    // StreamingUrl (con esa cookie) entrega la ruta del máster HLS; el máster
+    // se descarga con Authorization: Bearer <jwt>. Las variantes ya llevan el
+    // jwt en la query, así que el reproductor no necesita reenviar el header.
+    private val plutoGql = "https://pluto.tv/api/tn/app-shell/graphql/"
+    private val plutoPlayout = "https://ipv4.pluto.tv/api/tn/video/playout/"
+    private val plutoHashPtvStart = "1f49cc7143a332451387d2145bcbddca135fdc970042f748d3e423e484ec4ecc"
+    private val plutoHashStreaming = "d2210e84a51ed4a4382c15720a7366ee955d6354ee76039f58a34ecf274134b7"
+
+    private fun plutoGqlGet(operation: String, hash: String, variables: String, source: String, cookie: String? = null): Response {
+        val url = plutoGql.toHttpUrl().newBuilder().apply {
+            addQueryParameter("operationName", operation)
+            addQueryParameter("variables", variables)
+            addQueryParameter("extensions", "{\"tnPersistedDocumentHash\":\"$hash\"}")
+        }.build()
+        val h = headers.newBuilder()
+            .add("Accept", "application/json")
+            .add("apollo-require-preflight", "true")
+            .add("x-apollo-operation-name", operation)
+            .add("request-source", source)
+        if (cookie != null) h.add("Cookie", cookie)
+        return client.newCall(Request.Builder().url(url).headers(h.build()).get().build()).execute()
+    }
+
+    private fun plutoVideos(response: Response): List<Video> {
+        val finalUrl = response.request.url.toString()
+        val contentId = Regex("""/episode/([0-9a-f]{24})""").find(finalUrl)
+            ?: throw Exception("No se pudo extraer el contentId de Pluto TV")
+
+        // 1) PtvStart sin cookies -> JWT + CBS_COM (viene en la cabecera).
+        val (jwt, cbsCookie) = plutoGqlGet(
+            "PtvStart", plutoHashPtvStart, "{\"params\":{}}", "ptvStart"
+        ).use { resp ->
+            if (!resp.isSuccessful) throw Exception("Pluto PtvStart HTTP ${resp.code}")
+            val body = resp.body?.string().orEmpty()
+            val token = Regex("\"jwt\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+                ?: throw Exception("Pluto PtvStart no devolvió JWT")
+            val cbs = Regex("""CBS_COM=([^;]+)""")
+                .find(resp.header("x-external-set-cookie") ?: "")?.groupValues?.get(1)
+                ?: throw Exception("Pluto PtvStart no devolvió CBS_COM")
+            token to "CBS_COM=$cbs"
+        }
+
+        // 2) StreamingUrl con la cookie CBS_COM -> ruta del máster.
+        val path = plutoGqlGet(
+            "StreamingUrl", plutoHashStreaming,
+            "{\"params\":{\"appVersion\":\"10.12.1074\",\"contentId\":\"${contentId.groupValues[1]}\",\"contentType\":\"vod\",\"drm\":\"\",\"drmLevel\":\"\",\"streamType\":\"stitcher\"}}",
+            "streaming-url-request", cbsCookie
+        ).use { resp ->
+            if (!resp.isSuccessful) throw Exception("Pluto StreamingUrl HTTP ${resp.code}")
+            val body = resp.body?.string().orEmpty()
+            if (!Regex("\"success\"\\s*:\\s*true").containsMatchIn(body))
+                throw Exception("Pluto StreamingUrl devolvió success=false")
+            Regex("\"path\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+                ?: throw Exception("Pluto StreamingUrl sin stitcherPaths")
+        }
+
+        // 3) Máster HLS con Bearer. Las variantes se parsean a mano (sin
+        //    PlaylistUtils, que no está en extensions-lib) y llevan ?jwt=...
+        val masterUrl = plutoPlayout + path.trimStart('/')
+        val masterHeaders = headers.newBuilder().add("Authorization", "Bearer $jwt").build()
+        val master = client.newCall(Request.Builder().url(masterUrl).headers(masterHeaders).build())
+            .execute().use { resp ->
+                if (!resp.isSuccessful) throw Exception("Pluto máster HLS HTTP ${resp.code}")
+                resp.body?.string().orEmpty()
+            }
+
+        val videos = mutableListOf<Video>()
+        val lines = master.lines()
+        var bandwidth = ""
+        for (line in lines) {
+            val t = line.trim()
+            if (t.startsWith("#EXT-X-STREAM-INF")) {
+                bandwidth = Regex("""BANDWIDTH=(\d+)""").find(t)?.groupValues?.get(1) ?: ""
+            } else if (t.isNotBlank() && !t.startsWith("#") && bandwidth.isNotBlank()) {
+                val variantUrl = absolutize(masterUrl, t)
+                val kbps = bandwidth.toIntOrNull()?.let { it / 1000 } ?: 0
+                videos.add(Video(variantUrl, "Pluto TV - ${kbps} kbps", "${kbps} kbps", masterHeaders))
+                bandwidth = ""
+            }
+        }
+        if (videos.isEmpty()) throw Exception("Pluto máster HLS sin variantes")
         return sortVideos(videos)
     }
 
@@ -942,6 +1036,7 @@ import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.util.asJsoup
 import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -1501,6 +1596,13 @@ android {{
             signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
         }}
+    }}
+
+    // El lint de release intenta resolver dependencias transitivas muertas del
+    // extensions-lib antiguo (injekt-core de JitPack) y rompe la compilación.
+    // Las extensiones no necesitan lint vital; la compilación Kotlin basta.
+    lint {{
+        checkReleaseBuilds = false
     }}
 
     compileOptions {{
