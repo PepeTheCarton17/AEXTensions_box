@@ -2004,7 +2004,7 @@ impl SiteAnalyzer {
             }
         }
         // Turbopack exporta `apiVersion,()=>n`; resolver la variable local.
-        if let Ok(re) = Regex::new(r#"apiVersion\s*,\s*\(\)\s*=>\s*([A-Za-z_$][\w$]*)"#) {
+        if let Ok(re) = Regex::new(r#"["']?apiVersion["']?\s*,\s*\(\)\s*=>\s*([A-Za-z_$][\w$]*)"#) {
             if let Some(cap) = re.captures(text) {
                 let variable = regex::escape(&cap[1]);
                 let pattern = format!(r#"\b{}\s*=\s*["']([^"']{{1,20}})["']"#, variable);
@@ -2053,7 +2053,9 @@ impl SiteAnalyzer {
             &["poster_link", "poster", "image", "thumbnail", "cover", "img", "backdrop_path"],
         );
         let url_field = Self::detect_json_field(first, &["permalink", "url", "slug", "id"]);
-        let sample_json = serde_json::to_string(&arr[..arr.len().min(3)]).unwrap_or_default();
+        // Hasta 30 registros: suficientes para poblar un catálogo real sin
+        // convertir el análisis en un volcado infinito de la API del sitio.
+        let sample_json = serde_json::to_string(&arr[..arr.len().min(30)]).unwrap_or_default();
         Some(ApiListResult {
             url: url.to_string(),
             resource,

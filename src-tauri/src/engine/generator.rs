@@ -1,5 +1,5 @@
-use crate::engine::analyzer::{AnalysisResult, SiteAnalyzer, SiteCapabilities};
-use std::collections::HashMap;
+use crate::engine::analyzer::{AnalysisResult, ApiListResult, SiteAnalyzer, SiteCapabilities};
+use std::collections::{HashMap, HashSet};
 
 pub struct ExtensionBundle {
     pub pkg_id: String,
@@ -1600,6 +1600,194 @@ fn kt_path_literal(value: Option<&str>) -> String {
         .replace(['\n', '\r', '\t'], " ")
 }
 
+/// Normaliza `genres`/`genreIds`/`category_id` a `genre`/`category` para poder
+/// emparejar parámetros del sitio con recursos de su propia API REST.
+fn api_stem(value: &str) -> String {
+    let v = value.trim().to_lowercase();
+    if v.ends_with("ies") && v.len() > 4 {
+        format!("{}y", &v[..v.len() - 3])
+    } else if v.ends_with('s') && !v.ends_with("ss") && v.len() > 3 {
+        v[..v.len() - 1].to_string()
+    } else {
+        v
+    }
+}
+
+fn api_field_stem(field: &str) -> String {
+    let trimmed = field
+        .trim_end_matches("_ids")
+        .trim_end_matches("_id")
+        .trim_end_matches("Ids")
+        .trim_end_matches("Id");
+    api_stem(trimmed)
+}
+
+/// Listas `{id,name}` verificadas que corresponden a un parámetro del sitio.
+fn api_option_lists<'a>(analysis: &'a AnalysisResult, param: &str) -> Vec<&'a ApiListResult> {
+    let key = api_field_stem(param);
+    if key.is_empty() {
+        return Vec::new();
+    }
+    analysis
+        .api_lists
+        .iter()
+        .filter(|api| api.options.len() >= 2 && api_stem(&api.resource) == key)
+        .collect()
+}
+
+/// Metadatos que un sitio publica como lista y que se pueden excluir con
+/// evidencia real. No hay géneros anime prefijados: si el sitio no los expone,
+/// no hay filtro.
+fn api_exclusion_lists(analysis: &AnalysisResult) -> Vec<&ApiListResult> {
+    const EXCLUDABLE: &[&str] = &["genre", "category", "country", "tag", "language"];
+    analysis
+        .api_lists
+        .iter()
+        .filter(|api| {
+            api.options.len() >= 2 && EXCLUDABLE.contains(&api_stem(&api.resource).as_str())
+        })
+        .collect()
+}
+
+/// Pares `(etiqueta, id)` reales que pueden excluirse, con la etiqueta
+/// calificada por su recurso (`Genre: Comedy`) para que ids repetidos en
+/// distintas listas no se mezclen.
+fn api_exclusion_pairs(analysis: &AnalysisResult) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for api in api_exclusion_lists(analysis) {
+        let resource = humanize_filter_value(&api_stem(&api.resource));
+        for option in &api.options {
+            let label = format!("{}: {}", resource, option.label);
+            if !pairs.iter().any(|(l, v)| l == &label && v == &option.value) {
+                pairs.push((label, option.value.clone()));
+            }
+        }
+    }
+    pairs.truncate(80);
+    pairs
+}
+
+/// Segmento usado por el sitio para la ficha (`/cinema/<slug>`, `/anime/<slug>`).
+/// Se deduce de las URLs reales ya detectadas, nunca se inventa.
+fn detail_segment(analysis: &AnalysisResult) -> Option<String> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for record in &analysis.catalog_records {
+        if let Ok(url) = url::Url::parse(&record.url) {
+            let segments: Vec<&str> = url
+                .path_segments()
+                .map(|s| s.filter(|p| !p.is_empty()).collect())
+                .unwrap_or_default();
+            if segments.len() >= 2 {
+                *counts.entry(segments[segments.len() - 2].to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+    counts.into_iter().max_by_key(|(_, count)| *count).map(|(segment, _)| segment)
+}
+
+fn api_string_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    let obj = value.as_object()?;
+    obj.get(key).and_then(|v| match v {
+        serde_json::Value::String(s) => Some(s.trim().to_string()).filter(|s| !s.is_empty()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    })
+}
+
+/// Traduce los ids de metadatos presentes en cada registro a los nombres reales
+/// devueltos por la API del propio sitio (`category_id: 3` -> `Series`). Sólo
+/// empareja campos con el mismo recurso: `genre_ids` con `/genres`, nunca con
+/// `/categories`, aunque ambos usen ids numéricos.
+fn api_record_genres(
+    value: &serde_json::Value,
+    analysis: &AnalysisResult,
+) -> Option<String> {
+    let obj = value.as_object()?;
+    let mut labels: Vec<String> = Vec::new();
+    for (field, raw) in obj {
+        let stem = api_field_stem(field);
+        if stem.is_empty() {
+            continue;
+        }
+        let scalars: Vec<String> = match raw {
+            serde_json::Value::String(s) => vec![s.trim().to_string()],
+            serde_json::Value::Number(n) => vec![n.to_string()],
+            serde_json::Value::Array(items) => items
+                .iter()
+                .filter_map(|v| match v {
+                    serde_json::Value::String(s) => Some(s.trim().to_string()),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        for api in api_exclusion_lists(analysis) {
+            if api_stem(&api.resource) != stem {
+                continue;
+            }
+            for scalar in &scalars {
+                if let Some(option) = api.options.iter().find(|o| &o.value == scalar) {
+                    if !labels.iter().any(|l| l == &option.label) {
+                        labels.push(option.label.clone());
+                    }
+                }
+            }
+        }
+    }
+    if labels.is_empty() {
+        None
+    } else {
+        Some(labels.join(", "))
+    }
+}
+
+struct ApiCatalogRecord {
+    title: String,
+    url: String,
+    image: Option<String>,
+    genre: Option<String>,
+}
+
+/// Registros reales devueltos por un endpoint de catálogo verificado. Sólo se
+/// usan listas que parecen catálogo por su recurso y que traen título; un array
+/// de opciones (`/genres`) nunca se convierte en tarjetas.
+fn api_catalog_records(analysis: &AnalysisResult) -> Vec<ApiCatalogRecord> {
+    const CATALOG: &[&str] = &["content", "movie", "film", "serie", "show", "catalog", "title"];
+    let segment = detail_segment(analysis);
+    let mut out: Vec<ApiCatalogRecord> = Vec::new();
+    for api in &analysis.api_lists {
+        if api.title_field.is_empty() || !CATALOG.contains(&api_stem(&api.resource).as_str()) {
+            continue;
+        }
+        let Ok(serde_json::Value::Array(records)) = serde_json::from_str(&api.sample_json) else {
+            continue;
+        };
+        for record in records {
+            let Some(title) = api_string_field(&record, &api.title_field) else {
+                continue;
+            };
+            let slug = api_string_field(&record, &api.url_field).unwrap_or_default();
+            let url = if slug.starts_with("http") {
+                slug
+            } else if let Some(segment) = &segment {
+                if slug.is_empty() {
+                    continue;
+                }
+                format!("{}/{}/{}", analysis.url.trim_end_matches('/'), segment, slug)
+            } else {
+                continue;
+            };
+            let image = api_string_field(&record, &api.image_field);
+            let genre = api_record_genres(&record, analysis);
+            if !out.iter().any(|old| old.title.eq_ignore_ascii_case(&title)) {
+                out.push(ApiCatalogRecord { title, url, image, genre });
+            }
+        }
+    }
+    out
+}
+
 fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_name: &str, pkg_slug: &str, lang: &str, pkg_lang: &str, pkg_prefix: &str) -> String {
     let base_url = &analysis.url;
     let name = display_name;
@@ -1649,18 +1837,35 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
     } else {
         analysis.detected_language.clone()
     };
-    let ld_entries = analysis.catalog_records.iter()
-        .map(|r| {
-            let alt = r.alternate_title.as_deref().map(|s| format!("\"{}\"", kt_str(s))).unwrap_or_else(|| "null".to_string());
-            let lang = r.language.as_deref().map(|s| format!("\"{}\"", kt_str(s))).unwrap_or_else(|| "null".to_string());
-            let image = r.image.as_deref().map(|s| format!("\"{}\"", kt_str(s))).unwrap_or_else(|| "null".to_string());
-            format!(
-                "        LdRecord(title = \"{}\", alternateTitle = {}, language = {}, url = \"{}\", image = {})",
-                kt_str(&r.title), alt, lang, kt_str(&r.url), image
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",\n");
+    let mut titles_seen: HashSet<String> = HashSet::new();
+    let api_catalog = api_catalog_records(analysis);
+    let mut ld_entries: Vec<String> = Vec::new();
+    // Las tarjetas de la API verificada van primero: son datos reales obtenidos
+    // del endpoint público, no una plantilla ni un título inventado.
+    for record in &api_catalog {
+        if !titles_seen.insert(record.title.to_lowercase()) {
+            continue;
+        }
+        let image = record.image.as_deref().map(|s| format!("\"{}\"", kt_str(s))).unwrap_or_else(|| "null".to_string());
+        let genre = record.genre.as_deref().map(|s| format!("\"{}\"", kt_str(s))).unwrap_or_else(|| "null".to_string());
+        ld_entries.push(format!(
+            "        LdRecord(title = \"{}\", alternateTitle = null, language = null, url = \"{}\", image = {}, genre = {})",
+            kt_str(&record.title), kt_str(&record.url), image, genre
+        ));
+    }
+    for r in &analysis.catalog_records {
+        if !titles_seen.insert(r.title.to_lowercase()) {
+            continue;
+        }
+        let alt = r.alternate_title.as_deref().map(|s| format!("\"{}\"", kt_str(s))).unwrap_or_else(|| "null".to_string());
+        let lang = r.language.as_deref().map(|s| format!("\"{}\"", kt_str(s))).unwrap_or_else(|| "null".to_string());
+        let image = r.image.as_deref().map(|s| format!("\"{}\"", kt_str(s))).unwrap_or_else(|| "null".to_string());
+        ld_entries.push(format!(
+            "        LdRecord(title = \"{}\", alternateTitle = {}, language = {}, url = \"{}\", image = {})",
+            kt_str(&r.title), alt, lang, kt_str(&r.url), image
+        ));
+    }
+    let ld_entries = ld_entries.join(",\n");
     let ld_records_block = if ld_entries.is_empty() {
         "    private val jsonLdRecords = emptyList<LdRecord>()".to_string()
     } else {
@@ -1669,6 +1874,23 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
     let has_site_filters = analysis.filter_params.iter().any(|f| {
         !f.param.is_empty() && (f.kind == "text" || !f.value.is_empty())
     });
+    // La exclusión es un filtro real: sus valores vienen de las listas `{id,name}`
+    // que el sitio publica en su API. Se guarda en preferencias para que also
+    // afecte a popular/latest, que no reciben el AnimeFilterList.
+    let exclusion_pairs = api_exclusion_pairs(analysis);
+    let exclusion_capture = if exclusion_pairs.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"        val excludedApiValues = filters.filterIsInstance<{class_name}Filters.ExcludeFilter>()
+            .filter {{ it.state }}
+            .map {{ it.value.lowercase() }}
+            .toHashSet()
+        preferences.edit().putStringSet("excluded_api_values", excludedApiValues).apply()
+"#,
+            class_name = class_name
+        )
+    };
     let filter_block = if has_site_filters {
         format!(
             r#"        val urlBuilder = Uri.parse(url).buildUpon()
@@ -1814,7 +2036,8 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         val alternateTitle: String?,
         val language: String?,
         val url: String,
-        val image: String?
+        val image: String?,
+        val genre: String? = null
     )
 
 {ld_records_block}
@@ -1823,6 +2046,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         setUrlWithoutDomain(record.url)
         title = preferredRecordTitle(record)
         thumbnail_url = record.image
+        genre = record.genre
     }}
 
     /** Idioma pedido > alternativa en inglés > nombre original del sitio. */
@@ -1943,7 +2167,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
     // ============================== SEARCH ANIME ==============================
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {{
         val cleanQuery = query.trim()
-{search_audio_block}
+{exclusion_capture}{search_audio_block}
         val url = if (finalQuery.isNotBlank()) {{
             searchUrl(finalQuery, page)
         }} else {{
@@ -1974,13 +2198,24 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
             .split(",")
             .map {{ it.trim().lowercase() }}
             .filter {{ it.isNotEmpty() }}
+        // Valores elegidos en el filtro de exclusión: ids/nombres reales de las
+        // listas verificadas de la API del sitio, no palabras escritas a mano.
+        val excludedApi = (preferences.getStringSet("excluded_api_values", mutableSetOf<String>()) ?: emptySet())
+            .map {{ it.lowercase() }}
+            .filter {{ it.isNotBlank() }}
 
-        if (blacklistWords.isEmpty()) return page
+        if (blacklistWords.isEmpty() && excludedApi.isEmpty()) return page
 
         val filtered = page.animes.filterNot {{ anime ->
             val genreLower = anime.genre?.lowercase() ?: ""
+            val genreWords = genreLower.split(",", ";", "|")
+                .map {{ it.trim() }}
+                .filter {{ it.isNotEmpty() }}
+            val excludedHit = excludedApi.any {{ word ->
+                genreWords.any {{ genre -> genre == word || genre.contains(word) }}
+            }}
             val titleLower = anime.title.lowercase()
-            blacklistWords.any {{ word ->
+            excludedHit || blacklistWords.any {{ word ->
                 (genreLower.isNotEmpty() && genreLower.contains(word)) || titleLower.contains(word)
             }}
         }}
@@ -2108,7 +2343,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         screen.addPreference(genreBlacklistPref)
     }}
 }}
-"#, video_engine = VIDEO_ENGINE_KT, site_cap_formats = site_cap_formats, site_app_version = site_app_version, site_player_cases = site_player_cases, site_region = site_region, site_locale = site_locale, detected_language = kt_str(&detected_language), ld_records_block = ld_records_block, filter_block = filter_block, search_audio_block = search_audio_block, audio_pref_block = audio_pref_block, pref_api_title = pref_api_title, pref_api_entries = pref_api_entries, methods_title = methods_title, methods_summary = methods_summary, methods_entries = methods_entries, pref_server_summary = pref_server_summary)
+"#, video_engine = VIDEO_ENGINE_KT, site_cap_formats = site_cap_formats, site_app_version = site_app_version, site_player_cases = site_player_cases, site_region = site_region, site_locale = site_locale, detected_language = kt_str(&detected_language), ld_records_block = ld_records_block, filter_block = filter_block, exclusion_capture = exclusion_capture, search_audio_block = search_audio_block, audio_pref_block = audio_pref_block, pref_api_title = pref_api_title, pref_api_entries = pref_api_entries, methods_title = methods_title, methods_summary = methods_summary, methods_entries = methods_entries, pref_server_summary = pref_server_summary)
 }
 
 fn generate_manga_source(
@@ -2374,7 +2609,8 @@ fn generate_kotlin_filters(
     #[derive(Clone)]
     struct ParamGroup {
         name: String,
-        values: Vec<String>,
+        /// Pares `(etiqueta, valor)`; la etiqueta puede venir de la API real.
+        values: Vec<(String, String)>,
     }
     let mut grouped: Vec<(String, ParamGroup)> = Vec::new();
     for f in &analysis.filter_params {
@@ -2397,10 +2633,45 @@ fn generate_kotlin_filters(
         let entry = &mut grouped[index].1;
         // Un filtro `text` no aporta valores: al quedarse `values` vacío se
         // genera un ParamTextFilter en lugar de un selector con opciones.
-        if f.kind != "text" && !f.value.is_empty() && !entry.values.contains(&f.value) {
-            entry.values.push(f.value.clone());
+        if f.kind != "text"
+            && !f.value.is_empty()
+            && !entry.values.iter().any(|(_, value)| value == &f.value)
+        {
+            entry.values.push((humanize_filter_value(&f.value), f.value.clone()));
         }
     }
+    // Un parámetro del sitio sin valores enumerados se completa con las listas
+    // `{id,name}` que el propio sitio publica en su API REST y que AEXT verificó.
+    for (param, group) in grouped.iter_mut() {
+        if !group.values.is_empty() {
+            continue;
+        }
+        for api in api_option_lists(analysis, param.as_str()) {
+            for option in &api.options {
+                if !group.values.iter().any(|(_, value)| value == &option.value) {
+                    group.values.push((option.label.clone(), option.value.clone()));
+                }
+            }
+        }
+    }
+    // Exclusión con evidencia: los valores son los ids/nombres reales de las
+    // listas verificadas. Si el sitio no publica esas listas, no hay filtro.
+    let exclusion_pairs = api_exclusion_pairs(analysis);
+    let (exclude_class, exclude_items) = if exclusion_pairs.is_empty() {
+        (String::new(), String::new())
+    } else {
+        let items = exclusion_pairs
+            .iter()
+            .map(|(label, value)| {
+                format!("        ExcludeFilter(\"{}\", \"{}\"),\n", kt(label), kt(value))
+            })
+            .collect::<String>();
+        (
+            "    class ExcludeFilter(name: String, val value: String) : AnimeFilter.CheckBox(name, false)\n\n"
+                .to_string(),
+            format!("        Header(\"{}\"),\n{}", kt(i18n.filter_genre_blacklist_title), items),
+        )
+    };
     // El bloque `when (f)` del Kotlin de búsqueda referencia las tres clases
     // siempre que existan filtros del sitio, así que hay que definirlas todas
     // juntas. Emitir sólo la clase que se usa deja referencias sin resolver:
@@ -2426,6 +2697,7 @@ fn generate_kotlin_filters(
 "#,
         );
     }
+    param_classes.push_str(&exclude_class);
     let param_items = grouped
         .iter()
         .map(|(param, group)| {
@@ -2433,12 +2705,8 @@ fn generate_kotlin_filters(
                 let vals = group
                     .values
                     .iter()
-                    .map(|value| {
-                        format!(
-                            "Pair(\"{}\", \"{}\")",
-                            kt(&humanize_filter_value(value)),
-                            kt(value)
-                        )
+                    .map(|(label, value)| {
+                        format!("Pair(\"{}\", \"{}\")", kt(label), kt(value))
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -2449,7 +2717,7 @@ fn generate_kotlin_filters(
             } else if group.values.len() == 1 {
                 format!(
                     "        ParamCheckFilter(\"{}\", \"{}\", \"{}\"),\n",
-                    kt(&group.name), kt(param), kt(&group.values[0])
+                    kt(&group.name), kt(param), kt(&group.values[0].1)
                 )
             } else {
                 format!(
@@ -2470,13 +2738,14 @@ object {class_name}Filters {{
 
 {param_classes}{audio_filter_class}    fun getFilterList(): AnimeFilterList = AnimeFilterList(
         Header("{filter_header}"),
-{param_items}{audio_filter_item}    )
+{param_items}{exclude_items}{audio_filter_item}    )
 }}
 "#,
         filter_header = kt(filter_header),
         param_classes = param_classes,
         audio_filter_class = audio_filter_class,
         param_items = param_items,
+        exclude_items = exclude_items,
         audio_filter_item = audio_filter_item,
     )
 }
@@ -2934,6 +3203,71 @@ mod video_engine_tests {
                 marker
             );
         }
+    }
+
+    #[test]
+    fn verified_rest_lists_feed_filters_exclusion_and_catalog() {
+        use crate::engine::analyzer::{ApiListResult, ApiOption};
+        let mut fixture = pluto_fixture();
+        fixture.url = "https://catalog.example".to_string();
+        fixture.catalog_records = vec![CatalogRecord {
+            title: "Título original".to_string(),
+            url: "https://catalog.example/cinema/original".to_string(),
+            ..Default::default()
+        }];
+        fixture.filter_params = vec![SiteFilterParam {
+            name: "Genre".to_string(),
+            param: "genreIds".to_string(),
+            value: String::new(),
+            kind: "text".to_string(),
+        }];
+        fixture.api_lists = vec![
+            ApiListResult {
+                url: "https://api.example/v1/genres".to_string(),
+                resource: "genres".to_string(),
+                options: vec![
+                    ApiOption { value: "4".to_string(), label: "Comedy".to_string() },
+                    ApiOption { value: "9".to_string(), label: "Horror".to_string() },
+                ],
+                title_field: "name".to_string(),
+                record_count: 2,
+                ..Default::default()
+            },
+            ApiListResult {
+                url: "https://api.example/v1/categories".to_string(),
+                resource: "categories".to_string(),
+                options: vec![ApiOption { value: "3".to_string(), label: "Series".to_string() }],
+                ..Default::default()
+            },
+            ApiListResult {
+                url: "https://api.example/v1/contents".to_string(),
+                resource: "contents".to_string(),
+                sample_json: r#"[{"id":"abc","permalink":"new-one","name":"New One","poster_link":"https://img.example/a.webp","category_id":3}]"#.to_string(),
+                title_field: "name".to_string(),
+                image_field: "poster_link".to_string(),
+                url_field: "permalink".to_string(),
+                record_count: 1,
+                ..Default::default()
+            },
+        ];
+
+        let filters = generate_kotlin_filters(
+            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
+        );
+        assert!(filters.contains("ParamSelectFilter(\"Genre\", \"genreIds\", arrayOf(Pair(\"Comedy\", \"4\")"), "{}", filters);
+        assert!(filters.contains("ExcludeFilter(\"Genre: Comedy\", \"4\")"), "{}", filters);
+        assert!(filters.contains("ExcludeFilter(\"Category: Series\", \"3\")"), "{}", filters);
+        assert!(!filters.contains("Ecchi"), "no se permiten géneros inventados");
+
+        let kt = generate_kotlin_source(
+            &fixture, "Catalog", "PlutoTv", "pluto", "es", "es",
+            "eu.kanade.tachiyomi.animeextension",
+        );
+        assert!(kt.contains("LdRecord(title = \"New One\""), "{}", kt);
+        assert!(kt.contains("https://catalog.example/cinema/new-one"), "{}", kt);
+        assert!(kt.contains("genre = \"Series\""), "{}", kt);
+        assert!(kt.contains("excluded_api_values"), "{}", kt);
+        assert!(kt.contains(".filter { it.state }"), "{}", kt);
     }
 }
 
