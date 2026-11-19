@@ -43,6 +43,57 @@ pub struct SiteFilterParam {
     pub kind: String,
 }
 
+/// Un par `{id, name}` leído de una respuesta JSON real del sitio. Se usa para
+/// poblar filtros con valores del propio sitio (géneros, categorías, países...),
+/// nunca con listas inventadas por AEXT.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ApiOption {
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+/// Bases, rutas y versión de API citadas en los bundles de un sitio.
+#[derive(Debug, Clone, Default)]
+struct ApiCandidates {
+    bases: Vec<String>,
+    paths: Vec<String>,
+    version: Option<String>,
+}
+
+/// Un endpoint REST detectado en los bundles y verificado con un GET real.
+/// Guarda tanto las opciones `{id, name}` como una muestra recortada del JSON y
+/// los nombres de campo detectados, para que el generador construya catálogo y
+/// fichas sin suponer un formato concreto.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ApiListResult {
+    /// URL completa que respondió 200 con JSON.
+    #[serde(default)]
+    pub url: String,
+    /// Último segmento de la ruta (`genres`, `categories`, `contents`...).
+    #[serde(default)]
+    pub resource: String,
+    /// Pares `{id, name}` cuando la respuesta es una lista de opciones.
+    #[serde(default)]
+    pub options: Vec<ApiOption>,
+    /// Muestra del JSON (recortada) para detectar campos de título/imagen/url.
+    #[serde(default)]
+    pub sample_json: String,
+    /// Campo detectado para el título (`title`, `name`, ...).
+    #[serde(default)]
+    pub title_field: String,
+    /// Campo detectado para la imagen (`poster_link`, `image`, ...).
+    #[serde(default)]
+    pub image_field: String,
+    /// Campo detectado para la url/identificador (`permalink`, `id`, ...).
+    #[serde(default)]
+    pub url_field: String,
+    /// Número de registros de la muestra, para saber si parece un catálogo.
+    #[serde(default)]
+    pub record_count: usize,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AnalysisResult {
     /// Origen del sitio (esquema + host, sin ruta). Es lo que se usa como `baseUrl`.
@@ -73,6 +124,13 @@ pub struct AnalysisResult {
     /// Filtros de consulta encontrados en enlaces/formularios del sitio.
     #[serde(default)]
     pub filter_params: Vec<SiteFilterParam>,
+    /// Bases de API REST declaradas en los bundles (`baseURL: "https://..."`).
+    #[serde(default)]
+    pub api_bases: Vec<String>,
+    /// Endpoints REST verificados con un GET real (listas `{id, name}`,
+    /// catálogos...). Nunca se inventan: si no responden JSON, no se guardan.
+    #[serde(default)]
+    pub api_lists: Vec<ApiListResult>,
     /// Idioma principal declarado por la página (`<html lang>`, og:locale...).
     #[serde(default)]
     pub detected_language: String,
@@ -212,11 +270,13 @@ impl SiteAnalyzer {
         // Muchos reproductores (SPAs) sólo mencionan sus endpoints en bundles
         // JS. Los leemos aparte: `Html` no es Send y no puede cruzar un await
         // dentro de `analyze_page`, pero aquí sólo guardamos cadenas.
-        if let Some((js_caps, js_filters)) = self
+        let mut js_api_candidates = ApiCandidates::default();
+        if let Some((js_caps, js_filters, api_candidates)) = self
             .scan_scripts(&result.entry_url, result.search_param.as_deref())
             .await
         {
             Self::merge_capabilities(&mut result.capabilities, &js_caps);
+            js_api_candidates = api_candidates;
             let mut added: Vec<String> = Vec::new();
             for filter in js_filters {
                 let duplicate = result.filter_params.iter().any(|old| {
@@ -235,6 +295,31 @@ impl SiteAnalyzer {
                 result.warnings.push(format!(
                     "Filtros encontrados en los bundles JS del sitio: {}. Sus nombres se han normalizado al inglés; los valores no enumerados se ofrecen como texto libre.",
                     added.join(", ")
+                ));
+            }
+        }
+
+        // Sondeo genérico de APIs REST: los bundles declaran la base y las rutas,
+        // pero AEXT sólo guarda lo que responde JSON real con un GET público.
+        result.api_bases = js_api_candidates.bases.clone();
+        if !js_api_candidates.bases.is_empty() && !js_api_candidates.paths.is_empty() {
+            let site_host = Url::parse(&result.entry_url)
+                .ok()
+                .and_then(|u| u.host_str().map(|s| s.to_string()))
+                .unwrap_or_default();
+            result.api_lists = self
+                .probe_api_lists(&js_api_candidates, &site_host)
+                .await;
+            if !result.api_lists.is_empty() {
+                let verified = result
+                    .api_lists
+                    .iter()
+                    .map(|api| format!("{} ({})", api.resource, api.record_count))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                result.warnings.push(format!(
+                    "Endpoints REST verificados con JSON real: {}. Sus datos se usan para filtros y catálogo; nunca se inventan valores.",
+                    verified
                 ));
             }
         }
@@ -632,6 +717,8 @@ impl SiteAnalyzer {
                 catalog_records: ld_records,
                 search_action: ld_search,
                 filter_params,
+                api_bases: Vec::new(),
+                api_lists: Vec::new(),
                 detected_language,
                 site_locales,
                 popular_path,
@@ -729,7 +816,7 @@ impl SiteAnalyzer {
         &self,
         entry_url: &str,
         search_param: Option<&str>,
-    ) -> Option<(SiteCapabilities, Vec<SiteFilterParam>)> {
+    ) -> Option<(SiteCapabilities, Vec<SiteFilterParam>, ApiCandidates)> {
         let html = self.client.get(entry_url).send().await.ok()?.text().await.ok()?;
         let origin = Url::parse(entry_url).ok()?.origin().ascii_serialization();
         let urls = Self::script_urls(&html, &origin, 8);
@@ -739,6 +826,7 @@ impl SiteAnalyzer {
 
         let mut aggregate = SiteCapabilities::default();
         let mut filters: Vec<SiteFilterParam> = Vec::new();
+        let mut api_candidates = ApiCandidates::default();
         let mut found_any = false;
         for url in urls {
             if let Ok(resp) = self.client.get(&url).send().await {
@@ -758,6 +846,20 @@ impl SiteAnalyzer {
                             filters.push(filter);
                         }
                     }
+                    let candidates = Self::detect_api_candidates(&text);
+                    for base in candidates.bases {
+                        if !api_candidates.bases.contains(&base) {
+                            api_candidates.bases.push(base);
+                        }
+                    }
+                    for path in candidates.paths {
+                        if !api_candidates.paths.contains(&path) {
+                            api_candidates.paths.push(path);
+                        }
+                    }
+                    if api_candidates.version.is_none() {
+                        api_candidates.version = candidates.version;
+                    }
                     let has_session = aggregate.player_cases.iter().any(|c| c == "session-bootstrap");
                     let has_graphql = aggregate.player_cases.iter().any(|c| c == "graphql-persisted");
                     if has_session && has_graphql {
@@ -769,7 +871,7 @@ impl SiteAnalyzer {
         if !found_any {
             return None;
         }
-        Some((aggregate, filters))
+        Some((aggregate, filters, api_candidates))
     }
 
     /// Extrae un contentId de muestra de una ruta o de un estado hidratado.
@@ -1833,6 +1935,253 @@ impl SiteAnalyzer {
             format!("{}?{}", parsed.path(), serializer.finish())
         };
         Some((path, param))
+    }
+
+    /// Extrae bases de API REST y rutas de recursos citadas en un bundle JS.
+    /// Sólo acepta URLs http(s) como base y rutas que aparecen en llamadas
+    /// `.get(...)` o concatenadas a `apiVersion`, para no confundir rutas de la
+    /// interfaz (`/catalog`) con recursos de datos (`/genres`).
+    fn detect_api_candidates(text: &str) -> ApiCandidates {
+        let mut bases: Vec<String> = Vec::new();
+        if let Ok(re) = Regex::new(r#"(?i)baseURL\s*:\s*["']([^"']{8,200})["']"#) {
+            for cap in re.captures_iter(text) {
+                let base = cap[1].trim().trim_end_matches('/');
+                if (base.starts_with("https://") || base.starts_with("http://"))
+                    && base.len() > 12
+                    && !bases.iter().any(|b| b == base)
+                {
+                    bases.push(base.to_string());
+                }
+            }
+        }
+
+        // Rutas privadas que nunca son catálogo: perfil, sesión, pago, etc.
+        const PRIVATE_PATHS: &[&str] = &[
+            "auth", "token", "profile", "history", "payment", "notification",
+            "settings", "login", "logout", "refresh", "device", "session", "admin",
+        ];
+        let patterns = [
+            r#"(?i)\.get\(\s*["'](/[a-z][a-z0-9/_-]{1,60})["']"#,
+            r#"(?i)\.get\(\s*[^,;]{0,50}\+\s*["'](/[a-z][a-z0-9/_-]{1,60})["']"#,
+            r#"(?i)(?:apiVersion|apiPath|api_path)\s*\+\s*["'](/[a-z][a-z0-9/_-]{1,60})["']"#,
+        ];
+        let mut paths: Vec<String> = Vec::new();
+        for pattern in patterns {
+            if let Ok(re) = Regex::new(pattern) {
+                for cap in re.captures_iter(text) {
+                    let raw = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+                    let path = raw.split('?').next().unwrap_or(raw).trim_end_matches('/');
+                    if path.len() < 3 || path.matches('/').count() > 2 { continue; }
+                    if path.contains('{') || path.contains('[') || path.contains('.') { continue; }
+                    let low = path.to_lowercase();
+                    if PRIVATE_PATHS.iter().any(|p| low.contains(p)) { continue; }
+                    if !paths.iter().any(|old| old == path) {
+                        paths.push(path.to_string());
+                    }
+                }
+            }
+        }
+        let version = Self::detect_api_version(text);
+        ApiCandidates { bases, paths, version }
+    }
+
+    /// Versión de API declarada por el propio bundle (`apiVersion = "v1"`,
+    /// `apiVersion: 'v2'`, o la exportación minificada `apiVersion,()=>n` con
+    /// `n="v1"`). Sin ella las URLs quedan en `.../api/genres` y el sitio
+    /// responde 404 aunque el recurso exista en `.../api/v1/genres`.
+    fn detect_api_version(text: &str) -> Option<String> {
+        for pattern in [
+            r#"(?i)apiVersion\s*[:=]\s*["']([^"']{1,20})["']"#,
+            r#"(?i)["']apiVersion["']\s*,\s*\(\)\s*=>\s*["']([^"']{1,20})["']"#,
+        ] {
+            if let Ok(re) = Regex::new(pattern) {
+                if let Some(cap) = re.captures(text) {
+                    let version = cap[1].trim();
+                    if !version.is_empty() {
+                        return Some(version.to_string());
+                    }
+                }
+            }
+        }
+        // Turbopack exporta `apiVersion,()=>n`; resolver la variable local.
+        if let Ok(re) = Regex::new(r#"apiVersion\s*,\s*\(\)\s*=>\s*([A-Za-z_$][\w$]*)"#) {
+            if let Some(cap) = re.captures(text) {
+                let variable = regex::escape(&cap[1]);
+                let pattern = format!(r#"\b{}\s*=\s*["']([^"']{{1,20}})["']"#, variable);
+                if let Ok(vre) = Regex::new(&pattern) {
+                    if let Some(value) = vre.captures(text) {
+                        return Some(value[1].to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Convierte un JSON cualquiera en un `ApiListResult` cuando hay evidencia
+    /// de una lista de registros. Sin array de objetos, no se guarda nada.
+    fn parse_api_list(url: &str, json: &serde_json::Value) -> Option<ApiListResult> {
+        let arr = json
+            .as_array()
+            .or_else(|| json.get("data").and_then(|v| v.as_array()))
+            .or_else(|| json.get("items").and_then(|v| v.as_array()))
+            .or_else(|| json.get("results").and_then(|v| v.as_array()))
+            .or_else(|| json.get("content").and_then(|v| v.as_array()))?;
+        if arr.is_empty() || arr.len() > 1000 || !arr.iter().all(|v| v.is_object()) {
+            return None;
+        }
+        let resource = Url::parse(url)
+            .ok()
+            .and_then(|u| {
+                u.path_segments()
+                    .and_then(|s| s.filter(|p| !p.is_empty()).last().map(|p| p.to_string()))
+            })
+            .unwrap_or_default();
+        let options: Vec<ApiOption> = arr
+            .iter()
+            .filter_map(|v| {
+                let obj = v.as_object()?;
+                let value = Self::json_scalar(obj, &["id", "value", "key", "slug"])?;
+                let label = Self::json_scalar(obj, &["name", "label", "title"])?;
+                Some(ApiOption { value, label })
+            })
+            .collect();
+        let first = arr[0].as_object()?;
+        let title_field = Self::detect_json_field(first, &["title", "name", "original_title", "originalName"]);
+        let image_field = Self::detect_json_field(
+            first,
+            &["poster_link", "poster", "image", "thumbnail", "cover", "img", "backdrop_path"],
+        );
+        let url_field = Self::detect_json_field(first, &["permalink", "url", "slug", "id"]);
+        let sample_json = serde_json::to_string(&arr[..arr.len().min(3)]).unwrap_or_default();
+        Some(ApiListResult {
+            url: url.to_string(),
+            resource,
+            options,
+            sample_json,
+            title_field,
+            image_field,
+            url_field,
+            record_count: arr.len(),
+        })
+    }
+
+    fn json_scalar(obj: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Option<String> {
+        for key in keys {
+            if let Some(value) = obj.get(*key) {
+                if let Some(text) = value.as_str() {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+                if let Some(number) = value.as_u64() {
+                    return Some(number.to_string());
+                }
+                if let Some(number) = value.as_i64() {
+                    return Some(number.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn detect_json_field(obj: &serde_json::Map<String, serde_json::Value>, candidates: &[&str]) -> String {
+        for key in candidates {
+            if obj.contains_key(*key) {
+                return (*key).to_string();
+            }
+        }
+        String::new()
+    }
+
+    /// Sólo se sondean hosts del propio sitio o de su API (p. ej. `frame.uz` y
+    /// `api.frame.uz`). Evita convertir al analizador en un proxy de terceros.
+    fn host_related_to(url: &str, site_host: &str) -> bool {
+        let Ok(parsed) = Url::parse(url) else { return false };
+        let Some(host) = parsed.host_str() else { return false };
+        let site = site_host.trim_start_matches("www.").trim().to_lowercase();
+        let candidate = host.trim_start_matches("www.").trim().to_lowercase();
+        if site.is_empty() || candidate.is_empty() {
+            return false;
+        }
+        candidate == site
+            || candidate.ends_with(&format!(".{}", site))
+            || site.ends_with(&format!(".{}", candidate))
+    }
+
+    /// Prioriza recursos que suelen alimentar catálogo y filtros, para que un
+    /// bundle con decenas de rutas no desplace a los endpoints útiles.
+    fn api_path_priority(path: &str) -> u8 {
+        const PREFERRED: &[&str] = &[
+            "genres", "categories", "countries", "languages", "tags", "contents",
+            "content", "catalog", "movies", "films", "series", "shows", "list",
+            "collections", "top", "new", "popular", "search",
+        ];
+        let low = path.trim_start_matches('/').to_lowercase();
+        PREFERRED
+            .iter()
+            .position(|name| low == *name || low.starts_with(&format!("{}s", name)))
+            .map(|index| index as u8)
+            .unwrap_or(u8::MAX)
+    }
+
+    /// Sondea de forma genérica los recursos detectados. Nunca envía credenciales
+    /// ni cookies: si el endpoint exige sesión, no responde JSON y se descarta.
+    async fn probe_api_lists(
+        &self,
+        candidates: &ApiCandidates,
+        site_host: &str,
+    ) -> Vec<ApiListResult> {
+        let mut ordered: Vec<String> = candidates.paths.to_vec();
+        ordered.sort_by_key(|path| Self::api_path_priority(path));
+        let mut urls: Vec<String> = Vec::new();
+        for base in &candidates.bases {
+            for path in &ordered {
+                let root = base.trim_end_matches('/');
+                let mut variants = Vec::new();
+                if let Some(version) = &candidates.version {
+                    let version = version.trim().trim_start_matches('/').trim_end_matches('/');
+                    if !version.is_empty() {
+                        variants.push(format!("{}/{}{}", root, version, path));
+                    }
+                }
+                variants.push(format!("{}{}", root, path));
+                for full in variants {
+                    if !urls.contains(&full) {
+                        urls.push(full);
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for url in urls.into_iter().take(8) {
+            if !Self::host_related_to(&url, site_host) {
+                continue;
+            }
+            let Ok(response) = self
+                .client
+                .get(&url)
+                .header("Accept", "application/json")
+                .header("Accept-Language", "en")
+                .timeout(std::time::Duration::from_secs(8))
+                .send()
+                .await
+            else {
+                continue;
+            };
+            if !response.status().is_success() {
+                continue;
+            }
+            let Ok(text) = response.text().await else { continue };
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            if let Some(result) = Self::parse_api_list(&url, &json) {
+                out.push(result);
+            }
+        }
+        out
     }
 
     /// Parámetros de filtro declarados en bundles JS del mismo origen. No se
@@ -3202,5 +3551,69 @@ render(nf,{options:opts,instanceId:"catalog"});"#;
         assert!(params.contains(&"genreIds"));
         assert!(params.contains(&"status"));
         assert!(params.contains(&"sortBy"));
+    }
+
+    #[test]
+    fn js_bundles_reveal_rest_api_bases_and_resource_paths() {
+        let js = r#"let apiVersion="v1";let f=axios.create({baseURL:"https://api.example.com/user/api/"});
+genres:{getGenres:async()=>await client.get(apiVersion+"/genres")},
+categories:{getCategories:async()=>await client.get("/categories")},
+getHistory:async()=>await client.get(apiVersion+"/profile-histories")},
+render(nf,{href:"/catalog?genreIds=1"});"#;
+        let candidates = SiteAnalyzer::detect_api_candidates(js);
+        assert_eq!(candidates.bases, vec!["https://api.example.com/user/api"]);
+        assert_eq!(candidates.version.as_deref(), Some("v1"));
+        assert!(candidates.paths.contains(&"/genres".to_string()), "{:?}", candidates.paths);
+        assert!(candidates.paths.contains(&"/categories".to_string()), "{:?}", candidates.paths);
+        assert!(!candidates.paths.iter().any(|p| p.contains("profile")), "las rutas privadas no son recursos: {:?}", candidates.paths);
+        assert!(!candidates.paths.iter().any(|p| p == "/catalog"), "una ruta de UI fuera de .get() no es un recurso API: {:?}", candidates.paths);
+    }
+
+    #[test]
+    fn api_lists_only_store_real_json_arrays_with_names() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"[{"id":1,"name":"Action"},{"id":4,"name":"Comedy"},{"id":9,"name":"Horror"}]"#,
+        )
+        .unwrap();
+        let result = SiteAnalyzer::parse_api_list("https://api.example.com/user/api/v1/genres", &json).unwrap();
+        assert_eq!(result.resource, "genres");
+        assert_eq!(result.record_count, 3);
+        assert_eq!(result.options.len(), 3);
+        assert_eq!(result.options[1].value, "4");
+        assert_eq!(result.options[1].label, "Comedy");
+        assert_eq!(result.title_field, "name");
+        assert!(result.sample_json.contains("Comedy"));
+
+        let wrapped: serde_json::Value = serde_json::from_str(r#"{"data":[{"slug":" movies ","title":"Movie"}]}"#).unwrap();
+        let wrapped = SiteAnalyzer::parse_api_list("https://api.example.com/v1/contents", &wrapped).unwrap();
+        assert_eq!(wrapped.resource, "contents");
+        assert_eq!(wrapped.options[0].value, "movies");
+        assert_eq!(wrapped.title_field, "title");
+
+        let not_a_list: serde_json::Value = serde_json::from_str(r#"{"error":"unauthorized"}"#).unwrap();
+        assert!(SiteAnalyzer::parse_api_list("https://api.example.com/v1/genres", &not_a_list).is_none());
+    }
+
+    #[test]
+    fn minified_bundle_version_is_resolved_from_its_variable() {
+        let js = r#"41423,e=>{"use strict";e.s(["LS_ACCESS",()=>o,"apiVersion",()=>n]);let n="v1",r="id-r",o="ac-s";}"#;
+        assert_eq!(SiteAnalyzer::detect_api_version(js).as_deref(), Some("v1"));
+    }
+
+    #[test]
+    fn api_path_priority_puts_catalog_resources_first() {
+        let genres = SiteAnalyzer::api_path_priority("/genres");
+        let categories = SiteAnalyzer::api_path_priority("/categories");
+        let other = SiteAnalyzer::api_path_priority("/banners");
+        assert!(genres < other);
+        assert!(categories < other);
+        assert_eq!(genres, SiteAnalyzer::api_path_priority("genres"));
+    }
+
+    #[test]
+    fn api_probes_stay_on_the_sites_host_family() {
+        assert!(SiteAnalyzer::host_related_to("https://api.frame.uz/user/api/v1/genres", "frame.uz"));
+        assert!(SiteAnalyzer::host_related_to("https://pluto.tv/api/list", "www.pluto.tv"));
+        assert!(!SiteAnalyzer::host_related_to("https://third-party.example/genres", "frame.uz"));
     }
 }
