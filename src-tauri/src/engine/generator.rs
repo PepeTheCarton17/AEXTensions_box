@@ -234,9 +234,9 @@ fn get_i18n(lang: &str) -> I18nData {
             pref_audio_title: "Preferred Audio (SUB / DUB)",
             pref_audio_entries: &["Show All", "Prioritize Subbed", "Prioritize Dubbed (DUB)"],
             pref_audio_summary: "Only applies when the source actually declares audio/subtitle tracks; DUB is never invented.",
-            pref_api_title: "Resolution method (API / scraping)",
-            pref_api_entries: &["Automatic (recommended)", "Session API (boot/start)", "Legacy GraphQL", "HTML scraping / embeds"],
-            pref_api_summary: "Reorders the resolvers available for this site; it cannot activate an API the site does not use.",
+            pref_api_title: "Resolution method (site endpoints)",
+            pref_api_entries: &["Automatic (recommended)", "Web session (boot/start)", "Internal GraphQL (site hashes)", "HTML scraping / embeds"],
+            pref_api_summary: "There is no public API: these are internal routes read from the site and reimplemented. It cannot activate a route the site does not use.",
             pref_server_title: "Preferred Server (Default stream)",
             pref_server_summary: "Only reorders servers already found; it does not enable an unavailable server.",
             pref_quality_title: "Preferred Quality (Default stream)",
@@ -272,9 +272,9 @@ fn get_i18n(lang: &str) -> I18nData {
             pref_audio_title: "Áudio Preferido (LEG / DUB)",
             pref_audio_entries: &["Mostrar Todos", "Priorizar Legendado", "Priorizar Dublado (DUB)"],
             pref_audio_summary: "Só se aplica quando a fonte declara faixas de áudio/legenda; DUB nunca é inventado.",
-            pref_api_title: "Método de resolução (API / scraping)",
-            pref_api_entries: &["Automático (recomendado)", "API de sessão (boot/start)", "GraphQL legado", "Scraping HTML / embeds"],
-            pref_api_summary: "Reordena os resolvedores disponíveis; não ativa uma API que o site não usa.",
+            pref_api_title: "Método de resolução (endpoints do site)",
+            pref_api_entries: &["Automático (recomendado)", "Sessão web (boot/start)", "GraphQL interno (hashes do site)", "Scraping HTML / embeds"],
+            pref_api_summary: "Não existe API pública: são rotas internas lidas do site e replicadas. Não ativa uma rota que o site não usa.",
             pref_server_title: "Servidor Preferido (Stream Padrão)",
             pref_server_summary: "Apenas reordena servidores já encontrados; não ativa um servidor indisponível.",
             pref_quality_title: "Qualidade Preferida (Stream Padrão)",
@@ -310,9 +310,9 @@ fn get_i18n(lang: &str) -> I18nData {
             pref_audio_title: "Audio Preferido (SUB / DUB)",
             pref_audio_entries: &["Mostrar Todos", "Priorizar Subtitulado", "Priorizar Doblaje (DUB)"],
             pref_audio_summary: "Solo se aplica si la fuente declara pistas de audio/subtítulos; DUB nunca se inventa.",
-            pref_api_title: "Método de resolución (API / scraping)",
-            pref_api_entries: &["Automático (recomendado)", "API de sesión (boot/start)", "GraphQL legado", "Scraping HTML / embeds"],
-            pref_api_summary: "Reordena los resolutores disponibles; no activa una API que el sitio no usa.",
+            pref_api_title: "Método de resolución (endpoints del sitio)",
+            pref_api_entries: &["Automático (recomendado)", "Sesión web (boot/start)", "GraphQL interno (hashes del sitio)", "Scraping HTML / embeds"],
+            pref_api_summary: "No hay API pública: son rutas internas leídas del sitio y replicadas. No activa una ruta que el sitio no usa.",
             pref_server_title: "Servidor Preferido (Stream por Defecto)",
             pref_server_summary: "Solo reordena servidores ya detectados; no activa un servidor que no está disponible.",
             pref_quality_title: "Calidad Preferida (Stream por Defecto)",
@@ -680,9 +680,9 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         ?.takeIf { it in setOf("auto", "session", "graphql", "html") } ?: "auto"
 
     private fun apiModeLabel(mode: String): String = when (mode) {
-        "session" -> "API de sesión"
-        "graphql" -> "GraphQL legado"
-        "html" -> "Scraping HTML"
+        "session" -> "sesión web"
+        "graphql" -> "GraphQL interno"
+        "html" -> "scraping HTML"
         else -> "Automático"
     }
 
@@ -2268,7 +2268,7 @@ mod video_engine_tests {
             "private val siteRegion = \"MX\"",
             "private val siteLocale = \"es-419\"",
             "private val siteAppVersion = \"10.12.1096\"",
-            "no activa una API que el sitio no usa",
+            "hay API pública",
         ] {
             assert!(
                 kt.contains(marker),
