@@ -40,20 +40,24 @@ impl ExtensionGenerator {
             .unwrap_or(&analysis.name);
         let class_name = sanitize_class_name(raw_name);
         let pkg_slug = sanitize_pkg_slug(raw_name);
-        // El idioma declarado por el sitio gana sobre el elegido en la UI:
-        // marcar `es` un sitio que no publica contenido en español sería falso.
-        // Si el sitio declara varios locales no se puede elegir uno: `all`.
-        let lang = if analysis.site_locales.len() > 1 {
-            "all".to_string()
-        } else if !analysis.detected_language.trim().is_empty() {
-            analysis.detected_language.trim().to_lowercase()
-        } else {
-            target_lang
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(if !analysis.lang.is_empty() { &analysis.lang } else { "es" })
-                .to_string()
-        };
+        // El idioma lo elige el usuario en la UI (por defecto `es`). Los locales
+        // que declare el sitio son sólo la interfaz traducida: NO determinan el
+        // idioma del contenido. Servicios como Pluto entregan el catálogo según
+        // la región de la IP, así que deducir `all` de `site_locales.len() > 1`
+        // generaba una extensión sin contenido aunque la versión `es` funcione.
+        // La detección del sitio se usa únicamente si no hay elección explícita.
+        let lang = target_lang
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_lowercase())
+            .or_else(|| {
+                let detected = analysis.detected_language.trim().to_lowercase();
+                if detected.is_empty() { None } else { Some(detected) }
+            })
+            .unwrap_or_else(|| {
+                let fallback = analysis.lang.trim();
+                if fallback.is_empty() { "es".to_string() } else { fallback.to_lowercase() }
+            });
         let display_name = sanitize_display_name(raw_name);
 
         // El código de idioma visible puede ser "pt-br", pero un paquete Kotlin
@@ -2893,14 +2897,22 @@ mod video_engine_tests {
     }
 
     #[test]
-    fn site_language_overrides_the_one_chosen_in_the_ui() {
+    fn ui_selected_language_wins_and_site_locales_never_force_all() {
         use crate::engine::generator::ExtensionGenerator;
         let mut fixture = pluto_fixture();
         fixture.detected_language = "uz".to_string();
         fixture.site_locales = vec!["uz".to_string(), "ru".to_string(), "en".to_string()];
+        // El usuario eligió `es` en la UI: ni el idioma detectado ni los
+        // locales de interfaz del sitio pueden sustituir esa elección.
         let bundle = ExtensionGenerator::generate(&fixture, None, Some("es"), Some("anime"));
-        assert_eq!(bundle.lang, "all");
-        assert!(bundle.pkg_id.contains(".all."));
+        assert_eq!(bundle.lang, "es");
+        assert!(bundle.pkg_id.contains(".es."));
+
+        // Sin elección explícita se usa el idioma detectado, pero los locales
+        // declarados por la web tampoco fuerzan `all`: no son contenido.
+        let bundle = ExtensionGenerator::generate(&fixture, None, None, Some("anime"));
+        assert_eq!(bundle.lang, "uz");
+        assert!(bundle.pkg_id.contains(".uz."));
     }
 
     #[test]
