@@ -1878,7 +1878,6 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
             entryValues = arrayOf({methods_entries})
             summary = "{methods_summary}"
             setDefaultValue(arrayOf({methods_entries}).first())
-            isEnabled = false
         }}
         screen.addPreference(methodsPref)
 
