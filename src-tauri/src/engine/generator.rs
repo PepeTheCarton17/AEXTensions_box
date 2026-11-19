@@ -1644,7 +1644,7 @@ fn api_exclusion_lists(analysis: &AnalysisResult) -> Vec<&ApiListResult> {
         .api_lists
         .iter()
         .filter(|api| {
-            api.options.len() >= 2 && EXCLUDABLE.contains(&api_stem(&api.resource).as_str())
+            !api.options.is_empty() && EXCLUDABLE.contains(&api_stem(&api.resource).as_str())
         })
         .collect()
 }
@@ -1755,6 +1755,11 @@ struct ApiCatalogRecord {
 fn api_catalog_records(analysis: &AnalysisResult) -> Vec<ApiCatalogRecord> {
     const CATALOG: &[&str] = &["content", "movie", "film", "serie", "show", "catalog", "title"];
     let segment = detail_segment(analysis);
+    // La ficha se construye sobre el origen, no sobre la URL analizada: si el
+    // usuario abrió `/en`, esa ruta de idioma no debe colarse en el enlace.
+    let origin = url::Url::parse(&analysis.url)
+        .map(|u| u.origin().ascii_serialization())
+        .unwrap_or_else(|_| analysis.url.trim_end_matches('/').to_string());
     let mut out: Vec<ApiCatalogRecord> = Vec::new();
     for api in &analysis.api_lists {
         if api.title_field.is_empty() || !CATALOG.contains(&api_stem(&api.resource).as_str()) {
@@ -1774,7 +1779,7 @@ fn api_catalog_records(analysis: &AnalysisResult) -> Vec<ApiCatalogRecord> {
                 if slug.is_empty() {
                     continue;
                 }
-                format!("{}/{}/{}", analysis.url.trim_end_matches('/'), segment, slug)
+                format!("{}/{}/{}", origin.trim_end_matches('/'), segment, slug)
             } else {
                 continue;
             };

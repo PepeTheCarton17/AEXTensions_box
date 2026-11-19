@@ -321,6 +321,30 @@ impl SiteAnalyzer {
                     "Endpoints REST verificados con JSON real: {}. Sus datos se usan para filtros y catálogo; nunca se inventan valores.",
                     verified
                 ));
+                // Si el propio JSON declara acceso restringido, decirlo es más
+                // honesto que generar un reproductor que siempre dará error.
+                let gated = result.api_lists.iter().any(|api| {
+                    let Ok(serde_json::Value::Array(records)) =
+                        serde_json::from_str::<serde_json::Value>(&api.sample_json)
+                    else {
+                        return false;
+                    };
+                    records.iter().any(|record| {
+                        let availability = record
+                            .get("availability")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        availability.contains("subscription")
+                            || availability.contains("premium")
+                            || record.get("has_access").and_then(|v| v.as_bool()) == Some(false)
+                    })
+                });
+                if gated {
+                    result.warnings.push(
+                        "El catálogo declara títulos de suscripción o sin acceso público. AEXT no puede verificar esos streams sin sesión: no genera pistas SUB/DUB ni servidores inventados.".to_string(),
+                    );
+                }
             }
         }
 
@@ -1990,14 +2014,22 @@ impl SiteAnalyzer {
     /// `n="v1"`). Sin ella las URLs quedan en `.../api/genres` y el sitio
     /// responde 404 aunque el recurso exista en `.../api/v1/genres`.
     fn detect_api_version(text: &str) -> Option<String> {
+        // Un bundle minificado puede tener decenas de variables de un carácter;
+        // sólo aceptar algo que parezca versión evita usar `n="function"` como
+        // si fuera `v1` y sondear cientos de URLs inexistentes.
+        fn looks_like_version(value: &str) -> bool {
+            let v = value.trim().trim_start_matches('v').trim_start_matches('V');
+            !v.is_empty()
+                && v.split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        }
         for pattern in [
             r#"(?i)apiVersion\s*[:=]\s*["']([^"']{1,20})["']"#,
             r#"(?i)["']apiVersion["']\s*,\s*\(\)\s*=>\s*["']([^"']{1,20})["']"#,
         ] {
             if let Ok(re) = Regex::new(pattern) {
-                if let Some(cap) = re.captures(text) {
+                for cap in re.captures_iter(text) {
                     let version = cap[1].trim();
-                    if !version.is_empty() {
+                    if looks_like_version(version) {
                         return Some(version.to_string());
                     }
                 }
@@ -2009,8 +2041,10 @@ impl SiteAnalyzer {
                 let variable = regex::escape(&cap[1]);
                 let pattern = format!(r#"\b{}\s*=\s*["']([^"']{{1,20}})["']"#, variable);
                 if let Ok(vre) = Regex::new(&pattern) {
-                    if let Some(value) = vre.captures(text) {
-                        return Some(value[1].to_string());
+                    for value in vre.captures_iter(text) {
+                        if looks_like_version(&value[1]) {
+                            return Some(value[1].to_string());
+                        }
                     }
                 }
             }
@@ -2128,6 +2162,37 @@ impl SiteAnalyzer {
             .unwrap_or(u8::MAX)
     }
 
+    /// Ordena las URLs a sondear: primero las rutas con más probabilidad de ser
+    /// catálogo/filtros y, dentro de cada ruta, todas las bases declaradas. Un
+    /// bundle puede crear varios clientes (`/auth/api`, `/user/api`...); darle
+    /// todas las peticiones a la primera base dejaría sin probar la útil.
+    fn api_probe_urls(candidates: &ApiCandidates, ordered: &[String]) -> Vec<String> {
+        let version = candidates
+            .version
+            .as_deref()
+            .map(|v| v.trim().trim_start_matches('/').trim_end_matches('/'))
+            .filter(|v| !v.is_empty());
+        let mut urls: Vec<String> = Vec::new();
+        for with_version in [true, false] {
+            if with_version && version.is_none() {
+                continue;
+            }
+            for path in ordered {
+                for base in &candidates.bases {
+                    let root = base.trim_end_matches('/');
+                    let full = match (with_version, version) {
+                        (true, Some(v)) => format!("{}/{}{}", root, v, path),
+                        _ => format!("{}{}", root, path),
+                    };
+                    if !urls.contains(&full) {
+                        urls.push(full);
+                    }
+                }
+            }
+        }
+        urls
+    }
+
     /// Sondea de forma genérica los recursos detectados. Nunca envía credenciales
     /// ni cookies: si el endpoint exige sesión, no responde JSON y se descarta.
     async fn probe_api_lists(
@@ -2137,27 +2202,9 @@ impl SiteAnalyzer {
     ) -> Vec<ApiListResult> {
         let mut ordered: Vec<String> = candidates.paths.to_vec();
         ordered.sort_by_key(|path| Self::api_path_priority(path));
-        let mut urls: Vec<String> = Vec::new();
-        for base in &candidates.bases {
-            for path in &ordered {
-                let root = base.trim_end_matches('/');
-                let mut variants = Vec::new();
-                if let Some(version) = &candidates.version {
-                    let version = version.trim().trim_start_matches('/').trim_end_matches('/');
-                    if !version.is_empty() {
-                        variants.push(format!("{}/{}{}", root, version, path));
-                    }
-                }
-                variants.push(format!("{}{}", root, path));
-                for full in variants {
-                    if !urls.contains(&full) {
-                        urls.push(full);
-                    }
-                }
-            }
-        }
+        let urls = Self::api_probe_urls(candidates, &ordered);
         let mut out = Vec::new();
-        for url in urls.into_iter().take(8) {
+        for url in urls.into_iter().take(12) {
             if !Self::host_related_to(&url, site_host) {
                 continue;
             }
@@ -3598,7 +3645,9 @@ render(nf,{href:"/catalog?genreIds=1"});"#;
 
     #[test]
     fn minified_bundle_version_is_resolved_from_its_variable() {
-        let js = r#"41423,e=>{"use strict";e.s(["LS_ACCESS",()=>o,"apiVersion",()=>n]);let n="v1",r="id-r",o="ac-s";}"#;
+        // El primer `n` del bundle es otra variable (por ejemplo un tipo); el
+        // detector debe seguir buscando hasta encontrar un valor de versión.
+        let js = r#"let n="function";41423,e=>{"use strict";e.s(["LS_ACCESS",()=>o,"apiVersion",()=>n]);let n="v1",r="id-r",o="ac-s";}"#;
         assert_eq!(SiteAnalyzer::detect_api_version(js).as_deref(), Some("v1"));
     }
 
@@ -3610,6 +3659,30 @@ render(nf,{href:"/catalog?genreIds=1"});"#;
         assert!(genres < other);
         assert!(categories < other);
         assert_eq!(genres, SiteAnalyzer::api_path_priority("genres"));
+    }
+
+    #[test]
+    fn api_probes_interleave_all_bases_before_falling_back() {
+        let candidates = ApiCandidates {
+            bases: vec![
+                "https://api.example.com/auth/api".to_string(),
+                "https://api.example.com/user/api".to_string(),
+            ],
+            paths: vec![
+                "/banners".to_string(),
+                "/contents".to_string(),
+                "/categories".to_string(),
+                "/genres".to_string(),
+            ],
+            version: Some("v1".to_string()),
+        };
+        let mut ordered = candidates.paths.clone();
+        ordered.sort_by_key(|path| SiteAnalyzer::api_path_priority(path));
+        let urls = SiteAnalyzer::api_probe_urls(&candidates, &ordered);
+        assert!(urls[0].contains("/auth/api/v1/genres"));
+        assert!(urls[1].contains("/user/api/v1/genres"), "la segunda base no debe quedar fuera del presupuesto: {:?}", urls);
+        assert!(urls.iter().take(12).any(|u| u.contains("/user/api/v1/contents")));
+        assert!(urls.iter().all(|u| u.contains("/v1/") || !u.contains("/v")), "sin versión sólo como fallback: {:?}", urls);
     }
 
     #[test]
