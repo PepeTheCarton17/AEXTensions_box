@@ -71,6 +71,14 @@ pub struct SiteCapabilities {
     /// de sesión la necesita para reproducir el arranque del reproductor web.
     #[serde(default)]
     pub app_version: Option<String>,
+    /// Región y locale declarados por el sitio en su estado hidratado (p. ej.
+    /// `MX` / `es-419`). Pluto condiciona catálogo, audio y subtítulos a la IP:
+    /// se muestra como dato verificado, nunca como selector falso, porque
+    /// `boot/start` ignora `country`, `region`, `deviceLat` y `deviceLon`.
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub locale: Option<String>,
     /// Caso de reproductor detectado, que decide el orden inicial de las
     /// estrategias: `session-bootstrap`, `graphql-persisted`, `hls-master`,
     /// `dash-mpd`, `iframe-player`, `drm-widevine`, `ads-hls`.
@@ -573,6 +581,35 @@ impl SiteAnalyzer {
             }
         }
 
+        // Los estados hidratados (Next.js/React Query) guardan la región real
+        // resuelta por IP. Pluto la expone como
+        // `"region":{"locale":"es-419","region":"MX"}`, a veces con comillas
+        // escapadas dentro de un bloque RSC. Normalizamos esas comillas antes
+        // de leerla para no depender del formato de serialización.
+        let flat = body.replace("\\\"", "\"");
+        if let Ok(re) = Regex::new(
+            r#""region"\s*:\s*\{[^}]*?"locale"\s*:\s*"([^"]+)"[^}]*?"region"\s*:\s*"([^"]+)""#,
+        ) {
+            if let Some(cap) = re.captures(&flat) {
+                caps.locale = Some(cap[1].to_string());
+                caps.region = Some(cap[2].to_string());
+            }
+        }
+        if caps.region.is_none() {
+            if let Ok(re) = Regex::new(r#""region"\s*:\s*"([A-Za-z]{2})""#) {
+                if let Some(cap) = re.captures(&flat) {
+                    caps.region = Some(cap[1].to_uppercase());
+                }
+            }
+        }
+        if caps.locale.is_none() {
+            if let Ok(re) = Regex::new(r#"translations-([a-z]{2}(?:-[A-Za-z0-9]+)?)"#) {
+                if let Some(cap) = re.captures(&flat) {
+                    caps.locale = Some(cap[1].to_string());
+                }
+            }
+        }
+
         caps
     }
 
@@ -593,6 +630,12 @@ impl SiteAnalyzer {
         merge(&mut base.player_cases, &extra.player_cases);
         if base.app_version.is_none() {
             base.app_version = extra.app_version.clone();
+        }
+        if base.region.is_none() {
+            base.region = extra.region.clone();
+        }
+        if base.locale.is_none() {
+            base.locale = extra.locale.clone();
         }
     }
 
@@ -1649,10 +1692,33 @@ mod tests {
     }
 
     #[test]
+    fn detects_region_and_locale_from_hydrated_state() {
+        let html = r#"<html><body><script id="__NEXT_DATA__" type="application/json">
+          {"props":{"pageProps":{"dehydratedState":{"queries":[{"queryKey":["region"],
+          "state":{"data":{"region":{"locale":"es-419","region":"MX"}}}}]}}}}}
+        </script></body></html>"#;
+
+        let caps = SiteAnalyzer::detect_capabilities(html);
+        assert_eq!(caps.region.as_deref(), Some("MX"));
+        assert_eq!(caps.locale.as_deref(), Some("es-419"));
+    }
+
+    #[test]
+    fn detects_region_from_escaped_rsc_payload() {
+        let html = r#"<script>self.__next_f.push([1,"{\"queryKey\":[\"region\"],\"state\":{\"data\":{\"region\":{\"locale\":\"es-419\",\"region\":\"MX\"}}}}"])</script>"#;
+
+        let caps = SiteAnalyzer::detect_capabilities(html);
+        assert_eq!(caps.region.as_deref(), Some("MX"));
+        assert_eq!(caps.locale.as_deref(), Some("es-419"));
+    }
+
+    #[test]
     fn capabilities_do_not_claim_formats_that_are_not_in_the_html() {
         let caps = SiteAnalyzer::detect_capabilities("<html><body>hola</body></html>");
         assert!(caps.stream_formats.is_empty());
         assert!(caps.qualities.is_empty());
         assert!(caps.api_endpoints.is_empty());
+        assert!(caps.region.is_none());
+        assert!(caps.locale.is_none());
     }
 }
