@@ -40,10 +40,20 @@ impl ExtensionGenerator {
             .unwrap_or(&analysis.name);
         let class_name = sanitize_class_name(raw_name);
         let pkg_slug = sanitize_pkg_slug(raw_name);
-        let lang = target_lang
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .unwrap_or(if !analysis.lang.is_empty() { &analysis.lang } else { "es" });
+        // El idioma declarado por el sitio gana sobre el elegido en la UI:
+        // marcar `es` un sitio que no publica contenido en español sería falso.
+        // Si el sitio declara varios locales no se puede elegir uno: `all`.
+        let lang = if analysis.site_locales.len() > 1 {
+            "all".to_string()
+        } else if !analysis.detected_language.trim().is_empty() {
+            analysis.detected_language.trim().to_lowercase()
+        } else {
+            target_lang
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(if !analysis.lang.is_empty() { &analysis.lang } else { "es" })
+                .to_string()
+        };
         let display_name = sanitize_display_name(raw_name);
 
         // El código de idioma visible puede ser "pt-br", pero un paquete Kotlin
@@ -89,7 +99,7 @@ impl ExtensionGenerator {
                     &display_name,
                     &class_name,
                     pkg_slug.as_str(),
-                    lang,
+                    &lang,
                     &pkg_lang,
                     pkg_prefix,
                 ),
@@ -102,14 +112,14 @@ impl ExtensionGenerator {
                     &display_name,
                     &class_name,
                     &pkg_slug,
-                    lang,
+                    &lang,
                     &pkg_lang,
                     pkg_prefix,
                 ),
                 generate_kotlin_filters(
                     &class_name,
                     &pkg_slug,
-                    lang,
+                    &lang,
                     &pkg_lang,
                     pkg_prefix,
                     analysis,
@@ -238,6 +248,48 @@ struct I18nData {
 
 fn get_i18n(lang: &str) -> I18nData {
     match lang.to_lowercase().as_str() {
+        // Un sitio que declara español de forma explícita sí recibe textos en
+        // español. `all` y los locales sin plantilla propia caen al inglés para
+        // no inventar una traducción en un paquete multilingüe.
+        "es" | "es-es" | "es-419" => I18nData {
+            pref_audio_title: "Audio Preferido (SUB / DUB)",
+            pref_audio_entries: &["Mostrar Todos", "Priorizar Subtitulado", "Priorizar Doblaje (DUB)"],
+            pref_audio_summary: "Aparece solo porque AEXT verificó estas pistas en un stream real; nada se inventa.",
+            pref_api_title: "API preferida",
+            pref_api_entries: &["Automático", "Sesión web", "GraphQL", "HTML"],
+            methods_title: "Métodos disponibles encontrados de reproducción",
+            pref_server_title: "Servidor Preferido (Stream por Defecto)",
+            pref_server_summary: "Solo reordena servidores ya detectados; no activa un servidor que no está disponible.",
+            pref_quality_title: "Calidad Preferida (Stream por Defecto)",
+            pref_server_blacklist_title: "Lista Negra de Servidores (Ocultar)",
+            pref_server_blacklist_summary: "Desactiva servidores en el reproductor (ej. Zilla)",
+            pref_genre_blacklist_title: "Lista Negra de Géneros (# - Ocultar)",
+            pref_genre_blacklist_summary: "Oculta permanentemente animes con estos géneros (#) en el catálogo",
+            filter_header: "Filtros de búsqueda y catálogo",
+            filter_audio_title: "Audio / Doblaje",
+            filter_audio_entries: &["Todos", "Subtitulado (SUB)", "Doblado (DUB)"],
+            filter_genre_title: "Género (#)",
+            filter_genre_blacklist_title: "Lista Negra de Géneros (# - Excluir)",
+            genres: &[
+                ("Acción", "accion"),
+                ("Aventura", "aventura"),
+                ("Ciencia Ficción", "ciencia-ficcion"),
+                ("Comedia", "comedia"),
+                ("Deportes", "deportes"),
+                ("Drama", "drama"),
+                ("Ecchi", "ecchi"),
+                ("Fantasía", "fantasia"),
+                ("Gore", "gore"),
+                ("Harem", "harem"),
+                ("Isekai", "isekai"),
+                ("Mecha", "mecha"),
+                ("Romance", "romance"),
+                ("Sci-Fi", "sci-fi"),
+                ("Shounen", "shounen"),
+                ("Sobrenatural", "sobrenatural"),
+                ("Terror", "terror"),
+            ],
+        },
         "en" => I18nData {
             pref_audio_title: "Preferred Audio (SUB / DUB)",
             pref_audio_entries: &["Show All", "Prioritize Subbed", "Prioritize Dubbed (DUB)"],
@@ -314,43 +366,44 @@ fn get_i18n(lang: &str) -> I18nData {
                 ("Terror", "terror"),
             ],
         },
+        // `all` e idiomas sin plantilla propia caen aquí. Un paquete multilingüe
+        // no puede mostrar textos en español: sería una traducción inventada.
         _ => I18nData {
-            pref_audio_title: "Audio Preferido (SUB / DUB)",
-            pref_audio_entries: &["Mostrar Todos", "Priorizar Subtitulado", "Priorizar Doblaje (DUB)"],
-            pref_audio_summary: "Aparece solo porque AEXT verificó estas pistas en un stream real; nada se inventa.",
-            pref_api_title: "API preferida",
-            pref_api_entries: &["Automático", "Sesión web", "GraphQL", "HTML"],
-            methods_title: "Métodos disponibles encontrados de reproducción",
-            pref_server_title: "Servidor Preferido (Stream por Defecto)",
-            pref_server_summary: "Solo reordena servidores ya detectados; no activa un servidor que no está disponible.",
-            pref_quality_title: "Calidad Preferida (Stream por Defecto)",
-            pref_server_blacklist_title: "Lista Negra de Servidores (Ocultar)",
-            pref_server_blacklist_summary: "Desactiva servidores en el reproductor (ej. Zilla)",
-            pref_genre_blacklist_title: "Lista Negra de Géneros (# - Ocultar)",
-            pref_genre_blacklist_summary: "Oculta permanentemente animes con estos géneros (#) en el catálogo",
-            filter_header: "Filtros de búsqueda y catálogo",
-            filter_audio_title: "Audio / Doblaje",
-            filter_audio_entries: &["Todos", "Subtitulado (SUB)", "Doblado (DUB)"],
-            filter_genre_title: "Género (#)",
-            filter_genre_blacklist_title: "Lista Negra de Géneros (# - Excluir)",
+            pref_audio_title: "Preferred Audio (SUB / DUB)",
+            pref_audio_entries: &["Show All", "Prioritize Subbed", "Prioritize Dubbed (DUB)"],
+            pref_audio_summary: "Shown only because AEXT verified these tracks in a real stream; nothing is invented.",
+            pref_api_title: "Preferred API",
+            pref_api_entries: &["Automatic", "Web session", "GraphQL", "HTML"],
+            methods_title: "Playback methods found",
+            pref_server_title: "Preferred Server (Default stream)",
+            pref_server_summary: "Only reorders servers already found; it does not enable an unavailable server.",
+            pref_quality_title: "Preferred Quality (Default stream)",
+            pref_server_blacklist_title: "Server Blacklist (Hide)",
+            pref_server_blacklist_summary: "Disable servers in player (e.g. Zilla)",
+            pref_genre_blacklist_title: "Genre Blacklist (# - Hide)",
+            pref_genre_blacklist_summary: "Permanently hide anime with these genres or tags (#) in catalog",
+            filter_header: "Search & Catalog Filters",
+            filter_audio_title: "Audio / Dubbing",
+            filter_audio_entries: &["All", "Subtitled (SUB)", "Dubbed (DUB)"],
+            filter_genre_title: "Genre (#)",
+            filter_genre_blacklist_title: "Genre Blacklist (# - Exclude)",
             genres: &[
-                ("Acción", "accion"),
-                ("Aventura", "aventura"),
-                ("Ciencia Ficción", "ciencia-ficcion"),
-                ("Comedia", "comedia"),
-                ("Deportes", "deportes"),
+                ("Action", "action"),
+                ("Adventure", "adventure"),
+                ("Sci-Fi", "sci-fi"),
+                ("Comedy", "comedy"),
+                ("Sports", "sports"),
                 ("Drama", "drama"),
                 ("Ecchi", "ecchi"),
-                ("Fantasía", "fantasia"),
+                ("Fantasy", "fantasy"),
                 ("Gore", "gore"),
                 ("Harem", "harem"),
                 ("Isekai", "isekai"),
                 ("Mecha", "mecha"),
                 ("Romance", "romance"),
-                ("Sci-Fi", "sci-fi"),
                 ("Shounen", "shounen"),
-                ("Sobrenatural", "sobrenatural"),
-                ("Terror", "terror"),
+                ("Supernatural", "supernatural"),
+                ("Horror", "horror"),
             ],
         },
     }
@@ -1609,17 +1662,22 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
     } else {
         format!("    private val jsonLdRecords = listOf(\n{ld_entries}\n    )")
     };
-    let has_site_filters = analysis.filter_params.iter().any(|f| !f.param.is_empty() && !f.value.is_empty());
+    let has_site_filters = analysis.filter_params.iter().any(|f| {
+        !f.param.is_empty() && (f.kind == "text" || !f.value.is_empty())
+    });
     let filter_block = if has_site_filters {
         format!(
             r#"        val urlBuilder = Uri.parse(url).buildUpon()
         for (f in filters) {{
             when (f) {{
                 is {class_name}Filters.ParamSelectFilter -> if (f.state > 0) {{
-                    urlBuilder.appendQueryParameter(f.param, f.options[f.state])
+                    urlBuilder.appendQueryParameter(f.param, f.vals[f.state - 1].second)
                 }}
                 is {class_name}Filters.ParamCheckFilter -> if (f.state) {{
                     urlBuilder.appendQueryParameter(f.param, f.value)
+                }}
+                is {class_name}Filters.ParamTextFilter -> if (f.state.isNotBlank()) {{
+                    urlBuilder.appendQueryParameter(f.param, f.state)
                 }}
                 else -> Unit
             }}
@@ -2228,6 +2286,32 @@ object {class_name}Filters {{
 "#)
 }
 
+/// Etiqueta legible derivada de un valor real del sitio. No traduce: sólo
+/// separa guiones bajos y camelCase para no mostrar `kinopoisk_rating` crudo.
+fn humanize_filter_value(value: &str) -> String {
+    let mut spaced = String::new();
+    let mut previous = ' ';
+    for c in value.chars() {
+        if c.is_uppercase() && previous.is_lowercase() {
+            spaced.push(' ');
+        }
+        spaced.push(c);
+        previous = c;
+    }
+    spaced
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn generate_kotlin_filters(
     class_name: &str,
     pkg_slug: &str,
@@ -2283,48 +2367,90 @@ fn generate_kotlin_filters(
 
     // Sólo se generan filtros que el sitio expone de verdad. Los géneros de
     // la plantilla se eliminaron: nunca se podían traducir en una consulta.
-    let mut grouped: Vec<(String, String, Vec<String>)> = Vec::new();
+    #[derive(Clone)]
+    struct ParamGroup {
+        name: String,
+        values: Vec<String>,
+    }
+    let mut grouped: Vec<(String, ParamGroup)> = Vec::new();
     for f in &analysis.filter_params {
-        if f.param.is_empty() || f.value.is_empty() {
+        if f.param.is_empty() {
             continue;
         }
-        if let Some(entry) = grouped.iter_mut().find(|(p, _, _)| p == &f.param) {
-            if !entry.2.contains(&f.value) {
-                entry.2.push(f.value.clone());
+        let index = match grouped.iter().position(|(param, _)| param == &f.param) {
+            Some(index) => index,
+            None => {
+                grouped.push((
+                    f.param.clone(),
+                    ParamGroup {
+                        name: f.name.clone(),
+                        values: Vec::new(),
+                    },
+                ));
+                grouped.len() - 1
             }
-        } else {
-            grouped.push((f.param.clone(), f.name.clone(), vec![f.value.clone()]));
+        };
+        let entry = &mut grouped[index].1;
+        // Un filtro `text` no aporta valores: al quedarse `values` vacío se
+        // genera un ParamTextFilter en lugar de un selector con opciones.
+        if f.kind != "text" && !f.value.is_empty() && !entry.values.contains(&f.value) {
+            entry.values.push(f.value.clone());
         }
     }
-    let param_classes = if grouped.is_empty() {
-        String::new()
-    } else {
-        r#"    class ParamSelectFilter(name: String, val param: String, val options: Array<String>) :
-        AnimeFilter.Select<String>(name, options)
+    // El bloque `when (f)` del Kotlin de búsqueda referencia las tres clases
+    // siempre que existan filtros del sitio, así que hay que definirlas todas
+    // juntas. Emitir sólo la clase que se usa deja referencias sin resolver:
+    // dos valores para un mismo parámetro generan un ParamSelectFilter, pero el
+    // `when` sigue mencionando ParamCheckFilter y ParamTextFilter.
+    let mut param_classes = String::new();
+    if !grouped.is_empty() {
+        param_classes.push_str(
+            r#"    class ParamSelectFilter(name: String, val param: String, val vals: Array<Pair<String, String>>) :
+        AnimeFilter.Select<String>(name, (listOf("All") + vals.map { it.first }).toTypedArray())
 
-    class ParamCheckFilter(name: String, val param: String, val value: String) :
+"#,
+        );
+        param_classes.push_str(
+            r#"    class ParamCheckFilter(name: String, val param: String, val value: String) :
         AnimeFilter.CheckBox(name, false)
 
-"#
-        .to_string()
-    };
+"#,
+        );
+        param_classes.push_str(
+            r#"    class ParamTextFilter(name: String, val param: String) : AnimeFilter.Text(name)
+
+"#,
+        );
+    }
     let param_items = grouped
         .iter()
-        .map(|(param, name, values)| {
-            if values.len() > 1 {
-                let options = std::iter::once("All")
-                    .chain(values.iter().map(String::as_str))
-                    .map(|v| format!("\"{}\"", kt(v)))
+        .map(|(param, group)| {
+            if group.values.len() > 1 {
+                let vals = group
+                    .values
+                    .iter()
+                    .map(|value| {
+                        format!(
+                            "Pair(\"{}\", \"{}\")",
+                            kt(&humanize_filter_value(value)),
+                            kt(value)
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!(
                     "        ParamSelectFilter(\"{}\", \"{}\", arrayOf({})),\n",
-                    kt(name), kt(param), options
+                    kt(&group.name), kt(param), vals
+                )
+            } else if group.values.len() == 1 {
+                format!(
+                    "        ParamCheckFilter(\"{}\", \"{}\", \"{}\"),\n",
+                    kt(&group.name), kt(param), kt(&group.values[0])
                 )
             } else {
                 format!(
-                    "        ParamCheckFilter(\"{}\", \"{}\", \"{}\"),\n",
-                    kt(name), kt(param), kt(&values[0])
+                    "        ParamTextFilter(\"{}\", \"{}\"),\n",
+                    kt(&group.name), kt(param)
                 )
             }
         })
@@ -2727,7 +2853,7 @@ mod video_engine_tests {
             "alternateTitle = \"English title\"",
             "withJsonLdFallback(page, lastSearchQuery)",
             "lastSearchQuery = finalQuery",
-            "urlBuilder.appendQueryParameter(f.param, f.options[f.state])",
+            "urlBuilder.appendQueryParameter(f.param, f.vals[f.state - 1].second)",
             "is PlutoTvFilters.ParamSelectFilter",
             "else -> Unit",
             "pickTitle(element, \"h2\")",
@@ -2739,12 +2865,42 @@ mod video_engine_tests {
         }
         for marker in [
             "class ParamSelectFilter",
-            "ParamSelectFilter(\"Género\", \"genreIds\", arrayOf(\"All\", \"1\", \"2\"))",
+            "ParamSelectFilter(\"Género\", \"genreIds\", arrayOf(Pair(\"1\", \"1\"), Pair(\"2\", \"2\")))",
         ] {
             assert!(filters.contains(marker), "falta en los filtros generados: {marker}");
         }
         assert!(!filters.contains("DEFAULT_GENRES"), "no se deben generar géneros inventados");
         assert!(!filters.contains("GenreFilter("), "el filtro de género falso debe desaparecer");
+    }
+
+    #[test]
+    fn all_language_uses_english_labels_and_text_filters_for_unknown_values() {
+        let mut fixture = pluto_fixture();
+        fixture.filter_params = vec![
+            SiteFilterParam { name: "Sort By".to_string(), param: "sortBy".to_string(), value: "publish_date".to_string(), kind: "select".to_string() },
+            SiteFilterParam { name: "Sort By".to_string(), param: "sortBy".to_string(), value: "imdb_rating".to_string(), kind: "select".to_string() },
+            SiteFilterParam { name: "Genre".to_string(), param: "genreIds".to_string(), value: String::new(), kind: "text".to_string() },
+        ];
+        let filters = generate_kotlin_filters(
+            "PlutoTv", "pluto", "all", "all", "eu.kanade.tachiyomi.animeextension", &fixture,
+        );
+        assert!(filters.contains("Header(\"Search & Catalog Filters\")"));
+        assert!(!filters.contains("Filtros de búsqueda"));
+        assert!(filters.contains("class ParamTextFilter"));
+        assert!(filters.contains("ParamTextFilter(\"Genre\", \"genreIds\")"));
+        assert!(filters.contains("Pair(\"Publish Date\", \"publish_date\")"));
+        assert!(filters.contains("Pair(\"Imdb Rating\", \"imdb_rating\")"));
+    }
+
+    #[test]
+    fn site_language_overrides_the_one_chosen_in_the_ui() {
+        use crate::engine::generator::ExtensionGenerator;
+        let mut fixture = pluto_fixture();
+        fixture.detected_language = "uz".to_string();
+        fixture.site_locales = vec!["uz".to_string(), "ru".to_string(), "en".to_string()];
+        let bundle = ExtensionGenerator::generate(&fixture, None, Some("es"), Some("anime"));
+        assert_eq!(bundle.lang, "all");
+        assert!(bundle.pkg_id.contains(".all."));
     }
 
     #[test]

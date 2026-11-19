@@ -1354,7 +1354,11 @@ async fn verify_github_actions(
     commit_sha: &str,
     pkg_id: &str,
 ) {
-    const MAX_WAIT_SECS: u64 = 90;
+    // Un build de extensión tarda ~2-5 min en Actions. 90 s marcaba como
+    // «pendiente» una actualización que luego terminaba en success, y el usuario
+    // veía que «sólo se actualizaba» la extensión anterior. Esperamos lo suficiente
+    // para el caso normal y dejamos el botón «Verificar Actions» para el resto.
+    const MAX_WAIT_SECS: u64 = 360;
     const POLL_SECS: u64 = 10;
     const NO_RUN_GRACE_SECS: u64 = 30;
     let started = std::time::Instant::now();
