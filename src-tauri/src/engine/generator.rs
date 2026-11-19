@@ -556,6 +556,48 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         return distinctVideos(verified)
     }
 
+    // ============================== ESTRATEGIAS DE RESOLUCIÓN ==============================
+    // Un sitio puede exponer el stream por sesión API, por GraphQL o como
+    // embebido en HTML. AEXT no asume una sola ruta: prueba varias en orden y
+    // aprende cuál funciona: guarda aciertos/fallos por estrategia y ordena
+    // las siguientes reproducciones por probabilidad de éxito (suavizado de
+    // Laplace). Así, si el sitio cambia de API, la estrategia que empieza a
+    // fallar baja de puesto automáticamente sin regenerar la extensión.
+    private data class VideoContext(val url: String, val html: String)
+
+    private class VideoStrategy(
+        val id: String,
+        val priority: Int,
+        val resolve: (VideoContext) -> List<Video>?,
+    )
+
+    private fun strategyStats(id: String): Pair<Int, Int> {
+        val raw = preferences.getString("aext_strategy_$id", "0,0") ?: "0,0"
+        val parts = raw.split(",")
+        return (parts.getOrNull(0)?.toIntOrNull() ?: 0) to (parts.getOrNull(1)?.toIntOrNull() ?: 0)
+    }
+
+    private fun recordStrategy(id: String, success: Boolean) {
+        val (ok, fail) = strategyStats(id)
+        preferences.edit()
+            .putString("aext_strategy_$id", if (success) "${ok + 1},$fail" else "$ok,${fail + 1}")
+            .apply()
+    }
+
+    private fun orderedStrategies(): List<VideoStrategy> {
+        val all = listOf(
+            VideoStrategy("api-session", 0) { ctx -> apiSessionVideos(ctx) },
+            VideoStrategy("api-graphql", 1) { ctx -> plutoGraphqlVideos(ctx) },
+            VideoStrategy("html-embeds", 2) { ctx -> htmlEmbedVideos(ctx) },
+        )
+        return all.sortedWith(
+            compareByDescending<VideoStrategy> { s ->
+                val (ok, fail) = strategyStats(s.id)
+                (ok + 1.0) / (ok + fail + 2.0)
+            }.thenBy { it.priority }
+        )
+    }
+
     /**
      * Mapa url -> audio ("SUB"/"DUB") leyendo los bloques `SUB:[{server:...,url:...}]`
      * del payload. Sin esto, un iframe del reproductor por defecto puede etiquetarse
@@ -577,15 +619,43 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
     }
 
     override fun videoListParse(response: Response): List<Video> {
-        // Pluto TV no expone .m3u8/iframe en el HTML estático: el stream se
-        // resuelve mediante GraphQL (verificado 2026-11-17). El cuerpo aún no
-        // se ha consumido, así que podemos pasarlo al extractor de Pluto.
-        if (baseUrl.contains("pluto.tv") || response.request.url.toString().contains("pluto.tv")) {
-            return verifyCandidates(plutoVideos(response))
-        }
-
+        val finalUrl = response.request.url.toString()
+        // El cuerpo se lee una sola vez: el HTML se reutiliza en todas las
+        // estrategias y `asJsoup()` también lo consumiría.
         val html = response.body?.string().orEmpty()
-        val document = response.asJsoup()
+        val ctx = VideoContext(finalUrl, html)
+        val errors = mutableListOf<String>()
+
+        for (strategy in orderedStrategies()) {
+            val candidates = try {
+                strategy.resolve(ctx)
+            } catch (e: Exception) {
+                errors.add("${strategy.id}: ${e.message ?: "error"}")
+                recordStrategy(strategy.id, false)
+                null
+            }
+            if (candidates == null) continue // estrategia no aplicable a este sitio
+            if (candidates.isEmpty()) {
+                recordStrategy(strategy.id, false)
+                errors.add("${strategy.id}: sin candidatos")
+                continue
+            }
+            val verified = try {
+                verifyCandidates(candidates)
+            } catch (e: Exception) {
+                errors.add("${strategy.id}: ${e.message ?: "sin stream válido"}")
+                recordStrategy(strategy.id, false)
+                continue
+            }
+            recordStrategy(strategy.id, true)
+            return verified
+        }
+        throw Exception("AEXT no pudo resolver ningún stream (${errors.take(4).joinToString(" | ")})")
+    }
+
+    private fun htmlEmbedVideos(ctx: VideoContext): List<Video> {
+        val html = ctx.html
+        val document = Jsoup.parse(html, ctx.url)
         val videos = mutableListOf<Video>()
         val blacklist = preferences.getStringSet("server_blacklist", emptySet()) ?: emptySet()
 
@@ -606,7 +676,7 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
             val src = dataAttrs.firstNotNullOfOrNull { name ->
                 el.attr(name).takeIf { it.isNotBlank() }
             } ?: return@forEach
-            val absolute = absolutize(baseUrl, src)
+            val absolute = absolutize(ctx.url, src)
             if (absolute.startsWith("http")) {
                 embeds.add(el.attr("data-server").ifBlank { el.text().trim() } to absolute)
             }
@@ -645,10 +715,76 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
             }
         }
 
-        return verifyCandidates(sortVideos(videos))
+        return sortVideos(videos)
     }
 
-    // ---- Pluto TV: flujo de reproducción verificado (LATAM, 2026-11-17) ----
+    // ---- Estrategia de sesión: boot/start -> stitcher HLS (Pluto, ref. 2026-11-18) ----
+    // El reproductor web no expone un .m3u8 en el HTML: ejecuta boot/start,
+    // obtiene sessionToken + stitcherParams y construye el máster con jwt.
+    // Las variantes heredan el jwt en la query y la clave AES-128 es pública,
+    // así que el máster completo (con la pista de audio) funciona en MPV.
+    private data class PlutoSession(val stitcher: String, val params: String, val token: String)
+
+    private fun plutoContentId(ctx: VideoContext): Pair<String, String>? {
+        val fromUrl = Regex("""(episode|movie)/([0-9a-f]{24})""", RegexOption.IGNORE_CASE)
+            .find(ctx.url)?.let { it.groupValues[1].lowercase() to it.groupValues[2] }
+        if (fromUrl != null) return fromUrl
+        val fromHtml = Regex("\"contentId\"\\s*:\\s*\"([0-9a-f]{24})\"", RegexOption.IGNORE_CASE)
+            .find(ctx.html)?.groupValues?.get(1)
+        return fromHtml?.let { "episode" to it }
+    }
+
+    private fun plutoJsonField(body: String, name: String): String? =
+        Regex("\"$name\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+
+    private fun plutoBootSession(): PlutoSession {
+        val url = "https://boot.pluto.tv/v4/start".toHttpUrl().newBuilder().apply {
+            addQueryParameter("appName", "web")
+            addQueryParameter("appVersion", siteAppVersion)
+            addQueryParameter("deviceVersion", "124.0.0.0")
+            addQueryParameter("deviceModel", "web")
+            addQueryParameter("deviceMake", "chrome")
+            addQueryParameter("deviceType", "web")
+            addQueryParameter("clientID", java.util.UUID.randomUUID().toString())
+            addQueryParameter("clientModelNumber", "1.0.0")
+            addQueryParameter("serverSideAds", "false")
+            addQueryParameter("clientTime", System.currentTimeMillis().toString())
+        }.build()
+        val h = headers.newBuilder()
+            .set("User-Agent", plutoBrowserUa)
+            .set("Referer", "https://pluto.tv/")
+            .set("Accept", "application/json")
+            .build()
+        plutoFreshClient.newCall(Request.Builder().url(url).headers(h).build()).execute().use { r ->
+            if (!r.isSuccessful) throw Exception("Pluto boot/start HTTP ${r.code}")
+            val body = r.body?.string().orEmpty()
+            val token = plutoJsonField(body, "sessionToken")
+                ?: throw Exception("Pluto boot/start sin sessionToken")
+            val params = plutoJsonField(body, "stitcherParams")
+                ?: throw Exception("Pluto boot/start sin stitcherParams")
+            val stitcher = plutoJsonField(body, "stitcher")
+                ?: "https://service-stitcher.clusters.pluto.tv"
+            return PlutoSession(
+                stitcher.trimEnd('/'),
+                params.replace("\\u0026", "&").replace("\\/", "/").replace("\\u003d", "="),
+                token,
+            )
+        }
+    }
+
+    private fun apiSessionVideos(ctx: VideoContext): List<Video>? {
+        if (!ctx.url.contains("pluto.tv", ignoreCase = true)) return null
+        val (kind, id) = plutoContentId(ctx)
+            ?: throw Exception("No se pudo extraer el contentId de Pluto TV")
+        val session = plutoBootSession()
+        val segment = if (kind == "movie") "movie" else "episode"
+        val master = "${session.stitcher}/v2/stitch/hls/$segment/$id/master.m3u8" +
+            "?${session.params}&jwt=${Uri.encode(session.token)}" +
+            "&includeExtendedEvents=true&masterJWTPassthrough=true"
+        return listOf(Video(master, "Pluto TV", "HLS", browserHeaders))
+    }
+
+    // ---- Estrategia de respaldo: GraphQL legado con hashes persistentes ----
     // Las páginas de episodio no contienen .m3u8 ni iframe: el stream se
     // resuelve con GraphQL. PtvStart entrega un JWT y la cookie CBS_COM;
     // StreamingUrl (con esa cookie) entrega la ruta del máster HLS; el máster
@@ -778,9 +914,9 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         return result ?: throw Exception(lastError.ifBlank { "Pluto PtvStart no devolvió JWT ni CBS_COM" })
     }
 
-    private fun plutoVideos(response: Response): List<Video> {
-        val finalUrl = response.request.url.toString()
-        val contentId = Regex("""/episode/([0-9a-f]{24})""").find(finalUrl)
+    private fun plutoGraphqlVideos(ctx: VideoContext): List<Video>? {
+        if (!ctx.url.contains("pluto.tv", ignoreCase = true)) return null
+        val contentId = Regex("""/episode/([0-9a-f]{24})""").find(ctx.url)
             ?: throw Exception("No se pudo extraer el contentId de Pluto TV")
 
         // 1) PtvStart -> JWT + CBS_COM (reintento y extracción robusta).
@@ -1190,6 +1326,12 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
         .map(|f| format!("\"{}\"", f))
         .collect::<Vec<_>>()
         .join(", ");
+    // boot/start admite cualquier versión, pero usar la que el sitio declara
+    // hace que la sesión generada sea indistinguible de la del reproductor web.
+    let site_app_version = analysis.capabilities.app_version
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .unwrap_or("10.12.1096");
 
     let pref_audio_title = i18n.pref_audio_title;
     let pref_audio_entries = i18n.pref_audio_entries.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
@@ -1226,6 +1368,7 @@ import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import org.jsoup.Jsoup
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
@@ -1418,6 +1561,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
     // Capacidades detectadas por AEXT en el análisis del sitio. No sustituyen
     // a la verificación real: sólo ordenan los candidatos a probar.
     private val siteStreamFormats = setOf<String>({site_cap_formats})
+    private val siteAppVersion = "{site_app_version}"
 
 {video_engine}
 
@@ -1473,7 +1617,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         screen.addPreference(genreBlacklistPref)
     }}
 }}
-"#, video_engine = VIDEO_ENGINE_KT, site_cap_formats = site_cap_formats)
+"#, video_engine = VIDEO_ENGINE_KT, site_cap_formats = site_cap_formats, site_app_version = site_app_version)
 }
 
 fn generate_manga_source(
@@ -1802,7 +1946,7 @@ mod video_engine_tests {
             );
         }
         assert!(VIDEO_ENGINE_KT.contains("val (jwt, cbsCookie) = plutoPtvStart()"),
-            "plutoVideos debe usar el helper resistente, no una llamada directa");
+            "la estrategia GraphQL debe usar el helper resistente, no una llamada directa");
     }
 
     #[test]
@@ -1814,8 +1958,9 @@ mod video_engine_tests {
             "private fun verifyCandidates(",
             "private val browserHeaders",
             "con cabeceras de navegador",
-            "return verifyCandidates(plutoVideos(response))",
-            "return verifyCandidates(sortVideos(videos))",
+            "val ctx = VideoContext(finalUrl, html)",
+            "for (strategy in orderedStrategies())",
+            "verifyCandidates(candidates)",
         ] {
             assert!(
                 VIDEO_ENGINE_KT.contains(marker),
@@ -1827,6 +1972,50 @@ mod video_engine_tests {
             VIDEO_ENGINE_KT.contains("siteStreamFormats.contains(format)"),
             "las capacidades detectadas deben ordenar la verificación"
         );
+    }
+
+    #[test]
+    fn strategies_are_ranked_and_learn_from_real_results() {
+        for marker in [
+            "private data class VideoContext",
+            "private class VideoStrategy",
+            "private fun strategyStats(",
+            "private fun recordStrategy(",
+            "private fun orderedStrategies()",
+            "VideoStrategy(\"api-session\", 0)",
+            "VideoStrategy(\"api-graphql\", 1)",
+            "VideoStrategy(\"html-embeds\", 2)",
+            "(ok + 1.0) / (ok + fail + 2.0)",
+            "thenBy { it.priority }",
+        ] {
+            assert!(
+                VIDEO_ENGINE_KT.contains(marker),
+                "falta el pipeline de estrategias en VIDEO_ENGINE_KT: {}",
+                marker
+            );
+        }
+    }
+
+    #[test]
+    fn session_strategy_builds_the_full_stitcher_master() {
+        for marker in [
+            "private data class PlutoSession",
+            "https://boot.pluto.tv/v4/start",
+            "addQueryParameter(\"appVersion\", siteAppVersion)",
+            "plutoJsonField(body, \"sessionToken\")",
+            "plutoJsonField(body, \"stitcherParams\")",
+            "includeExtendedEvents=true&masterJWTPassthrough=true",
+            "Video(master, \"Pluto TV\", \"HLS\", browserHeaders)",
+            "private fun apiSessionVideos(ctx: VideoContext): List<Video>?",
+            "private fun plutoGraphqlVideos(ctx: VideoContext): List<Video>?",
+            "Jsoup.parse(html, ctx.url)",
+        ] {
+            assert!(
+                VIDEO_ENGINE_KT.contains(marker),
+                "falta la estrategia de sesión en VIDEO_ENGINE_KT: {}",
+                marker
+            );
+        }
     }
 }
 

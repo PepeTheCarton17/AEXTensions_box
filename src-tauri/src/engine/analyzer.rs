@@ -67,6 +67,10 @@ pub struct SiteCapabilities {
     /// Endpoints API/GraphQL encontrados en HTML/JS del sitio.
     #[serde(default)]
     pub api_endpoints: Vec<String>,
+    /// Versión de app que el sitio declara (p. ej. `10.12.1096`). La estrategia
+    /// de sesión la necesita para reproducir el arranque del reproductor web.
+    #[serde(default)]
+    pub app_version: Option<String>,
     /// Lo que no se pudo confirmar; se muestra como aviso, no como capacidad.
     #[serde(default)]
     pub unverified: Vec<String>,
@@ -426,10 +430,32 @@ impl SiteAnalyzer {
             for cap in re.captures_iter(body) {
                 let url = cap[0].trim_end_matches(|c: char| matches!(c, ',' | ';' | ')' | '}' | ']' | '`'));
                 let lower_url = url.to_lowercase();
-                if (lower_url.contains("/api/") || lower_url.contains("/graphql") || lower_url.contains("api."))
+                // Los arranques de sesión de reproductores web suelen vivir en
+                // `/v4/start` o en un host `boot.`, sin `/api/` en la ruta.
+                if (lower_url.contains("/api/")
+                    || lower_url.contains("/graphql")
+                    || lower_url.contains("api.")
+                    || lower_url.contains("/v4/start")
+                    || lower_url.contains("/stitch/")
+                    || lower_url.contains("boot."))
                     && url.len() < 200
                 {
                     push_unique(&mut caps.api_endpoints, url.to_string());
+                }
+            }
+        }
+
+        // Versión declarada por el propio sitio, en meta tag o en JSON embebido.
+        if caps.app_version.is_none() {
+            for pattern in [
+                r#"(?i)(?:globalAppVersion|appVersion|app_version)\s*[:=]\s*["']([0-9][0-9A-Za-z.\-]+)["']"#,
+                r#"(?i)name=["'](?:appVersion|app_version|globalAppVersion)["'][^>]*content=["']([0-9][0-9A-Za-z.\-]+)["']"#,
+            ] {
+                if let Ok(re) = Regex::new(pattern) {
+                    if let Some(cap) = re.captures(body) {
+                        caps.app_version = Some(cap[1].to_string());
+                        break;
+                    }
                 }
             }
         }
@@ -451,6 +477,9 @@ impl SiteAnalyzer {
         merge(&mut base.audio_languages, &extra.audio_languages);
         merge(&mut base.subtitle_languages, &extra.subtitle_languages);
         merge(&mut base.api_endpoints, &extra.api_endpoints);
+        if base.app_version.is_none() {
+            base.app_version = extra.app_version.clone();
+        }
     }
 
     /// Abre una ficha de ejemplo, cuenta enlaces de episodios y deduce un
@@ -1454,6 +1483,21 @@ mod tests {
         assert!(caps.audio_languages.iter().any(|v| v.contains("English")));
         assert!(caps.subtitle_languages.iter().any(|v| v.contains("es")));
         assert!(caps.api_endpoints.iter().any(|v| v.contains("/graphql")));
+    }
+
+    #[test]
+    fn detects_session_boot_capability_without_an_api_path() {
+        let html = r#"<html><head>
+          <meta name="globalAppVersion" content="10.12.1096">
+        </head><body><script>
+          const boot = "https://boot.pluto.tv/v4/start";
+          const stitcher = "https://cfd-v4-service-channel-stitcher.prd.pluto.tv/v2/stitch/hls/x/master.m3u8";
+        </script></body></html>"#;
+
+        let caps = SiteAnalyzer::detect_capabilities(html);
+        assert_eq!(caps.app_version.as_deref(), Some("10.12.1096"));
+        assert!(caps.api_endpoints.iter().any(|v| v.contains("/v4/start")));
+        assert!(caps.stream_formats.contains(&"hls".to_string()));
     }
 
     #[test]

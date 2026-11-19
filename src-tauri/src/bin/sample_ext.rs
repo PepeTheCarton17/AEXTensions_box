@@ -43,6 +43,14 @@ fn anime_fixture(name: &str, host: &str, episode_selector: &str, catalog: bool) 
         capabilities: SiteCapabilities {
             stream_formats: if catalog { vec!["hls".to_string()] } else { Vec::new() },
             qualities: if catalog { vec!["720p".to_string()] } else { Vec::new() },
+            // Un fixture con sesión bootstrap para que el CI compile también
+            // el `siteAppVersion` inyectado en la estrategia de arranque.
+            app_version: catalog.then(|| "10.12.1096".to_string()),
+            api_endpoints: if catalog {
+                vec!["https://boot.pluto.tv/v4/start".to_string()]
+            } else {
+                Vec::new()
+            },
             ..Default::default()
         },
     }
