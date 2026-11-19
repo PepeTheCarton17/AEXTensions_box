@@ -1621,6 +1621,7 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
                 is {class_name}Filters.ParamCheckFilter -> if (f.state) {{
                     urlBuilder.appendQueryParameter(f.param, f.value)
                 }}
+                else -> Unit
             }}
         }}
         val finalUrl = urlBuilder.build().toString()
@@ -1780,7 +1781,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         val attrs = if (lang == "en") {{
             listOf("data-title-en", "title")
         }} else {{
-            listOf("data-title-$lang", "data-title-en", "title")
+            listOf("data-title-{lang}", "data-title-en", "title")
         }}
         if (pageLanguage == lang && text.isNotBlank()) return text
         for (name in attrs) {{
@@ -1857,7 +1858,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         if (animes.isEmpty() && jsonLdRecords.isNotEmpty()) {{
             animes = jsonLdRecords
                 .map(::recordToAnime)
-                .filter {{ q -> q.isBlank() || q.title.lowercase().contains(query.trim().lowercase()) }}
+                .filter {{ anime -> query.isBlank() || anime.title.lowercase().contains(query.trim().lowercase()) }}
             return AnimesPage(animes, false)
         }}
         return AnimesPage(animes, page.hasNextPage)
@@ -2728,6 +2729,7 @@ mod video_engine_tests {
             "lastSearchQuery = finalQuery",
             "urlBuilder.appendQueryParameter(f.param, f.options[f.state])",
             "is PlutoTvFilters.ParamSelectFilter",
+            "else -> Unit",
             "pickTitle(element, \"h2\")",
             "data-title-es",
             "data-title-en",

@@ -102,6 +102,7 @@ async function invokeBackend(command, args = {}) {
     case 'generate_extensions':
       throw new Error('Esta acción requiere la aplicación nativa de AEXT (no está disponible en el modo navegador).');
     case 'delete_extension':
+    case 'delete_extension_github':
       throw new Error('Eliminar extensiones requiere la aplicación nativa de AEXT.');
     default:
       console.warn(`Comando '${command}' ejecutado en fallback HTTP`);
@@ -1563,6 +1564,12 @@ function renderExtensionsGrid(list) {
           </a>
         ` : ''}
 
+        ${ext.github_repo_url ? `
+          <button data-delete-github-pkg="${escapeHtml(ext.pkg_id)}" class="btn-delete-ext-github p-2 rounded-xl text-slate-500 hover:text-amber-400 hover:bg-amber-500/10 transition-all" title="${escapeHtml(t('ext.delete_github'))}">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 00-.1-10 6 6 0 00-11.6 1.5A3.5 3.5 0 003 15zm7-4l4 4m0-4l-4 4" /></svg>
+          </button>
+        ` : ''}
+
         <!-- Delete button -->
         <button data-delete-pkg="${escapeHtml(ext.pkg_id)}" class="btn-delete-ext p-2 rounded-xl text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-all" title="${escapeHtml(t('ext.delete'))}">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
@@ -1688,6 +1695,28 @@ function renderExtensionsGrid(list) {
       try {
         await invokeBackend('delete_extension', { pkgId });
         appendTerminalLog('SUCCESS', `${pkgId}: ${t('ext.delete')}`);
+        await loadExtensions();
+        refreshBackupExtensions();
+      } catch (err) {
+        const detail = String(err);
+        appendTerminalLog('ERROR', detail);
+        alert(detail);
+      }
+    });
+  });
+
+  // Hook delete-from-GitHub buttons: confirma la ruta exacta del módulo para
+  // que el usuario sepa que NO se borra el repositorio ni otros módulos.
+  document.querySelectorAll('.btn-delete-ext-github').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const pkgId = e.currentTarget.getAttribute('data-delete-github-pkg');
+      if (!pkgId) return;
+      const parts = pkgId.split('.');
+      const modulePath = `src/${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+      if (!confirm(t('alerts.confirm_delete_github', { pkg: pkgId, module: modulePath }))) return;
+      try {
+        await invokeBackend('delete_extension_github', { pkgId });
+        appendTerminalLog('SUCCESS', t('logs.deleted_github', { pkg: pkgId, module: modulePath }));
         await loadExtensions();
         refreshBackupExtensions();
       } catch (err) {

@@ -32,6 +32,7 @@ pub fn run() {
             commands::get_created_extensions,
             commands::update_extension,
             commands::delete_extension,
+            commands::delete_extension_github,
             commands::get_system_logs,
             commands::test_stream_extractor,
             commands::get_system_status,

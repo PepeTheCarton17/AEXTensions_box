@@ -20,6 +20,7 @@ const LOCAL_API_BASE: &str = "http://localhost:45731";
 // del repo destino debe hablar de AEXT, no del contenido generado.
 const COMMIT_MSG_GENERATE: &str = "AEXT: add generated extension";
 const COMMIT_MSG_UPDATE: &str = "AEXT: update generated extension";
+const COMMIT_MSG_DELETE: &str = "AEXT: remove generated extension";
 
 // ============================== COMANDOS GITHUB ==============================
 
@@ -717,8 +718,7 @@ pub async fn update_extension(
     Ok(updated)
 }
 
-#[tauri::command]
-pub async fn delete_extension(pkg_id: String, state: State<'_, AppState>) -> Result<bool, String> {
+async fn delete_local_extension(pkg_id: &str, state: &AppState) -> Result<bool, String> {
     let target_pkg = {
         let list = state.extensions.read().await;
         list.iter()
@@ -732,7 +732,7 @@ pub async fn delete_extension(pkg_id: String, state: State<'_, AppState>) -> Res
     // Borrar primero los archivos. Si falla, NO quitamos la entrada del
     // catálogo: antes se eliminaba de la lista aunque la carpeta quedara en
     // disco (huérfanos como `...videospornoypelículas...`).
-    let dir = local_extension_dir(&state, &pkg);
+    let dir = local_extension_dir(state, &pkg);
     if dir.is_dir() {
         // Los directorios de Gradle suelen tener archivos bloqueados; limpiar
         // primero los derivados y reintentar aumenta mucho la tasa de éxito.
@@ -762,6 +762,116 @@ pub async fn delete_extension(pkg_id: String, state: State<'_, AppState>) -> Res
             .await;
     }
     Ok(removed)
+}
+
+#[tauri::command]
+pub async fn delete_extension(pkg_id: String, state: State<'_, AppState>) -> Result<bool, String> {
+    delete_local_extension(&pkg_id, &state).await
+}
+
+/// Borra SOLO el módulo de la extensión de GitHub y después su copia local.
+/// Nunca elimina el repositorio ni sus archivos comunes (README, licencia,
+/// workflow, wrapper, build files u otros módulos).
+#[tauri::command]
+pub async fn delete_extension_github(
+    pkg_id: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let ext = {
+        let list = state.extensions.read().await;
+        list.iter()
+            .find(|e| e.pkg_id == pkg_id || e.id == pkg_id)
+            .cloned()
+    };
+    let Some(ext) = ext else {
+        return Ok(false);
+    };
+    let repo_url = ext.github_repo_url.as_deref().ok_or_else(|| {
+        "Esta extensión no tiene un repositorio de GitHub asociado; usa solo Eliminar extensión local.".to_string()
+    })?;
+    let (owner, repo_name) = parse_github_url(repo_url).ok_or_else(|| {
+        format!("No se pudo interpretar la URL de GitHub: {}", repo_url)
+    })?;
+
+    // El package id siempre termina en `<lang>.<slug>`; derivamos de ahí la
+    // ruta exacta del módulo y la validamos antes de tocar GitHub.
+    let parts: Vec<&str> = ext.pkg_id.split('.').collect();
+    if parts.len() < 2 {
+        return Err("No se pudo determinar el módulo de la extensión en GitHub".to_string());
+    }
+    let lang = parts[parts.len() - 2];
+    let slug = parts[parts.len() - 1];
+    if lang.is_empty()
+        || slug.is_empty()
+        || !lang.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err("La ruta del módulo calculada no es segura; no se borró nada".to_string());
+    }
+    let module_path = format!("src/{}/{}", lang, slug);
+
+    let auth = GithubAuthManager::new();
+    let token = match auth.get_saved_token() {
+        Some(t) => t,
+        None => match auth.extract_and_save_cli_token().await {
+            Ok((t, info)) => {
+                let mut gh_state = state.gh_user.write().await;
+                *gh_state = Some(info);
+                t
+            }
+            Err(_) => {
+                return Err("Se requiere iniciar sesión en GitHub para borrar el módulo remoto.".to_string());
+            }
+        },
+    };
+    let client = GithubApiClient::new(token);
+    let repo = client.get_repository(&owner, &repo_name).await?;
+
+    state
+        .add_log(
+            "INFO",
+            &format!(
+                "Borrando de GitHub solo el módulo {} en {}/{}…",
+                module_path, owner, repo_name
+            ),
+        )
+        .await;
+
+    let result = client
+        .delete_module(
+            &repo.owner,
+            &repo.name,
+            &module_path,
+            COMMIT_MSG_DELETE,
+            &repo.default_branch,
+        )
+        .await
+        .map_err(|e| format!("No se pudo borrar el módulo de GitHub: {}", e))?;
+
+    match result {
+        Some(sha) => {
+            state
+                .add_log(
+                    "SUCCESS",
+                    &format!(
+                        "Módulo {} eliminado de GitHub en el commit {}",
+                        module_path,
+                        &sha[..sha.len().min(7)]
+                    ),
+                )
+                .await;
+        }
+        None => {
+            state
+                .add_log(
+                    "WARN",
+                    &format!("El módulo {} ya no existía en GitHub", module_path),
+                )
+                .await;
+        }
+    }
+
+    delete_local_extension(&ext.pkg_id, &state).await
 }
 
 // ============================== COMANDOS DIAGNÓSTICO & LOGS ==============================

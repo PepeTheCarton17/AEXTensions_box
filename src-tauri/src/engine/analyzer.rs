@@ -301,6 +301,16 @@ impl SiteAnalyzer {
                 "Se detectó DRM (Widevine/PlayReady/FairPlay): el reproductor de Nekoyomi no puede descifrarlo. Se priorizarán variantes HLS sin DRM; si no existen, la reproducción fallará.".to_string(),
             );
         }
+        if result.capabilities.player_cases.iter().any(|c| c == "cipher-signature") {
+            result.warnings.push(
+                "Se detectó cifrado/ofuscación de URLs de reproducción (firmas tipo Innertube / n-parameter). AEXT no resuelve esos esquemas: solo usa HLS/MP4/iframe detectados directamente; este sitio puede no reproducir.".to_string(),
+            );
+        }
+        if result.capabilities.player_cases.iter().any(|c| c == "extension-proxy") {
+            result.warnings.push(
+                "El sitio parece exigir un proxy de extensión/CORS. Los módulos generados hacen peticiones directas: AEXT no actúa como proxy ni reenvía tráfico de terceros.".to_string(),
+            );
+        }
 
         Ok(result)
     }
@@ -338,13 +348,10 @@ impl SiteAnalyzer {
         // Si el usuario pegó una ruta interna, se pide la raíz ANTES de crear
         // cualquier `Html`: ese tipo no es Send y no puede vivir sobre un await.
         let root_body = if parsed.path() != "/" {
-            self.client
-                .get(format!("{origin}/"))
-                .send()
-                .await
-                .ok()
-                .filter(|r| r.status().is_success())
-                .and_then(|r| r.text().await.ok())
+            match self.client.get(format!("{origin}/")).send().await {
+                Ok(r) if r.status().is_success() => r.text().await.ok(),
+                _ => None,
+            }
         } else {
             None
         };
@@ -955,6 +962,21 @@ impl SiteAnalyzer {
         if lower.contains("widevine") || lower.contains("playready") || lower.contains("fairplay") {
             push_unique(&mut cases, "drm-widevine".to_string());
         }
+        // Detección honesta de esquemas que AEXT NO resuelve. No generamos
+        // código para ellos: solo los etiquetamos para avisar al usuario.
+        if lower.contains("signaturecipher") || lower.contains("innertube")
+            || lower.contains("player_response") || lower.contains("playerresponse")
+            || lower.contains("descramble") || lower.contains("descipher")
+            || (lower.contains("nsig") && lower.contains("player"))
+        {
+            push_unique(&mut cases, "cipher-signature".to_string());
+        }
+        if lower.contains("extension-proxy") || lower.contains("corsproxy")
+            || lower.contains("cors-proxy") || lower.contains("proxy.php")
+            || lower.contains("/proxy?")
+        {
+            push_unique(&mut cases, "extension-proxy".to_string());
+        }
         if lower.contains("_ad/") || lower.contains("_ad%2f")
             || lower.contains("plutotv_filler") || lower.contains("dai.google.com")
         {
@@ -973,9 +995,17 @@ impl SiteAnalyzer {
         if let Ok(re) = Regex::new(r#"#EXT-X-MEDIA:([^\r\n]+)"#) {
             for cap in re.captures_iter(body) {
                 let mut attrs = HashMap::new();
-                if let Ok(pairs) = Regex::new(r#"([A-Za-z0-9-]+)\s*=\s*"([^"]*)""#) {
+                // Los atributos HLS pueden ir con comillas (NAME="English") o
+                // sin ellas (TYPE=AUDIO). Aceptar ambos es necesario para no
+                // perder las pistas reales de un máster embebido en el HTML.
+                if let Ok(pairs) = Regex::new(r#"([A-Za-z0-9-]+)\s*=\s*(?:"([^"]*)"|([^,\r\n]*))"#) {
                     for pair in pairs.captures_iter(cap.get(1).map(|m| m.as_str()).unwrap_or("")) {
-                        attrs.insert(pair[1].to_uppercase(), pair[2].to_string());
+                        let value = pair
+                            .get(2)
+                            .or_else(|| pair.get(3))
+                            .map(|m| m.as_str().trim().to_string())
+                            .unwrap_or_default();
+                        attrs.insert(pair[1].to_uppercase(), value);
                     }
                 }
                 let kind = attrs.get("TYPE").map(|s| s.as_str()).unwrap_or("");
@@ -1439,7 +1469,7 @@ impl SiteAnalyzer {
     fn detect_structured_data(
         doc: &Html,
         origin: &str,
-        host: &str,
+        _host: &str,
     ) -> (Vec<CatalogRecord>, Option<SiteSearchAction>) {
         let mut records = Vec::new();
         let mut seen = HashSet::new();
