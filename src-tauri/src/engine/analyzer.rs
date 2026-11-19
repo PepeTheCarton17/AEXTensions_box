@@ -73,9 +73,14 @@ pub struct AnalysisResult {
     /// Filtros de consulta encontrados en enlaces/formularios del sitio.
     #[serde(default)]
     pub filter_params: Vec<SiteFilterParam>,
-    /// Idioma declarado por la página (`<html lang>`, og:locale...).
+    /// Idioma principal declarado por la página (`<html lang>`, og:locale...).
     #[serde(default)]
     pub detected_language: String,
+    /// Todos los idiomas que el sitio declara para su contenido/interfaz.
+    /// Si hay más de uno, el paquete se marca como `all`: asignar `es` a un
+    /// sitio multilingüe sería una afirmación falsa.
+    #[serde(default)]
+    pub site_locales: Vec<String>,
     /// Ruta detectada del listado/populares (p. ej. `/animes`). Nunca se inventa.
     pub popular_path: Option<String>,
     /// Ruta detectada de "últimos/recientes". Si no existe, `supportsLatest = false`.
@@ -207,8 +212,31 @@ impl SiteAnalyzer {
         // Muchos reproductores (SPAs) sólo mencionan sus endpoints en bundles
         // JS. Los leemos aparte: `Html` no es Send y no puede cruzar un await
         // dentro de `analyze_page`, pero aquí sólo guardamos cadenas.
-        if let Some(js_caps) = self.scan_script_capabilities(&result.entry_url).await {
+        if let Some((js_caps, js_filters)) = self
+            .scan_scripts(&result.entry_url, result.search_param.as_deref())
+            .await
+        {
             Self::merge_capabilities(&mut result.capabilities, &js_caps);
+            let mut added: Vec<String> = Vec::new();
+            for filter in js_filters {
+                let duplicate = result.filter_params.iter().any(|old| {
+                    old.param == filter.param
+                        && (old.value == filter.value || filter.kind == "text")
+                });
+                if duplicate {
+                    continue;
+                }
+                if !added.contains(&filter.param) {
+                    added.push(filter.param.clone());
+                }
+                result.filter_params.push(filter);
+            }
+            if !added.is_empty() {
+                result.warnings.push(format!(
+                    "Filtros encontrados en los bundles JS del sitio: {}. Sus nombres se han normalizado al inglés; los valores no enumerados se ofrecen como texto libre.",
+                    added.join(", ")
+                ));
+            }
         }
 
         // El sondeo del detalle se hace aquí, fuera de `analyze_page`, porque
@@ -387,9 +415,18 @@ impl SiteAnalyzer {
 
         // 5.5 Evidencia real de catálogo/búsqueda/filtros en el HTML. Nada de
         // esto se inventa: si el sitio no lo declara, el generador lo dice.
+        let mut site_locales = Self::detect_site_locales(&doc);
         let mut detected_language = Self::detect_language(&doc);
+        if detected_language.is_empty() {
+            detected_language = site_locales.first().cloned().unwrap_or_default();
+        }
         let (mut ld_records, mut ld_search) = Self::detect_structured_data(&doc, &origin, &host);
         let mut filter_params = Self::detect_filter_params(&doc, &origin, &host, search_param.as_deref());
+        for f in Self::detect_payload_filters(&doc, search_param.as_deref()) {
+            if !filter_params.iter().any(|old| old.param == f.param && old.value == f.value) {
+                filter_params.push(f);
+            }
+        }
 
         // Muchas SPAs declaran el catálogo y el SearchAction sólo en la
         // portada. Si el usuario pegó una ficha/ruta interna, se consulta la
@@ -410,8 +447,19 @@ impl SiteAnalyzer {
                     if detected_language.is_empty() {
                         detected_language = Self::detect_language(&root_doc);
                     }
+                    for locale in Self::detect_site_locales(&root_doc) {
+                        if !site_locales.contains(&locale) {
+                            site_locales.push(locale);
+                        }
+                    }
+                    if detected_language.is_empty() {
+                        detected_language = site_locales.first().cloned().unwrap_or_default();
+                    }
                 }
             }
+        }
+        if detected_language.is_empty() {
+            detected_language = site_locales.first().cloned().unwrap_or_default();
         }
 
         if let Some(action) = &ld_search {
@@ -450,7 +498,12 @@ impl SiteAnalyzer {
         };
 
         let catalog_detected = catalog.count >= 4;
-        let catalog_source = if catalog_detected {
+        // Un ItemList real con más títulos que las tarjetas HTML encontradas
+        // gana: en SPAs el HTML suele contener sólo navegación y banners.
+        let prefer_jsonld = ld_records.len() >= 4 && catalog.count < ld_records.len();
+        let catalog_source = if prefer_jsonld {
+            "jsonld".to_string()
+        } else if catalog_detected {
             "html".to_string()
         } else if !ld_records.is_empty() {
             "jsonld".to_string()
@@ -480,7 +533,13 @@ impl SiteAnalyzer {
             || body.contains("data-reactroot")
             || body.contains("id=\"app\"")
             || body.contains("id='app'");
-        if !catalog_detected && catalog_source == "jsonld" {
+        if prefer_jsonld {
+            warnings.push(format!(
+                "Se usarán los {} títulos reales del ItemList (JSON-LD) en lugar de {} elementos HTML de navegación/header/footer.",
+                ld_records.len(),
+                catalog.count
+            ));
+        } else if !catalog_detected && catalog_source == "jsonld" {
             warnings.push(format!(
                 "El HTML estático no expone tarjetas; se usarán {} títulos reales declarados en JSON-LD (schema.org ItemList).",
                 ld_records.len()
@@ -522,8 +581,14 @@ impl SiteAnalyzer {
         }
         if !filter_params.is_empty() {
             warnings.push(format!(
-                "Filtros encontrados en enlaces/formularios del sitio: {}. Sólo se generarán esos, no géneros inventados.",
+                "Filtros encontrados en enlaces/formularios/datos del sitio: {}. Sólo se generarán esos, no géneros inventados.",
                 filter_params.iter().map(|f| f.param.as_str()).collect::<HashSet<_>>().into_iter().collect::<Vec<_>>().join(", ")
+            ));
+        }
+        if site_locales.len() > 1 {
+            warnings.push(format!(
+                "El sitio declara varios idiomas ({}): el paquete se marcará como 'all' y los textos de la extensión serán ingleses. No se elige un idioma por query param.",
+                site_locales.join(", ")
             ));
         }
         if !protections.is_empty() {
@@ -542,6 +607,11 @@ impl SiteAnalyzer {
         // Capacidades según lo que este HTML expone realmente. La ficha de
         // ejemplo puede añadir más en `analyze()`.
         let capabilities = Self::detect_capabilities(&body);
+        let sample_items = if prefer_jsonld {
+            ld_records.iter().take(6).map(|r| r.title.clone()).collect()
+        } else {
+            catalog.samples
+        };
 
         Ok((
             AnalysisResult {
@@ -563,6 +633,7 @@ impl SiteAnalyzer {
                 search_action: ld_search,
                 filter_params,
                 detected_language,
+                site_locales,
                 popular_path,
                 latest_path,
                 search_path,
@@ -570,7 +641,7 @@ impl SiteAnalyzer {
                 page_style,
                 catalog_detected,
                 episode_selector: String::new(),
-                sample_items: catalog.samples,
+                sample_items,
                 warnings,
                 capabilities,
             },
@@ -648,11 +719,17 @@ impl SiteAnalyzer {
         out
     }
 
-    /// Lee unos pocos bundles propios y detecta capacidades en su texto. Se
-    /// analiza cada bundle completo (no un recorte): los hashes y el token de
-    /// sesión pueden estar al final de un bundle de 2 MB. Se paran en cuanto
-    /// se han encontrado los dos casos del reproductor web.
-    async fn scan_script_capabilities(&self, entry_url: &str) -> Option<SiteCapabilities> {
+    /// Lee unos pocos bundles propios y detecta capacidades y parámetros de
+    /// filtro en su texto. Se analiza cada bundle completo (no un recorte):
+    /// los hashes y el token de sesión pueden estar al final de un bundle de
+    /// 2 MB. Los filtros encontrados son reales (los declara el propio sitio),
+    /// pero nunca se inventan valores: si no se pueden enumerar se ofrecen
+    /// como campo de texto libre.
+    async fn scan_scripts(
+        &self,
+        entry_url: &str,
+        search_param: Option<&str>,
+    ) -> Option<(SiteCapabilities, Vec<SiteFilterParam>)> {
         let html = self.client.get(entry_url).send().await.ok()?.text().await.ok()?;
         let origin = Url::parse(entry_url).ok()?.origin().ascii_serialization();
         let urls = Self::script_urls(&html, &origin, 8);
@@ -661,6 +738,7 @@ impl SiteAnalyzer {
         }
 
         let mut aggregate = SiteCapabilities::default();
+        let mut filters: Vec<SiteFilterParam> = Vec::new();
         let mut found_any = false;
         for url in urls {
             if let Ok(resp) = self.client.get(&url).send().await {
@@ -671,6 +749,15 @@ impl SiteAnalyzer {
                     found_any = true;
                     let caps = Self::detect_capabilities(&text);
                     Self::merge_capabilities(&mut aggregate, &caps);
+                    for filter in Self::detect_filters_from_js(&text, search_param) {
+                        let duplicate = filters.iter().any(|old| {
+                            old.param == filter.param
+                                && (old.value == filter.value || filter.kind == "text")
+                        });
+                        if !duplicate {
+                            filters.push(filter);
+                        }
+                    }
                     let has_session = aggregate.player_cases.iter().any(|c| c == "session-bootstrap");
                     let has_graphql = aggregate.player_cases.iter().any(|c| c == "graphql-persisted");
                     if has_session && has_graphql {
@@ -682,7 +769,7 @@ impl SiteAnalyzer {
         if !found_any {
             return None;
         }
-        Some(aggregate)
+        Some((aggregate, filters))
     }
 
     /// Extrae un contentId de muestra de una ruta o de un estado hidratado.
@@ -1381,6 +1468,211 @@ impl SiteAnalyzer {
         (selector, style)
     }
 
+    fn normalize_locale(raw: &str) -> Option<String> {
+        let value = raw.trim().trim_matches(['"', '\'', '{', '}']);
+        if value.is_empty() || value.len() > 20 || value.chars().any(char::is_whitespace) {
+            return None;
+        }
+        let base = value.split(['-', '_']).next().unwrap_or(value).to_lowercase();
+        if base.is_empty() || !base.chars().all(|c| c.is_ascii_alphabetic()) {
+            return None;
+        }
+        Some(base)
+    }
+
+    /// Idiomas que el sitio declara para su contenido o interfaz. Se leen de
+    /// `<html lang>`, meta tags, JSON-LD y del estado hidratado de la SPA.
+    /// Nunca se deduce un idioma a partir del texto visible.
+    fn detect_site_locales(doc: &Html) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+
+        if let Ok(sel) = Selector::parse("html[lang]") {
+            if let Some(el) = doc.select(&sel).next() {
+                Self::push_locale(&mut out, el.value().attr("lang").unwrap_or(""));
+            }
+        }
+        if let Ok(sel) = Selector::parse("meta[property=og:locale], meta[http-equiv=content-language], meta[name=language]") {
+            for el in doc.select(&sel) {
+                Self::push_locale(&mut out, el.value().attr("content").unwrap_or(""));
+            }
+        }
+        if let Ok(sel) = Selector::parse("script[type='application/ld+json'], script[type='application/json'], script#__NEXT_DATA__") {
+            for el in doc.select(&sel) {
+                let text = el.text().collect::<String>();
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(text.trim()) {
+                    Self::collect_locale_values(&json, &mut out);
+                }
+            }
+        }
+        out
+    }
+
+    fn push_locale(out: &mut Vec<String>, raw: &str) {
+        if let Some(locale) = Self::normalize_locale(raw) {
+            if !out.contains(&locale) {
+                out.push(locale);
+            }
+        }
+    }
+
+    /// Recorre un payload hidratado buscando `locale`, `defaultLocale`,
+    /// `locales` e `inLanguage`. Los idiomas individuales se insertan antes
+    /// que la lista para que el primero sea el idioma principal del sitio.
+    fn collect_locale_values(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for key in ["locale", "defaultLocale", "inLanguage"] {
+                    if let Some(v) = map.get(key) {
+                        match v {
+                            serde_json::Value::String(s) => {
+                                if let Some(locale) = Self::normalize_locale(s) {
+                                    if !out.contains(&locale) { out.push(locale); }
+                                }
+                            }
+                            serde_json::Value::Array(items) => {
+                                for item in items {
+                                    if let Some(s) = item.as_str() {
+                                        if let Some(locale) = Self::normalize_locale(s) {
+                                            if !out.contains(&locale) { out.push(locale); }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if let Some(serde_json::Value::Array(items)) = map.get("locales") {
+                    for item in items {
+                        if let Some(s) = item.as_str() {
+                            if let Some(locale) = Self::normalize_locale(s) {
+                                if !out.contains(&locale) { out.push(locale); }
+                            }
+                        }
+                    }
+                }
+                for (key, child) in map {
+                    if !matches!(key.as_str(), "locale" | "defaultLocale" | "inLanguage" | "locales") {
+                        Self::collect_locale_values(child, out);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    Self::collect_locale_values(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Filtros declarados en el estado hidratado de una SPA. Sólo se aceptan
+    /// estructuras explícitas (`param`/`value`/`values`); un diccionario de
+    /// traducciones bajo `filter` no es una lista de parámetros.
+    fn detect_payload_filters(doc: &Html, search_param: Option<&str>) -> Vec<SiteFilterParam> {
+        let mut out: Vec<SiteFilterParam> = Vec::new();
+        let Ok(sel) = Selector::parse("script[type='application/json'], script#__NEXT_DATA__") else {
+            return out;
+        };
+        for el in doc.select(&sel) {
+            let text = el.text().collect::<String>();
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(text.trim()) {
+                Self::collect_payload_filters(&json, search_param, &mut out);
+            }
+        }
+        out
+    }
+
+    fn collect_payload_filters(
+        value: &serde_json::Value,
+        search_param: Option<&str>,
+        out: &mut Vec<SiteFilterParam>,
+    ) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    if matches!(key.as_str(), "filterParams" | "queryParams" | "filters") {
+                        Self::parse_param_definition(child, search_param, out);
+                    }
+                    Self::collect_payload_filters(child, search_param, out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    Self::collect_payload_filters(item, search_param, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn parse_param_definition(
+        value: &serde_json::Value,
+        search_param: Option<&str>,
+        out: &mut Vec<SiteFilterParam>,
+    ) {
+        let mut definitions: Vec<&serde_json::Value> = Vec::new();
+        match value {
+            serde_json::Value::Array(items) => definitions.extend(items.iter()),
+            other => definitions.push(other),
+        }
+        for definition in definitions {
+            let Some(map) = definition.as_object() else { continue };
+            let param = map
+                .get("param")
+                .or_else(|| map.get("filterParam"))
+                .or_else(|| map.get("queryParam"))
+                .or_else(|| map.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if param.is_empty() || Self::ignored_filter_param(param, search_param) {
+                continue;
+            }
+            let mut values: Vec<String> = Vec::new();
+            for key in ["value", "values", "options"] {
+                if let Some(v) = map.get(key) {
+                    match v {
+                        serde_json::Value::String(s) => values.push(s.clone()),
+                        serde_json::Value::Array(items) => {
+                            for item in items {
+                                match item {
+                                    serde_json::Value::String(s) => values.push(s.clone()),
+                                    serde_json::Value::Object(o) => {
+                                        if let Some(s) = o.get("value").and_then(|v| v.as_str()) {
+                                            values.push(s.to_string());
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let name = Self::canonical_filter_name(param);
+            let mut seen: HashSet<String> = HashSet::new();
+            for value in values {
+                if value.is_empty() || !seen.insert(value.clone()) { continue; }
+                out.push(SiteFilterParam {
+                    name: name.clone(),
+                    param: param.to_string(),
+                    value,
+                    kind: "select".to_string(),
+                });
+            }
+            if seen.is_empty() {
+                out.push(SiteFilterParam {
+                    name,
+                    param: param.to_string(),
+                    value: String::new(),
+                    kind: "text".to_string(),
+                });
+            }
+        }
+    }
+
     /// Idioma declarado por la propia página. Es una pista para elegir títulos,
     /// nunca una traducción: si no hay texto alternativo se usa el que haya.
     fn detect_language(doc: &Html) -> String {
@@ -1543,6 +1835,275 @@ impl SiteAnalyzer {
         Some((path, param))
     }
 
+    /// Parámetros de filtro declarados en bundles JS del mismo origen. No se
+    /// adivina nada: sólo se aceptan Arrays de identificadores con nombres
+    /// reconocibles de parámetro (year, genreIds, sortBy...) y pares
+    /// `value/label` reales del propio bundle para enumerar los valores.
+    fn detect_filters_from_js(text: &str, search_param: Option<&str>) -> Vec<SiteFilterParam> {
+        let Ok(assign_re) = Regex::new(r#"\b(?:let|var|const)\s+([A-Za-z_$][\w$]*)\s*=\s*\[([^\]]{0,1500})\]"#) else { return Vec::new() };
+        let Ok(any_assign_re) = Regex::new(r#"\b([A-Za-z_$][\w$]*)\s*=\s*\[([^\]]{0,1500})\]"#) else { return Vec::new() };
+        let Ok(plain_re) = Regex::new(r"\[([^\]]{0,1500})\]") else { return Vec::new() };
+        let Ok(quoted_re) = Regex::new(r#""([A-Za-z][A-Za-z0-9_]{1,39})""#) else { return Vec::new() };
+        let Ok(spread_re) = Regex::new(r"\.\.\.([A-Za-z_$][\w$]*)") else { return Vec::new() };
+        let Ok(value_re) = Regex::new(r#"value\s*:\s*"([^"]{1,60})"\s*,\s*label\s*:"#) else { return Vec::new() };
+
+        let mut var_arrays: HashMap<String, Vec<String>> = HashMap::new();
+        for cap in assign_re.captures_iter(text) {
+            let tokens = Self::js_array_tokens(&cap[2], &quoted_re, &spread_re, &var_arrays);
+            if !tokens.is_empty() {
+                var_arrays.insert(cap[1].to_string(), tokens);
+            }
+        }
+
+        let mut params: Vec<String> = Vec::new();
+        let mut add_param = |raw: &str| {
+            let param = raw.trim();
+            if param.is_empty()
+                || Self::ignored_filter_param(param, search_param)
+                || matches!(param.to_lowercase().as_str(), "value" | "label" | "key" | "title" | "description" | "image" | "url" | "index" | "item" | "items" | "children" | "class" | "style" | "data" | "props" | "state" | "event")
+                || params.iter().any(|p| p == param)
+            {
+                return;
+            }
+            params.push(param.to_string());
+        };
+
+        let mut raw_arrays: Vec<String> = Vec::new();
+        for cap in any_assign_re.captures_iter(text) {
+            raw_arrays.push(cap[2].to_string());
+        }
+        for cap in plain_re.captures_iter(text) {
+            raw_arrays.push(cap[1].to_string());
+        }
+        let known = [
+            "year", "years", "status", "quality", "qualities", "cues", "display", "dub",
+            "sortby", "sort_by", "genre", "genres", "country", "countries", "category",
+            "categories", "audio", "name", "format", "season", "view", "subtitle",
+            "sub_language", "audiolanguage", "audiolanguageids",
+        ];
+        for raw in raw_arrays {
+            // Los Arrays de opciones son objetos `{value, label}`, no params.
+            if raw.contains("value:") || raw.contains("label:") {
+                continue;
+            }
+            let tokens = Self::js_array_tokens(&raw, &quoted_re, &spread_re, &var_arrays);
+            if tokens.len() < 3 || tokens.len() > 60 {
+                continue;
+            }
+            let identifiers = tokens.iter().all(|t| {
+                t.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false)
+                    && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            });
+            if !identifiers {
+                continue;
+            }
+            let hits = tokens
+                .iter()
+                .filter(|t| {
+                    let lower = t.to_lowercase();
+                    known.contains(&lower.as_str())
+                        || lower.ends_with("ids")
+                        || lower.ends_with("id")
+                        || lower.ends_with("by")
+                })
+                .count();
+            if hits < 2 {
+                continue;
+            }
+            for token in &tokens {
+                add_param(token);
+            }
+        }
+
+        let aliases: Vec<(String, Vec<String>)> = params
+            .iter()
+            .map(|param| {
+                let mut names = vec![param.to_lowercase()];
+                let base = param
+                    .strip_suffix("Ids")
+                    .or_else(|| param.strip_suffix("ID"))
+                    .or_else(|| param.strip_suffix("By"))
+                    .unwrap_or(param);
+                if base != param.as_str() {
+                    names.push(base.to_lowercase());
+                }
+                if let Some(first) = base.chars().next() {
+                    names.push(
+                        format!("on{}{}", first.to_uppercase(), &base[first.len_utf8()..])
+                            .to_lowercase(),
+                    );
+                }
+                (param.clone(), names)
+            })
+            .collect();
+        let valid_value = |value: &str| {
+            value.len() >= 2
+                && value.len() <= 30
+                && value.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false)
+                && value.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        };
+        let Ok(options_re) = Regex::new(r#"([A-Za-z_$][\w$]*)\s*=\s*\([^\[]{0,200}\[\s*\{([^\]]{0,5000})\]\s*,"#) else {
+            return Vec::new();
+        };
+
+        // Cada Array de opciones se guarda en una variable que después se pasa
+        // como `options:<var>` al componente. El contexto siguiente a ese uso
+        // (`filter.sort`, `catalog-status`, ...) es lo que asocia los valores
+        // con su parámetro, en vez de suponer que el orden de los Arrays coincide.
+        let mut values_by_param: HashMap<String, Vec<String>> = HashMap::new();
+        for cap in options_re.captures_iter(text) {
+            let var = cap[1].to_string();
+            let mut values: Vec<String> = Vec::new();
+            for value_cap in value_re.captures_iter(&cap[2]) {
+                if let Some(raw) = value_cap.get(1) {
+                    let value = raw.as_str().trim();
+                    if valid_value(value) && !values.iter().any(|v| v.as_str() == value) && values.len() < 12 {
+                        values.push(value.to_string());
+                    }
+                }
+            }
+            if values.is_empty() {
+                continue;
+            }
+            let needle = format!("options:{}", var);
+            let Some(pos) = text.find(&needle) else { continue };
+            let start = pos + needle.len();
+            let mut end = (start + 700).min(text.len());
+            while end > start && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            let context = text[start..end].to_lowercase();
+            let mut best: Option<(&str, usize)> = None;
+            for (param, names) in &aliases {
+                for alias in names {
+                    if let Some(found) = context.find(alias.as_str()) {
+                        if best.map(|(_, previous)| found < previous).unwrap_or(true) {
+                            best = Some((param.as_str(), found));
+                        }
+                    }
+                }
+            }
+            if let Some((param, _)) = best {
+                let entry = values_by_param.entry(param.to_string()).or_default();
+                for value in values {
+                    if !entry.contains(&value) {
+                        entry.push(value);
+                    }
+                }
+            }
+        }
+
+        let mut result: Vec<SiteFilterParam> = Vec::new();
+        for param in &params {
+            let name = Self::canonical_filter_name(param);
+            let values = values_by_param.get(param).cloned().unwrap_or_default();
+            if values.is_empty() {
+                result.push(SiteFilterParam {
+                    name,
+                    param: param.clone(),
+                    value: String::new(),
+                    kind: "text".to_string(),
+                });
+            } else {
+                for value in values {
+                    result.push(SiteFilterParam {
+                        name: name.clone(),
+                        param: param.clone(),
+                        value,
+                        kind: "select".to_string(),
+                    });
+                }
+            }
+        }
+        result
+    }
+
+    fn js_array_tokens(
+        raw: &str,
+        quoted_re: &Regex,
+        spread_re: &Regex,
+        var_arrays: &HashMap<String, Vec<String>>,
+    ) -> Vec<String> {
+        let mut tokens: Vec<String> = Vec::new();
+        for cap in quoted_re.captures_iter(raw) {
+            let token = cap[1].to_string();
+            if !tokens.contains(&token) {
+                tokens.push(token);
+            }
+        }
+        for cap in spread_re.captures_iter(raw) {
+            if let Some(expanded) = var_arrays.get(&cap[1]) {
+                for token in expanded {
+                    if !tokens.contains(token) {
+                        tokens.push(token.clone());
+                    }
+                }
+            }
+        }
+        tokens
+    }
+
+    fn ignored_filter_param(key: &str, search_param: Option<&str>) -> bool {
+        let k = key.to_lowercase();
+        k.starts_with("utm_")
+            || matches!(
+                k.as_str(),
+                "page" | "paged" | "p" | "fbclid" | "gclid" | "ref" | "sort" | "order" | "limit" | "offset"
+            )
+            || search_param.map(|s| s == key).unwrap_or(false)
+    }
+
+    /// Etiqueta canónica en inglés para un parámetro real del sitio. El texto
+    /// visible del enlace puede estar en cualquier idioma (o ser un banner),
+    /// así que se ignora: la equivalencia se hace por nombre de parámetro.
+    fn canonical_filter_name(param: &str) -> String {
+        let key = param.to_lowercase();
+        let known = match key.as_str() {
+            "year" | "years" | "releaseyear" => "Year",
+            "country" | "countryid" | "countryids" | "countries" => "Country",
+            "genre" | "genres" | "genreid" | "genreids" => "Genre",
+            "category" | "categories" | "categoryid" | "categoryids" => "Category",
+            "audio" | "audiolanguage" | "audiolanguageid" | "audiolanguageids" | "audio_language" => "Audio Language",
+            "quality" | "qualities" => "Quality",
+            "copyrightholderids" | "copyrightholder" => "Copyright Holder",
+            "isframedub" | "dub" | "dubbed" | "isdub" => "Dubbed",
+            "sortby" | "sort_by" | "sorting" => "Sort By",
+            "status" => "Status",
+            "cues" | "subtitle" | "subtitles" | "sub_language" => "Subtitles",
+            "display" | "view" => "Display",
+            "name" | "q" | "query" | "search" => "Search",
+            _ => "",
+        };
+        if !known.is_empty() {
+            return known.to_string();
+        }
+        let without_suffix = key
+            .strip_suffix("ids")
+            .or_else(|| key.strip_suffix("id"))
+            .unwrap_or(&key);
+        let spaced = without_suffix.replace(['_', '-'], " ");
+        let mut words = String::new();
+        let mut prev_lower = false;
+        for c in spaced.chars() {
+            if c.is_uppercase() && prev_lower {
+                words.push(' ');
+            }
+            words.push(c);
+            prev_lower = c.is_lowercase() || c.is_ascii_digit();
+        }
+        words
+            .split_whitespace()
+            .map(|w| {
+                let mut chars = w.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// Parámetros de filtro realmente presentes en enlaces o formularios.
     fn detect_filter_params(
         doc: &Html,
@@ -1552,20 +2113,13 @@ impl SiteAnalyzer {
     ) -> Vec<SiteFilterParam> {
         let mut result = Vec::new();
         let mut seen = HashSet::new();
-        let ignored = |key: &str| {
-            let k = key.to_lowercase();
-            k.starts_with("utm_")
-                || matches!(k.as_str(), "page" | "paged" | "p" | "fbclid" | "gclid" | "ref")
-                || search_param.map(|s| s == key).unwrap_or(false)
-        };
-        let mut add = |param: &str, value: &str, label: &str| {
-            if param.is_empty() || value.is_empty() || ignored(param) {
+        let mut add = |param: &str, value: &str| {
+            if param.is_empty() || value.is_empty() || Self::ignored_filter_param(param, search_param) {
                 return;
             }
-            let name = if label.trim().is_empty() { param.to_string() } else { label.trim().chars().take(48).collect() };
             if seen.insert(format!("{param}={value}")) && result.len() < 40 {
                 result.push(SiteFilterParam {
-                    name,
+                    name: Self::canonical_filter_name(param),
                     param: param.to_string(),
                     value: value.to_string(),
                     kind: "check".to_string(),
@@ -1575,11 +2129,10 @@ impl SiteAnalyzer {
 
         if let Ok(sel) = Selector::parse("a[href]") {
             for a in doc.select(&sel) {
-                let label = a.text().collect::<String>();
                 let Some(path) = Self::same_origin_path(a.value().attr("href").unwrap_or(""), origin, host) else { continue };
                 let Ok(url) = Url::parse(&format!("{origin}{path}")) else { continue };
                 for (k, v) in url.query_pairs() {
-                    add(k.as_ref(), v.as_ref(), &label);
+                    add(k.as_ref(), v.as_ref());
                 }
             }
         }
@@ -1587,11 +2140,48 @@ impl SiteAnalyzer {
             for input in doc.select(&sel) {
                 let key = input.value().attr("name").unwrap_or("");
                 let value = input.value().attr("value").unwrap_or("");
-                let label = input.value().attr("placeholder").unwrap_or(key);
-                add(key, value, label);
+                add(key, value);
             }
         }
         result
+    }
+
+    /// Descarta menús, cabeceras, pies, migas de pan, banners y paginación.
+    /// Estos bloques usan las mismas clases (`item`, `card`, `link`) que las
+    /// tarjetas reales y son la causa más frecuente de catálogos basura.
+    fn is_navigation_element(el: ElementRef<'_>) -> bool {
+        const NAV_TOKENS: &[&str] = &[
+            "nav", "menu", "footer", "header", "breadcrumb", "sidebar", "dropdown",
+            "promo", "banner", "pagination", "pager", "navbar", "toolbar",
+        ];
+        let own = format!(
+            "{} {}",
+            el.value().attr("class").unwrap_or(""),
+            el.value().attr("id").unwrap_or("")
+        )
+        .to_lowercase();
+        if Self::matches_any(&own, NAV_TOKENS) {
+            return true;
+        }
+        let mut current = el.parent();
+        while let Some(parent) = current {
+            if let Some(parent_el) = parent.value().as_element() {
+                if matches!(parent_el.name(), "nav" | "header" | "footer" | "aside") {
+                    return true;
+                }
+                let hay = format!(
+                    "{} {}",
+                    parent_el.attr("class").unwrap_or(""),
+                    parent_el.attr("id").unwrap_or("")
+                )
+                .to_lowercase();
+                if Self::matches_any(&hay, NAV_TOKENS) {
+                    return true;
+                }
+            }
+            current = parent.parent();
+        }
+        false
     }
 
     fn detect_catalog(&self, doc: &Html, origin: &str, host: &str) -> CatalogInfo {
@@ -1614,7 +2204,10 @@ impl SiteAnalyzer {
 
         for sel_str in candidates {
             let Ok(sel) = Selector::parse(sel_str) else { continue };
-            let cards: Vec<ElementRef<'_>> = doc.select(&sel).collect();
+            let cards: Vec<ElementRef<'_>> = doc
+                .select(&sel)
+                .filter(|el| !Self::is_navigation_element(*el))
+                .collect();
             if cards.len() < 4 {
                 continue;
             }
@@ -1622,6 +2215,9 @@ impl SiteAnalyzer {
             let mut valid = 0;
             let mut samples: Vec<String> = Vec::new();
             for card in &cards {
+                if Self::is_navigation_element(*card) {
+                    continue;
+                }
                 if let Some((_href, title)) = Self::card_title(*card, host) {
                     valid += 1;
                     if samples.len() < 6 && !title.is_empty() && !samples.contains(&title) {
@@ -1673,6 +2269,9 @@ impl SiteAnalyzer {
 
         let mut groups: HashMap<String, Vec<ElementRef<'_>>> = HashMap::new();
         for a in doc.select(&link_sel) {
+            if Self::is_navigation_element(a) {
+                continue;
+            }
             let href = a.value().attr("href").unwrap_or("").trim();
             let Some(path) = Self::same_origin_path(href, origin, host) else { continue };
             if path == "/" || path.is_empty() {
@@ -2490,5 +3089,61 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn navigation_items_are_not_catalog_cards() {
+        let html = r#"<!doctype html><html><body>
+<header><nav class="header-nav">
+  <div class="header-nav__item"><a href="/">Home</a></div>
+  <div class="header-nav__item"><a href="/catalog">Catalog</a></div>
+  <div class="header-nav__item"><a href="/mini-series">Mini series</a></div>
+  <div class="header-nav__item"><a href="/tv">TV</a></div>
+  <div class="header-nav__item"><a href="/tv-order">Buy a TV</a></div>
+</nav></header>
+<main><div class="swiper__movie"></div><div class="main__cards"></div></main>
+<footer><div class="footer__item"><a href="/help">Help</a></div></footer>
+</body></html>"#;
+        let doc = Html::parse_document(html);
+        let catalog = SiteAnalyzer::new().detect_catalog(&doc, "https://site.example", "site.example");
+        assert_eq!(catalog.count, 0, "el menú no es un catálogo: {:?}", catalog.samples);
+        assert!(catalog.card_selector.is_empty());
+    }
+
+    #[test]
+    fn spa_payload_gives_locales_and_explicit_filters() {
+        let html = r#"<!doctype html><html lang="uz"><head>
+<script id="__NEXT_DATA__" type="application/json">{"locale":"uz","locales":["uz","ru","en"],"defaultLocale":"uz","props":{"filters":{"filterParams":[{"param":"sortBy","values":["publish_date","imdb_rating"]},{"param":"status","values":["announcement","release"]}]}},"messages":{"filter":{"publish_date":"Saralash","sort_by":"Saralash turi"}}}</script>
+</head><body><div id="__next"></div></body></html>"#;
+        let doc = Html::parse_document(html);
+        assert_eq!(
+            SiteAnalyzer::detect_site_locales(&doc),
+            vec!["uz".to_string(), "ru".to_string(), "en".to_string()]
+        );
+        let filters = SiteAnalyzer::detect_payload_filters(&doc, None);
+        assert_eq!(filters.len(), 4, "sólo los pares explícitos: {:?}", filters);
+        assert!(filters.iter().all(|f| f.kind == "select"));
+        assert!(filters.iter().any(|f| f.param == "sortBy" && f.value == "publish_date"));
+        assert!(filters.iter().any(|f| f.param == "status" && f.value == "release"));
+        assert!(filters.iter().all(|f| f.name.chars().all(|c| c.is_ascii())));
+    }
+
+    #[test]
+    fn js_bundles_give_real_filter_params_and_values() {
+        let js = r#"let nm=["year","countryIds","genreIds","audioLanguageIds","quality"],nh=[...nm,"categoryIds","CopyrightHolderIds","isFrameDub","name","sortBy","status"],nv="publish_date";
+const H=(0,a.useMemo)(()=>[{value:"publish_date",label:S("filter.publish_date")},{value:"imdb_rating",label:S("filter.imdb_rating")},{value:"kinopoisk_rating",label:S("filter.kinopoisk_rating")}],[S]),$=(0,a.useMemo)(()=>[{value:"announcement",label:S("filter.announcement")},{value:"release",label:S("filter.release")}],[S]);
+render(nf,{instanceId:"catalog-sort",options:H,placeholder:S("filter.sort")});
+render(nf,{instanceId:"catalog-status",options:$,placeholder:S("filter.status")});"#;
+        let filters = SiteAnalyzer::detect_filters_from_js(js, Some("name"));
+        let params: Vec<&str> = filters.iter().map(|f| f.param.as_str()).collect();
+        for expected in ["year", "countryIds", "genreIds", "audioLanguageIds", "quality", "categoryIds", "CopyrightHolderIds", "isFrameDub", "sortBy", "status"] {
+            assert!(params.contains(&expected), "falta {expected} en {:?}", params);
+        }
+        assert!(!params.contains(&"name"), "el parámetro de búsqueda no es un filtro");
+        assert!(!params.contains(&"publish_date"), "los valores no son parámetros");
+        assert!(filters.iter().any(|f| f.param == "sortBy" && f.value == "imdb_rating"));
+        assert!(filters.iter().any(|f| f.param == "status" && f.value == "announcement"));
+        assert!(filters.iter().any(|f| f.param == "genreIds" && f.kind == "text"));
+        assert!(filters.iter().all(|f| f.name.chars().all(|c| c.is_ascii())));
     }
 }
