@@ -4,7 +4,46 @@ use std::collections::{HashMap, HashSet};
 use regex::Regex;
 use url::Url;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Un título real encontrado en datos estructurados (schema.org ItemList).
+/// Se usa cuando el catálogo HTML está vacío por tratarse de una SPA.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CatalogRecord {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub alternate_title: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub image: Option<String>,
+}
+
+/// Acción de búsqueda declarada por el sitio (schema.org SearchAction).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SiteSearchAction {
+    #[serde(default)]
+    pub url_template: String,
+    #[serde(default)]
+    pub query_param: Option<String>,
+}
+
+/// Parámetro de filtro realmente expuesto por el sitio en un enlace o formulario.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SiteFilterParam {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub param: String,
+    #[serde(default)]
+    pub value: String,
+    /// `select` cuando hay varios valores; `check` cuando sólo uno.
+    #[serde(default)]
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AnalysisResult {
     /// Origen del sitio (esquema + host, sin ruta). Es lo que se usa como `baseUrl`.
     pub url: String,
@@ -21,6 +60,22 @@ pub struct AnalysisResult {
     pub card_selector: String,
     pub title_selector: String,
     pub next_page_selector: String,
+    /// `html` cuando hay tarjetas reales; `jsonld` cuando sólo hay datos
+    /// estructurados; `none` cuando no hay evidencia de catálogo.
+    #[serde(default)]
+    pub catalog_source: String,
+    /// Títulos reales leídos de JSON-LD. Nunca se inventan.
+    #[serde(default)]
+    pub catalog_records: Vec<CatalogRecord>,
+    /// Búsqueda declarada por el sitio, si existe.
+    #[serde(default)]
+    pub search_action: Option<SiteSearchAction>,
+    /// Filtros de consulta encontrados en enlaces/formularios del sitio.
+    #[serde(default)]
+    pub filter_params: Vec<SiteFilterParam>,
+    /// Idioma declarado por la página (`<html lang>`, og:locale...).
+    #[serde(default)]
+    pub detected_language: String,
     /// Ruta detectada del listado/populares (p. ej. `/animes`). Nunca se inventa.
     pub popular_path: Option<String>,
     /// Ruta detectada de "últimos/recientes". Si no existe, `supportsLatest = false`.
@@ -279,6 +334,21 @@ impl SiteAnalyzer {
         let final_url = resp.url().clone();
         let body = resp.text().await.map_err(|e| format!("Error leyendo HTML: {}", e))?;
 
+        // Las SPAs suelen declarar catálogo/SearchAction sólo en la portada.
+        // Si el usuario pegó una ruta interna, se pide la raíz ANTES de crear
+        // cualquier `Html`: ese tipo no es Send y no puede vivir sobre un await.
+        let root_body = if parsed.path() != "/" {
+            self.client
+                .get(format!("{origin}/"))
+                .send()
+                .await
+                .ok()
+                .filter(|r| r.status().is_success())
+                .and_then(|r| r.text().await.ok())
+        } else {
+            None
+        };
+
         // A partir de aquí no hay llamadas asíncronas (.await), por lo que Html nunca cruza un punto de suspensión.
         let doc = Html::parse_document(&body);
 
@@ -306,7 +376,48 @@ impl SiteAnalyzer {
 
         // 5. Rutas reales de listado, recientes y búsqueda
         let (popular_path, latest_path) = self.detect_section_paths(&doc, &origin, &host, &catalog);
-        let (search_path, search_param) = self.detect_search(&doc, &origin, &host, &cms);
+        let (mut search_path, mut search_param) = self.detect_search(&doc, &origin, &host, &cms);
+
+        // 5.5 Evidencia real de catálogo/búsqueda/filtros en el HTML. Nada de
+        // esto se inventa: si el sitio no lo declara, el generador lo dice.
+        let mut detected_language = Self::detect_language(&doc);
+        let (mut ld_records, mut ld_search) = Self::detect_structured_data(&doc, &origin, &host);
+        let mut filter_params = Self::detect_filter_params(&doc, &origin, &host, search_param.as_deref());
+
+        // Muchas SPAs declaran el catálogo y el SearchAction sólo en la
+        // portada. Si el usuario pegó una ficha/ruta interna, se consulta la
+        // raíz del mismo sitio antes de declarar que no hay catálogo.
+        if ld_records.is_empty() && catalog.count < 4 {
+            if let Some(root_html) = root_body.as_deref() {
+                let root_doc = Html::parse_document(root_html);
+                let (root_records, root_action) =
+                    Self::detect_structured_data(&root_doc, &origin, &host);
+                if !root_records.is_empty() {
+                    ld_records = root_records;
+                    ld_search = root_action;
+                    for f in Self::detect_filter_params(&root_doc, &origin, &host, None) {
+                        if !filter_params.iter().any(|old| old.param == f.param && old.value == f.value) {
+                            filter_params.push(f);
+                        }
+                    }
+                    if detected_language.is_empty() {
+                        detected_language = Self::detect_language(&root_doc);
+                    }
+                }
+            }
+        }
+
+        if let Some(action) = &ld_search {
+            if let Some((path, param)) = Self::search_template_to_path(&action.url_template, &origin, &host) {
+                // La acción declarada por schema.org es más fiable que un input
+                // suelto: gana siempre que apunte al mismo origen.
+                search_path = Some(path);
+                search_param = Some(param);
+            }
+            if let Some(param) = &action.query_param {
+                filter_params.retain(|f| f.param != *param);
+            }
+        }
 
         // 6. Servidores de video y SUB/DUB (síncrona)
         let (detected_hosts, has_sub_dub) = self.detect_servers_and_dub(&body, &origin);
@@ -332,6 +443,13 @@ impl SiteAnalyzer {
         };
 
         let catalog_detected = catalog.count >= 4;
+        let catalog_source = if catalog_detected {
+            "html".to_string()
+        } else if !ld_records.is_empty() {
+            "jsonld".to_string()
+        } else {
+            "none".to_string()
+        };
         let page_style = if catalog.page_style != "none" {
             catalog.page_style.clone()
         } else if matches!(cms.as_str(), "dooplay" | "madara" | "mangathemesia") {
@@ -355,10 +473,15 @@ impl SiteAnalyzer {
             || body.contains("data-reactroot")
             || body.contains("id=\"app\"")
             || body.contains("id='app'");
-        if !catalog_detected {
+        if !catalog_detected && catalog_source == "jsonld" {
+            warnings.push(format!(
+                "El HTML estático no expone tarjetas; se usarán {} títulos reales declarados en JSON-LD (schema.org ItemList).",
+                ld_records.len()
+            ));
+        } else if !catalog_detected {
             if looks_spa {
                 warnings.push(
-                    "La portada parece una SPA (React/Next/Nuxt): el HTML estático no expone el catálogo. Revisa las URLs y selectores antes de publicar.".to_string(),
+                    "La portada parece una SPA (React/Next/Nuxt): el HTML estático no expone el catálogo y no hay datos estructurados. El listado puede quedar vacío.".to_string(),
                 );
             } else {
                 warnings.push(
@@ -383,8 +506,18 @@ impl SiteAnalyzer {
         }
         if search_path.is_none() || search_param.is_none() {
             warnings.push(
-                "No se detectó un formulario de búsqueda: el buscador generado puede no funcionar.".to_string(),
+                "No se detectó búsqueda ni en formularios ni en datos estructurados: las consultas se filtrarán sobre el catálogo local.".to_string(),
             );
+        } else if ld_search.is_some() {
+            warnings.push(
+                "La URL de búsqueda se tomó de un SearchAction declarado por el sitio (JSON-LD).".to_string(),
+            );
+        }
+        if !filter_params.is_empty() {
+            warnings.push(format!(
+                "Filtros encontrados en enlaces/formularios del sitio: {}. Sólo se generarán esos, no géneros inventados.",
+                filter_params.iter().map(|f| f.param.as_str()).collect::<HashSet<_>>().into_iter().collect::<Vec<_>>().join(", ")
+            ));
         }
         if !protections.is_empty() {
             warnings.push(format!(
@@ -418,6 +551,11 @@ impl SiteAnalyzer {
                 card_selector,
                 title_selector,
                 next_page_selector,
+                catalog_source,
+                catalog_records: ld_records,
+                search_action: ld_search,
+                filter_params,
+                detected_language,
                 popular_path,
                 latest_path,
                 search_path,
@@ -1211,6 +1349,219 @@ impl SiteAnalyzer {
             String::new()
         };
         (selector, style)
+    }
+
+    /// Idioma declarado por la propia página. Es una pista para elegir títulos,
+    /// nunca una traducción: si no hay texto alternativo se usa el que haya.
+    fn detect_language(doc: &Html) -> String {
+        if let Ok(sel) = Selector::parse("html[lang]") {
+            if let Some(v) = doc.select(&sel).next().and_then(|el| el.value().attr("lang")) {
+                let v = v.trim();
+                if !v.is_empty() {
+                    return v.split(['-', '_']).next().unwrap_or(v).to_lowercase();
+                }
+            }
+        }
+        if let Ok(sel) = Selector::parse("meta[property=og:locale], meta[http-equiv=content-language]") {
+            for el in doc.select(&sel) {
+                let v = el.value().attr("content").unwrap_or("").trim();
+                if !v.is_empty() {
+                    return v.split(['-', '_']).next().unwrap_or(v).to_lowercase();
+                }
+            }
+        }
+        String::new()
+    }
+
+    fn ld_string(value: Option<&serde_json::Value>) -> Option<String> {
+        value
+            .and_then(|v| if v.is_string() { v.as_str() } else { v.get("name").and_then(|n| n.as_str()) })
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn ld_types(node: &serde_json::Value) -> Vec<String> {
+        let Some(t) = node.get("@type") else { return Vec::new() };
+        match t {
+            serde_json::Value::String(s) => vec![s.to_lowercase()],
+            serde_json::Value::Array(a) => a.iter().filter_map(|v| v.as_str()).map(|s| s.to_lowercase()).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn collect_ld_nodes<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a serde_json::Value>) {
+        match value {
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    Self::collect_ld_nodes(item, out);
+                }
+            }
+            serde_json::Value::Object(_) => {
+                if let Some(graph) = value.get("@graph") {
+                    Self::collect_ld_nodes(graph, out);
+                }
+                out.push(value);
+            }
+            _ => {}
+        }
+    }
+
+    fn ld_search_action(node: &serde_json::Value) -> Option<SiteSearchAction> {
+        let actions = node.get("potentialAction")?;
+        let candidates: Vec<&serde_json::Value> = match actions {
+            serde_json::Value::Array(a) => a.iter().collect(),
+            other => vec![other],
+        };
+        for action in candidates {
+            let types = Self::ld_types(action);
+            if !types.iter().any(|t| t == "searchaction") {
+                continue;
+            }
+            let template = action
+                .get("target")
+                .and_then(|t| if t.is_string() { t.as_str() } else { t.get("urlTemplate").and_then(|u| u.as_str()) })
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if template.is_empty() || !template.contains("{search_term_string}") {
+                continue;
+            }
+            let query_param = Url::parse(&template.replace("{search_term_string}", "AEXTQUERY"))
+                .ok()
+                .and_then(|u| u.query_pairs().find(|(_, v)| v.contains("AEXTQUERY")).map(|(k, _)| k.to_string()));
+            return Some(SiteSearchAction { url_template: template, query_param });
+        }
+        None
+    }
+
+    /// Catálogo y búsqueda declarados con schema.org. Esto es lo que permite
+    /// generar listados reales en SPAs donde el HTML estático está vacío.
+    fn detect_structured_data(
+        doc: &Html,
+        origin: &str,
+        host: &str,
+    ) -> (Vec<CatalogRecord>, Option<SiteSearchAction>) {
+        let mut records = Vec::new();
+        let mut seen = HashSet::new();
+        let mut search_action = None;
+        let Ok(sel) = Selector::parse("script[type='application/ld+json']") else {
+            return (records, search_action);
+        };
+        for script in doc.select(&sel) {
+            let raw = script.text().collect::<String>();
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else { continue };
+            let mut nodes = Vec::new();
+            Self::collect_ld_nodes(&json, &mut nodes);
+            for node in nodes {
+                let types = Self::ld_types(node);
+                if types.iter().any(|t| t == "itemlist") {
+                    if let Some(items) = node.get("itemListElement").and_then(|v| v.as_array()) {
+                        for item in items {
+                            let obj = item.get("item").filter(|v| v.is_object()).unwrap_or(item);
+                            let url = Self::ld_string(obj.get("url")).unwrap_or_default();
+                            if url.is_empty() || !url.starts_with(origin) || !seen.insert(url.clone()) {
+                                continue;
+                            }
+                            let title = Self::ld_string(obj.get("name")).unwrap_or_default();
+                            if title.is_empty() || records.len() >= 40 {
+                                continue;
+                            }
+                            records.push(CatalogRecord {
+                                title,
+                                alternate_title: Self::ld_string(obj.get("alternateName")),
+                                language: Self::ld_string(obj.get("inLanguage")),
+                                image: Self::ld_string(obj.get("image")),
+                                url,
+                            });
+                        }
+                    }
+                }
+                if search_action.is_none() && types.iter().any(|t| t == "website") {
+                    search_action = Self::ld_search_action(node);
+                }
+            }
+        }
+        (records, search_action)
+    }
+
+    /// Convierte `https://host/catalog?name={search_term_string}` en la ruta y
+    /// el parámetro que el generador sabe usar. Devuelve None si el template
+    /// apunta a otro dominio (no se siguen enlaces externos).
+    fn search_template_to_path(template: &str, _origin: &str, _host: &str) -> Option<(String, String)> {
+        let parsed = Url::parse(&template.replace("{search_term_string}", "AEXTQUERY")).ok()?;
+        if parsed.host_str() != Some(_host) {
+            return None;
+        }
+        let pairs: Vec<(String, String)> = parsed
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let param = pairs
+            .iter()
+            .find(|(_, v)| v.contains("AEXTQUERY"))
+            .map(|(k, _)| k.clone())?;
+        let rest: Vec<(String, String)> = pairs.into_iter().filter(|(k, _)| k != &param).collect();
+        let path = if rest.is_empty() {
+            parsed.path().to_string()
+        } else {
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            for (k, v) in &rest {
+                serializer.append_pair(k, v);
+            }
+            format!("{}?{}", parsed.path(), serializer.finish())
+        };
+        Some((path, param))
+    }
+
+    /// Parámetros de filtro realmente presentes en enlaces o formularios.
+    fn detect_filter_params(
+        doc: &Html,
+        origin: &str,
+        host: &str,
+        search_param: Option<&str>,
+    ) -> Vec<SiteFilterParam> {
+        let mut result = Vec::new();
+        let mut seen = HashSet::new();
+        let ignored = |key: &str| {
+            let k = key.to_lowercase();
+            k.starts_with("utm_")
+                || matches!(k.as_str(), "page" | "paged" | "p" | "fbclid" | "gclid" | "ref")
+                || search_param.map(|s| s == key).unwrap_or(false)
+        };
+        let mut add = |param: &str, value: &str, label: &str| {
+            if param.is_empty() || value.is_empty() || ignored(param) {
+                return;
+            }
+            let name = if label.trim().is_empty() { param.to_string() } else { label.trim().chars().take(48).collect() };
+            if seen.insert(format!("{param}={value}")) && result.len() < 40 {
+                result.push(SiteFilterParam {
+                    name,
+                    param: param.to_string(),
+                    value: value.to_string(),
+                    kind: "check".to_string(),
+                });
+            }
+        };
+
+        if let Ok(sel) = Selector::parse("a[href]") {
+            for a in doc.select(&sel) {
+                let label = a.text().collect::<String>();
+                let Some(path) = Self::same_origin_path(a.value().attr("href").unwrap_or(""), origin, host) else { continue };
+                let Ok(url) = Url::parse(&format!("{origin}{path}")) else { continue };
+                for (k, v) in url.query_pairs() {
+                    add(k.as_ref(), v.as_ref(), &label);
+                }
+            }
+        }
+        if let Ok(sel) = Selector::parse("form input[name]") {
+            for input in doc.select(&sel) {
+                let key = input.value().attr("name").unwrap_or("");
+                let value = input.value().attr("value").unwrap_or("");
+                let label = input.value().attr("placeholder").unwrap_or(key);
+                add(key, value, label);
+            }
+        }
+        result
     }
 
     fn detect_catalog(&self, doc: &Html, origin: &str, host: &str) -> CatalogInfo {
@@ -2062,5 +2413,52 @@ mod tests {
         assert!(caps.api_endpoints.is_empty());
         assert!(caps.region.is_none());
         assert!(caps.locale.is_none());
+    }
+
+    #[test]
+    fn structured_data_gives_real_catalog_search_and_language() {
+        let html = r#"<html lang="en"><head>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","inLanguage":"en","potentialAction":{"@type":"SearchAction","target":{"@type":"EntryPoint","urlTemplate":"https://frame.example/catalog?name={search_term_string}"},"query-input":"required name=search_term_string"}}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"Hafta Topi","itemListElement":[{"@type":"ListItem","position":1,"url":"https://frame.example/cinema/one","name":"Titulo uno","image":"https://st.frame.example/one.webp"},{"@type":"ListItem","position":2,"url":"https://frame.example/cinema/two","name":"Titulo dos","alternateName":"English two","inLanguage":"uz"}]}</script>
+</head><body>
+<div id="app"></div>
+<a href="/catalog?genreIds=1">Accion</a>
+<a href="/catalog?genreIds=2">Drama</a>
+<a href="/catalog?name=xxx">Buscar</a>
+<a href="/catalog?page=2">2</a>
+</body></html>"#;
+        let doc = Html::parse_document(html);
+        let origin = "https://frame.example";
+        let host = "frame.example";
+
+        assert_eq!(SiteAnalyzer::detect_language(&doc), "en");
+        let (records, action) = SiteAnalyzer::detect_structured_data(&doc, origin, host);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].title, "Titulo uno");
+        assert_eq!(records[1].alternate_title.as_deref(), Some("English two"));
+        assert!(records[0].image.as_deref().unwrap_or("").ends_with("one.webp"));
+        let action = action.expect("SearchAction declarado");
+        assert_eq!(action.query_param.as_deref(), Some("name"));
+        assert_eq!(
+            SiteAnalyzer::search_template_to_path(&action.url_template, origin, host),
+            Some(("/catalog".to_string(), "name".to_string()))
+        );
+
+        let filters = SiteAnalyzer::detect_filter_params(&doc, origin, host, Some("name"));
+        assert_eq!(filters.len(), 2, "sólo los valores reales de genreIds: {:?}", filters);
+        assert!(filters.iter().all(|f| f.param == "genreIds"));
+        assert!(filters.iter().all(|f| f.param != "page"));
+    }
+
+    #[test]
+    fn search_template_from_another_host_is_not_used() {
+        assert_eq!(
+            SiteAnalyzer::search_template_to_path(
+                "https://other.example/search?q={search_term_string}",
+                "https://frame.example",
+                "frame.example",
+            ),
+            None
+        );
     }
 }

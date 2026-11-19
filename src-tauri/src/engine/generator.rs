@@ -112,7 +112,7 @@ impl ExtensionGenerator {
                     lang,
                     &pkg_lang,
                     pkg_prefix,
-                    &analysis.capabilities,
+                    analysis,
                 ),
             )
         };
@@ -1586,6 +1586,50 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
         .join(", ");
     let site_region = analysis.capabilities.region.as_deref().unwrap_or("");
     let site_locale = analysis.capabilities.locale.as_deref().unwrap_or("");
+    let kt_str = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace(['\n', '\r', '\t'], " ");
+    let detected_language = if analysis.detected_language.trim().is_empty() {
+        lang.to_string()
+    } else {
+        analysis.detected_language.clone()
+    };
+    let ld_entries = analysis.catalog_records.iter()
+        .map(|r| {
+            let alt = r.alternate_title.as_deref().map(|s| format!("\"{}\"", kt_str(s))).unwrap_or_else(|| "null".to_string());
+            let lang = r.language.as_deref().map(|s| format!("\"{}\"", kt_str(s))).unwrap_or_else(|| "null".to_string());
+            let image = r.image.as_deref().map(|s| format!("\"{}\"", kt_str(s))).unwrap_or_else(|| "null".to_string());
+            format!(
+                "        LdRecord(title = \"{}\", alternateTitle = {}, language = {}, url = \"{}\", image = {})",
+                kt_str(&r.title), alt, lang, kt_str(&r.url), image
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let ld_records_block = if ld_entries.is_empty() {
+        "    private val jsonLdRecords = emptyList<LdRecord>()".to_string()
+    } else {
+        format!("    private val jsonLdRecords = listOf(\n{ld_entries}\n    )")
+    };
+    let has_site_filters = analysis.filter_params.iter().any(|f| !f.param.is_empty() && !f.value.is_empty());
+    let filter_block = if has_site_filters {
+        format!(
+            r#"        val urlBuilder = Uri.parse(url).buildUpon()
+        for (f in filters) {{
+            when (f) {{
+                is {class_name}Filters.ParamSelectFilter -> if (f.state > 0) {{
+                    urlBuilder.appendQueryParameter(f.param, f.options[f.state])
+                }}
+                is {class_name}Filters.ParamCheckFilter -> if (f.state) {{
+                    urlBuilder.appendQueryParameter(f.param, f.value)
+                }}
+            }}
+        }}
+        val finalUrl = urlBuilder.build().toString()
+"#,
+            class_name = class_name
+        )
+    } else {
+        "        val finalUrl = url\n".to_string()
+    };
 
     // SUB/DUB sólo se ofrece si AEXT abrió un máster real y encontró pistas.
     let (show_audio, sub_ok, dub_ok) = verified_audio_selection(&analysis.capabilities);
@@ -1698,6 +1742,53 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
     private val latestPath = "{latest_path}"
     private val searchPath = "{search_path}"
     private val searchParam = "{search_param}"
+    private val pageLanguage = "{detected_language}"
+
+    // Títulos reales declarados por el sitio con schema.org ItemList. Se usan
+    // sólo cuando el HTML no expone tarjetas (SPA); nunca se inventan títulos.
+    private data class LdRecord(
+        val title: String,
+        val alternateTitle: String?,
+        val language: String?,
+        val url: String,
+        val image: String?
+    )
+
+{ld_records_block}
+
+    private fun recordToAnime(record: LdRecord): SAnime = SAnime.create().apply {{
+        setUrlWithoutDomain(record.url)
+        title = preferredRecordTitle(record)
+        thumbnail_url = record.image
+    }}
+
+    /** Idioma pedido > alternativa en inglés > nombre original del sitio. */
+    private fun preferredRecordTitle(record: LdRecord): String {{
+        val alt = record.alternateTitle?.takeIf {{ it.isNotBlank() }}
+        return when {{
+            alt != null && (lang == "en" || record.language != lang) -> alt
+            else -> record.title
+        }}
+    }}
+
+    /** Prioriza atributos localizados reales; el texto visible manda si la página ya está en el idioma pedido. */
+    private fun pickTitle(element: Element, titleSelector: String): String {{
+        val text = element.selectFirst(titleSelector)?.text()?.trim().orEmpty()
+            .ifBlank {{ element.selectFirst("h2, h3, .title, [class*=title]")?.text()?.trim().orEmpty() }}
+        fun attr(name: String): String = element.attr(name).trim()
+            .ifBlank {{ element.selectFirst("[$name]")?.attr(name)?.trim().orEmpty() }}
+        val attrs = if (lang == "en") {{
+            listOf("data-title-en", "title")
+        }} else {{
+            listOf("data-title-$lang", "data-title-en", "title")
+        }}
+        if (pageLanguage == lang && text.isNotBlank()) return text
+        for (name in attrs) {{
+            val value = attr(name)
+            if (value.isNotBlank()) return value
+        }}
+        return text.ifBlank {{ attr("alt") }}.ifBlank {{ "Sin Título" }}
+    }}
 
     private fun pageUrl(path: String, page: Int): String {{
         val clean = if (path.isEmpty()) "/" else if (path.startsWith("/")) path else "/$path"
@@ -1740,10 +1831,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         // solo busca descendientes, así que hay que aceptar el propio nodo.
         val link = if (element.tagName() == "a") element else element.selectFirst("a")
         setUrlWithoutDomain(link?.attr("href") ?: "")
-        title = element.selectFirst("{title_sel}")?.text()?.trim()?.takeIf {{ it.isNotEmpty() }}
-            ?: link?.attr("title")?.trim()?.takeIf {{ it.isNotEmpty() }}
-            ?: element.selectFirst("img[alt]")?.attr("alt")?.trim()?.takeIf {{ it.isNotEmpty() }}
-            ?: "Sin Título"
+        title = pickTitle(element, "{title_sel}")
         thumbnail_url = element.selectFirst("img")
             ?.let {{ img ->
                 img.attr("abs:src")
@@ -1755,8 +1843,25 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
 
     override fun popularAnimeNextPageSelector(): String? = "{next_sel}".ifBlank {{ null }}
 
-    override fun popularAnimeParse(response: Response): AnimesPage =
-        filterBlacklistedAnimes(super.popularAnimeParse(response))
+    override fun popularAnimeParse(response: Response): AnimesPage {{
+        val page = filterBlacklistedAnimes(super.popularAnimeParse(response))
+        return withJsonLdFallback(page, "")
+    }}
+
+    private fun withJsonLdFallback(page: AnimesPage, query: String): AnimesPage {{
+        var animes = page.animes
+        if (query.isNotBlank()) {{
+            val q = query.trim().lowercase()
+            animes = animes.filter {{ it.title.lowercase().contains(q) }}
+        }}
+        if (animes.isEmpty() && jsonLdRecords.isNotEmpty()) {{
+            animes = jsonLdRecords
+                .map(::recordToAnime)
+                .filter {{ q -> q.isBlank() || q.title.lowercase().contains(query.trim().lowercase()) }}
+            return AnimesPage(animes, false)
+        }}
+        return AnimesPage(animes, page.hasNextPage)
+    }}
 
     // ============================== LATEST UPDATES ==============================
     override fun latestUpdatesRequest(page: Int): Request = GET(pageUrl(latestPath, page), headers)
@@ -1767,8 +1872,10 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
 
     override fun latestUpdatesNextPageSelector(): String? = "{next_sel}".ifBlank {{ null }}
 
-    override fun latestUpdatesParse(response: Response): AnimesPage =
-        filterBlacklistedAnimes(super.latestUpdatesParse(response))
+    override fun latestUpdatesParse(response: Response): AnimesPage {{
+        val page = filterBlacklistedAnimes(super.latestUpdatesParse(response))
+        return withJsonLdFallback(page, "")
+    }}
 
     // ============================== SEARCH ANIME ==============================
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {{
@@ -1779,8 +1886,11 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         }} else {{
             pageUrl(listingPath, page)
         }}
-        return GET(url, headers)
+        lastSearchQuery = finalQuery
+{filter_block}        return GET(finalUrl, headers)
     }}
+
+    private var lastSearchQuery = ""
 
     override fun searchAnimeSelector(): String = "{card_sel}"
 
@@ -1788,8 +1898,12 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
 
     override fun searchAnimeNextPageSelector(): String? = "{next_sel}".ifBlank {{ null }}
 
-    override fun searchAnimeParse(response: Response): AnimesPage =
-        filterBlacklistedAnimes(super.searchAnimeParse(response))
+    override fun searchAnimeParse(response: Response): AnimesPage {{
+        val page = filterBlacklistedAnimes(super.searchAnimeParse(response))
+        // Sin endpoint de búsqueda, el sitio devuelve el catálogo sin filtrar.
+        // Filtrar localmente es honesto: no fingimos que el servidor buscó.
+        return withJsonLdFallback(page, lastSearchQuery)
+    }}
 
     private fun filterBlacklistedAnimes(page: AnimesPage): AnimesPage {{
         val rawBlacklist = preferences.getString("genre_blacklist_text", "") ?: ""
@@ -1931,7 +2045,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         screen.addPreference(genreBlacklistPref)
     }}
 }}
-"#, video_engine = VIDEO_ENGINE_KT, site_cap_formats = site_cap_formats, site_app_version = site_app_version, site_player_cases = site_player_cases, site_region = site_region, site_locale = site_locale, search_audio_block = search_audio_block, audio_pref_block = audio_pref_block, pref_api_title = pref_api_title, pref_api_entries = pref_api_entries, methods_title = methods_title, methods_summary = methods_summary, methods_entries = methods_entries, pref_server_summary = pref_server_summary)
+"#, video_engine = VIDEO_ENGINE_KT, site_cap_formats = site_cap_formats, site_app_version = site_app_version, site_player_cases = site_player_cases, site_region = site_region, site_locale = site_locale, detected_language = kt_str(&detected_language), ld_records_block = ld_records_block, filter_block = filter_block, search_audio_block = search_audio_block, audio_pref_block = audio_pref_block, pref_api_title = pref_api_title, pref_api_entries = pref_api_entries, methods_title = methods_title, methods_summary = methods_summary, methods_entries = methods_entries, pref_server_summary = pref_server_summary)
 }
 
 fn generate_manga_source(
@@ -2119,11 +2233,12 @@ fn generate_kotlin_filters(
     lang: &str,
     pkg_lang: &str,
     pkg_prefix: &str,
-    caps: &SiteCapabilities,
+    analysis: &AnalysisResult,
 ) -> String {
     let i18n = get_i18n(lang);
     let filter_header = i18n.filter_header;
-    let filter_genre_title = i18n.filter_genre_title;
+    let caps = &analysis.capabilities;
+    let kt = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let (show_audio, sub_ok, dub_ok) = verified_audio_selection(caps);
     let mut audio_labels: Vec<&str> = vec![i18n.filter_audio_entries[0]];
     let mut audio_vals: Vec<(&str, &str)> = vec![("all", "")];
@@ -2135,10 +2250,10 @@ fn generate_kotlin_filters(
         audio_labels.push(i18n.filter_audio_entries[2]);
         audio_vals.push(("dub", "dub"));
     }
-    let audio_entries = audio_labels.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
+    let audio_entries = audio_labels.iter().map(|s| format!("\"{}\"", kt(s))).collect::<Vec<_>>().join(", ");
     let audio_vals_kt = audio_vals
         .iter()
-        .map(|(k, v)| format!("Pair(\"{}\", \"{}\")", k, v))
+        .map(|(k, v)| format!("Pair(\"{}\", \"{}\")", kt(k), kt(v)))
         .collect::<Vec<_>>()
         .join(",\n            ");
     let audio_filter_class = if show_audio {
@@ -2153,7 +2268,8 @@ fn generate_kotlin_filters(
         )
     }}
 
-"#
+"#,
+            filter_audio_title = kt(filter_audio_title)
         )
     } else {
         String::new()
@@ -2164,10 +2280,54 @@ fn generate_kotlin_filters(
         String::new()
     };
 
-    let genres_list = i18n.genres.iter()
-        .map(|(name, id)| format!("        Genre(\"{}\", \"{}\")", name, id))
-        .collect::<Vec<_>>()
-        .join(",\n");
+    // Sólo se generan filtros que el sitio expone de verdad. Los géneros de
+    // la plantilla se eliminaron: nunca se podían traducir en una consulta.
+    let mut grouped: Vec<(String, String, Vec<String>)> = Vec::new();
+    for f in &analysis.filter_params {
+        if f.param.is_empty() || f.value.is_empty() {
+            continue;
+        }
+        if let Some(entry) = grouped.iter_mut().find(|(p, _, _)| p == &f.param) {
+            if !entry.2.contains(&f.value) {
+                entry.2.push(f.value.clone());
+            }
+        } else {
+            grouped.push((f.param.clone(), f.name.clone(), vec![f.value.clone()]));
+        }
+    }
+    let param_classes = if grouped.is_empty() {
+        String::new()
+    } else {
+        r#"    class ParamSelectFilter(name: String, val param: String, val options: Array<String>) :
+        AnimeFilter.Select<String>(name, options)
+
+    class ParamCheckFilter(name: String, val param: String, val value: String) :
+        AnimeFilter.CheckBox(name, false)
+
+"#
+        .to_string()
+    };
+    let param_items = grouped
+        .iter()
+        .map(|(param, name, values)| {
+            if values.len() > 1 {
+                let options = std::iter::once("All")
+                    .chain(values.iter().map(String::as_str))
+                    .map(|v| format!("\"{}\"", kt(v)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "        ParamSelectFilter(\"{}\", \"{}\", arrayOf({})),\n",
+                    kt(name), kt(param), options
+                )
+            } else {
+                format!(
+                    "        ParamCheckFilter(\"{}\", \"{}\", \"{}\"),\n",
+                    kt(name), kt(param), kt(&values[0])
+                )
+            }
+        })
+        .collect::<String>();
 
     format!(r#"package {pkg_prefix}.{pkg_lang}.{pkg_slug}
 
@@ -2177,20 +2337,17 @@ import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 object {class_name}Filters {{
     class Header(name: String) : AnimeFilter.Header(name)
 
-    class Genre(val name: String, val id: String)
-    class GenreFilter(name: String, val genres: List<Genre>) :
-        AnimeFilter.Select<String>(name, genres.map {{ it.name }}.toTypedArray())
-
-{audio_filter_class}    val DEFAULT_GENRES = listOf(
-{genres_list}
-    )
-
-    fun getFilterList(): AnimeFilterList = AnimeFilterList(
+{param_classes}{audio_filter_class}    fun getFilterList(): AnimeFilterList = AnimeFilterList(
         Header("{filter_header}"),
-{audio_filter_item}        GenreFilter("{filter_genre_title}", DEFAULT_GENRES)
-    )
+{param_items}{audio_filter_item}    )
 }}
-"#, audio_filter_class = audio_filter_class, audio_filter_item = audio_filter_item)
+"#,
+        filter_header = kt(filter_header),
+        param_classes = param_classes,
+        audio_filter_class = audio_filter_class,
+        param_items = param_items,
+        audio_filter_item = audio_filter_item,
+    )
 }
 
 fn generate_android_manifest(pkg_id: &str, class_name: &str, app_label: &str, ext_type: &str) -> String {
@@ -2266,7 +2423,7 @@ mod manifest_tests {
 #[cfg(test)]
 mod video_engine_tests {
     use super::{generate_kotlin_filters, generate_kotlin_source, VIDEO_ENGINE_KT};
-    use crate::engine::analyzer::{AnalysisResult, SiteCapabilities};
+    use crate::engine::analyzer::{AnalysisResult, CatalogRecord, SiteCapabilities, SiteFilterParam, SiteSearchAction};
 
     fn pluto_fixture() -> AnalysisResult {
         AnalysisResult {
@@ -2299,6 +2456,7 @@ mod video_engine_tests {
                 player_cases: vec!["session-bootstrap".to_string()],
                 ..Default::default()
             },
+            ..Default::default()
         }
     }
 
@@ -2508,7 +2666,7 @@ mod video_engine_tests {
         );
         let filters = generate_kotlin_filters(
             "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension",
-            &unverified.capabilities,
+            &unverified,
         );
         assert!(!kt.contains("key = \"preferred_audio\""), "sin verificación no se ofrece SUB/DUB");
         assert!(!kt.contains("AudioFilter"), "sin verificación no se genera el filtro de audio");
@@ -2524,12 +2682,67 @@ mod video_engine_tests {
         );
         let filters = generate_kotlin_filters(
             "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension",
-            &verified.capabilities,
+            &verified,
         );
         assert!(kt.contains("key = \"preferred_audio\""), "con SUB verificado sí se ofrece el selector");
         assert!(filters.contains("class AudioFilter"), "con SUB verificado sí se genera el filtro");
         assert!(!kt.contains("entryValues = arrayOf(\"all\", \"sub\", \"dub\")"), "DUB no verificado no se ofrece");
         assert!(kt.contains("entryValues = arrayOf(\"all\", \"sub\")"), "sólo la opción verificada");
+    }
+
+    #[test]
+    fn detected_filters_search_action_and_jsonld_catalog_reach_generated_kotlin() {
+        let mut fixture = pluto_fixture();
+        fixture.detected_language = "en".to_string();
+        fixture.catalog_source = "jsonld".to_string();
+        fixture.search_path = Some("/catalog".to_string());
+        fixture.search_param = Some("name".to_string());
+        fixture.search_action = Some(SiteSearchAction {
+            url_template: "https://pluto.tv/catalog?name={search_term_string}".to_string(),
+            query_param: Some("name".to_string()),
+        });
+        fixture.catalog_records = vec![CatalogRecord {
+            title: "Título original".to_string(),
+            alternate_title: Some("English title".to_string()),
+            language: Some("uz".to_string()),
+            url: "https://pluto.tv/cinema/one".to_string(),
+            image: Some("https://pluto.tv/poster.jpg".to_string()),
+        }];
+        fixture.filter_params = vec![
+            SiteFilterParam { name: "Género".to_string(), param: "genreIds".to_string(), value: "1".to_string(), kind: "check".to_string() },
+            SiteFilterParam { name: "Género".to_string(), param: "genreIds".to_string(), value: "2".to_string(), kind: "check".to_string() },
+        ];
+
+        let kt = generate_kotlin_source(
+            &fixture, "Pluto TV", "PlutoTv", "pluto", "es", "es",
+            "eu.kanade.tachiyomi.animeextension",
+        );
+        let filters = generate_kotlin_filters(
+            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
+        );
+
+        for marker in [
+            "LdRecord(title = \"Título original\"",
+            "alternateTitle = \"English title\"",
+            "withJsonLdFallback(page, lastSearchQuery)",
+            "lastSearchQuery = finalQuery",
+            "urlBuilder.appendQueryParameter(f.param, f.options[f.state])",
+            "is PlutoTvFilters.ParamSelectFilter",
+            "pickTitle(element, \"h2\")",
+            "data-title-es",
+            "data-title-en",
+            "private val pageLanguage = \"en\"",
+        ] {
+            assert!(kt.contains(marker), "falta en el Kotlin generado: {marker}");
+        }
+        for marker in [
+            "class ParamSelectFilter",
+            "ParamSelectFilter(\"Género\", \"genreIds\", arrayOf(\"All\", \"1\", \"2\"))",
+        ] {
+            assert!(filters.contains(marker), "falta en los filtros generados: {marker}");
+        }
+        assert!(!filters.contains("DEFAULT_GENRES"), "no se deben generar géneros inventados");
+        assert!(!filters.contains("GenreFilter("), "el filtro de género falso debe desaparecer");
     }
 
     #[test]

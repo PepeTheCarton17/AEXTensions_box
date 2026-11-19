@@ -940,6 +940,45 @@ function renderAnalysisCard(site) {
       </div>`
     : '';
 
+  const catalogSourceLabels = {
+    html: 'analysis.catalog_html',
+    jsonld: 'analysis.catalog_jsonld',
+    none: 'analysis.catalog_none',
+  };
+  const catalogSourceLabel = catalogSourceLabels[site.catalog_source] || 'analysis.catalog_none';
+  const catalogSourceClass = site.catalog_source === 'jsonld'
+    ? 'bg-sky-500/10 text-sky-300 border border-sky-500/20'
+    : site.catalog_source === 'html'
+      ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20'
+      : 'bg-slate-500/10 text-slate-400 border border-slate-500/20';
+  const ldTitles = Array.isArray(site.catalog_records) ? site.catalog_records : [];
+  const searchAction = site.search_action || null;
+  const filterParams = Array.isArray(site.filter_params) ? site.filter_params : [];
+  const filterPairs = [...new Set(filterParams
+    .filter(f => f && f.param && f.value)
+    .map(f => `${f.param}=${f.value}`))];
+  const catalogHtml = `
+    <div class="space-y-1 pt-2 border-t border-surface-800">
+      <span class="text-slate-500 block text-[10px]">${escapeHtml(t('analysis.catalog_source'))}</span>
+      <div><span class="px-1.5 py-0.5 rounded text-[10px] ${catalogSourceClass}">${escapeHtml(t(catalogSourceLabel))}</span></div>
+      <div><span class="text-[10px] text-slate-400">${escapeHtml(t('analysis.page_language'))}:</span> ${
+        site.detected_language
+          ? escapeHtml(site.detected_language)
+          : `<span class="text-slate-500">${escapeHtml(t('analysis.not_detected'))}</span>`
+      }</div>
+      <div><span class="text-[10px] text-slate-400">${escapeHtml(t('analysis.search_action'))}:</span> ${
+        searchAction && searchAction.url_template
+          ? `<span class="font-mono text-[10px] text-emerald-300" title="${escapeHtml(searchAction.url_template)}">${escapeHtml(searchAction.url_template)}</span>`
+          : `<span class="text-slate-500 text-[10px]">${escapeHtml(t('analysis.not_detected'))}</span>`
+      }</div>
+      <div><span class="text-[10px] text-slate-400">${escapeHtml(t('analysis.filters'))}:</span> ${capBadges(filterPairs, 'bg-amber-500/10 text-amber-300 border border-amber-500/20')}</div>
+      ${
+        samples.length === 0 && ldTitles.length > 0
+          ? `<div><span class="text-slate-500 block text-[10px]">${escapeHtml(t('analysis.samples'))}</span><div class="flex flex-wrap gap-1">${ldTitles.slice(0, 10).map(r => `<span class="px-1.5 py-0.5 rounded text-[10px] bg-surface-800 text-slate-300 border border-surface-700" title="${escapeHtml(r.url || '')}">${escapeHtml(r.alternate_title || r.title)}</span>`).join('')}</div></div>`
+          : ''
+      }
+    </div>`;
+
   const siteIcon = site.favicon_url && site.favicon_url.trim()
     ? site.favicon_url
     : fallbackIcon(site.name);
@@ -981,6 +1020,8 @@ function renderAnalysisCard(site) {
     </div>
 
     ${samplesHtml}
+
+    ${catalogHtml}
 
     <div class="space-y-1 pt-1 border-t border-surface-800">
       <span class="text-slate-500 block text-[10px]">Servidores detectados:</span>

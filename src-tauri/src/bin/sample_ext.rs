@@ -3,12 +3,12 @@
 //!
 //! Uso: `cargo run --bin sample_ext -- <directorio-de-salida>`
 //!
-//! Escribe tres proyectos independientes (anime con selector de episodios,
-//! anime genérico y manga) con sus iconos, para que el CI pueda ejecutar
+//! Escribe cuatro proyectos independientes (anime con selector de episodios,
+//! anime genérico, catálogo JSON-LD y manga) con sus iconos, para que el CI pueda ejecutar
 //! `gradle assembleRelease` sobre ellos. Sin este paso, un error de compilación
 //! en las plantillas solo se descubría al usar la extensión en Nekoyomi.
 
-use aext_lib::engine::analyzer::{AnalysisResult, SiteCapabilities};
+use aext_lib::engine::analyzer::{AnalysisResult, CatalogRecord, SiteCapabilities, SiteFilterParam, SiteSearchAction};
 use aext_lib::engine::generator::ExtensionGenerator;
 use image::{Rgba, RgbaImage};
 use std::collections::HashMap;
@@ -72,6 +72,53 @@ fn anime_fixture(name: &str, host: &str, episode_selector: &str, catalog: bool) 
             },
             ..Default::default()
         },
+        ..Default::default()
+    }
+}
+
+/// Catálogo SPA sin tarjetas HTML: el generador debe compilar usando los
+/// títulos y la búsqueda declarados en JSON-LD, y los filtros reales.
+fn jsonld_fixture() -> AnalysisResult {
+    AnalysisResult {
+        url: "https://catalog.example".to_string(),
+        entry_url: "https://catalog.example/en/catalog".to_string(),
+        name: "Catalogo Struct".to_string(),
+        lang: "es".to_string(),
+        ext_type: "anime".to_string(),
+        cms: "generic".to_string(),
+        card_selector: "article".to_string(),
+        title_selector: "h2".to_string(),
+        catalog_source: "jsonld".to_string(),
+        catalog_records: vec![
+            CatalogRecord {
+                title: "Titulo original".to_string(),
+                alternate_title: Some("English fallback title".to_string()),
+                language: Some("uz".to_string()),
+                url: "https://catalog.example/en/cinema/one".to_string(),
+                image: Some("https://catalog.example/poster.jpg".to_string()),
+            },
+            CatalogRecord {
+                title: "Segundo titulo".to_string(),
+                alternate_title: None,
+                language: Some("uz".to_string()),
+                url: "https://catalog.example/en/cinema/two".to_string(),
+                image: None,
+            },
+        ],
+        search_action: Some(SiteSearchAction {
+            url_template: "https://catalog.example/en/catalog?name={search_term_string}".to_string(),
+            query_param: Some("name".to_string()),
+        }),
+        filter_params: vec![
+            SiteFilterParam { name: "Genre".to_string(), param: "genreIds".to_string(), value: "1".to_string(), kind: "check".to_string() },
+            SiteFilterParam { name: "Genre".to_string(), param: "genreIds".to_string(), value: "2".to_string(), kind: "check".to_string() },
+        ],
+        detected_language: "en".to_string(),
+        popular_path: Some("/en/catalog".to_string()),
+        search_path: Some("/en/catalog".to_string()),
+        search_param: Some("name".to_string()),
+        warnings: vec!["Fixture JSON-LD para CI".to_string()],
+        ..Default::default()
     }
 }
 
@@ -100,6 +147,7 @@ fn manga_fixture() -> AnalysisResult {
         sample_items: Vec::new(),
         warnings: Vec::new(),
         capabilities: SiteCapabilities::default(),
+        ..Default::default()
     }
 }
 
@@ -194,6 +242,7 @@ fn main() {
             "en",
             "anime",
         ),
+        ("catalogo-jsonld", jsonld_fixture(), "es", "anime"),
         ("manga", manga_fixture(), "en", "manga"),
     ];
 

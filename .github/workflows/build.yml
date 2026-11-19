@@ -180,9 +180,15 @@ jobs:
           test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
-      # Genera tres proyectos con las plantillas reales (anime verificado, anime
-      # genérico y manga). Si una plantilla no compila, este job falla antes de
-      # publicar una versión de AEXT que produciría extensiones rotas.
+      # Primero las pruebas del analizador/generador: comprueban que los filtros
+      # detectados, el SearchAction y el catálogo JSON-LD llegan al Kotlin.
+      - name: Rust tests (analyzer and generator)
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # Genera cuatro proyectos con las plantillas reales (anime verificado,
+      # anime genérico, catálogo JSON-LD y manga). Si una plantilla no compila,
+      # este job falla antes de publicar una versión de AEXT que produciría
+      # extensiones rotas.
       - name: Generate sample extensions
         run: cargo run --manifest-path src-tauri/Cargo.toml --bin sample_ext -- "$RUNNER_TEMP/samples"
 
@@ -197,7 +203,7 @@ jobs:
         run: |
           find "$RUNNER_TEMP/samples" -name "*.apk" -print
           count=$(find "$RUNNER_TEMP/samples" -name "*.apk" | wc -l)
-          test "$count" -eq 3
+          test "$count" -eq 4
           for apk in $(find "$RUNNER_TEMP/samples" -name "*.apk"); do
             "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$apk" | head -n 3
           done
