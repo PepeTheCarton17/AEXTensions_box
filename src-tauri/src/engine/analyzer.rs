@@ -118,6 +118,13 @@ impl SiteAnalyzer {
     pub async fn analyze(&self, url: &str) -> Result<AnalysisResult, String> {
         let (mut result, demo_href) = self.analyze_page(url).await?;
 
+        // Muchos reproductores (SPAs) sólo mencionan sus endpoints en bundles
+        // JS. Los leemos aparte: `Html` no es Send y no puede cruzar un await
+        // dentro de `analyze_page`, pero aquí sólo guardamos cadenas.
+        if let Some(js_caps) = self.scan_script_capabilities(&result.entry_url).await {
+            Self::merge_capabilities(&mut result.capabilities, &js_caps);
+        }
+
         // El sondeo del detalle se hace aquí, fuera de `analyze_page`, porque
         // `scraper::Html` no es `Send` y no puede sobrevivir a un `await`.
         if let Some(path) = demo_href {
@@ -376,6 +383,69 @@ impl SiteAnalyzer {
             }
         }
         None
+    }
+
+    /// Extrae scripts del mismo origen. Los externos se descartan: no podremos
+    /// distinguir un endpoint del sitio del de un proveedor de analítica.
+    fn script_urls(body: &str, origin: &str, limit: usize) -> Vec<String> {
+        let doc = Html::parse_document(body);
+        let selector = match Selector::parse("script[src]") {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let base = Url::parse(origin).ok();
+        let mut out: Vec<String> = Vec::new();
+        for el in doc.select(&selector) {
+            let src = el.value().attr("src").unwrap_or("").trim();
+            if src.is_empty() {
+                continue;
+            }
+            let absolute = Url::parse(src)
+                .ok()
+                .or_else(|| base.as_ref().and_then(|b| b.join(src).ok()));
+            let Some(url) = absolute else { continue };
+            if url.origin().ascii_serialization() != origin {
+                continue;
+            }
+            let value = url.to_string();
+            if !out.contains(&value) {
+                out.push(value);
+            }
+            if out.len() >= limit {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Lee unos pocos bundles propios y detecta capacidades en su texto.
+    /// Límites estrictos: el análisis debe seguir siendo rápido y predecible.
+    async fn scan_script_capabilities(&self, entry_url: &str) -> Option<SiteCapabilities> {
+        let html = self.client.get(entry_url).send().await.ok()?.text().await.ok()?;
+        let origin = Url::parse(entry_url).ok()?.origin().ascii_serialization();
+        let urls = Self::script_urls(&html, &origin, 5);
+        if urls.is_empty() {
+            return None;
+        }
+
+        let budget = 400_000usize;
+        let mut bundle = String::new();
+        for url in urls {
+            if bundle.len() >= budget {
+                break;
+            }
+            if let Ok(resp) = self.client.get(&url).send().await {
+                if let Ok(text) = resp.text().await {
+                    let room = budget.saturating_sub(bundle.len());
+                    bundle.extend(text.chars().take(room));
+                    bundle.push('\n');
+                }
+            }
+        }
+        if bundle.is_empty() {
+            return None;
+        }
+        Some(Self::detect_capabilities(&bundle))
     }
 
     /// Detecta capacidades reales a partir del HTML disponible. Es
@@ -1509,6 +1579,21 @@ mod tests {
             analyzer.detect_search(&doc, "https://wp.example.com", "wp.example.com", "dooplay");
         assert_eq!(path.as_deref(), Some("/"));
         assert_eq!(param.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn script_urls_are_limited_and_same_origin_only() {
+        let html = r#"<html><head>
+          <script src="/_next/static/chunks/main.js"></script>
+          <script src="https://cdn.therd.site/player.js"></script>
+          <script src="/_next/static/chunks/player.js"></script>
+          <script src="/_next/static/chunks/heavy.js"></script>
+        </head></html>"#;
+
+        let urls = SiteAnalyzer::script_urls(html, "https://site.example", 2);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0], "https://site.example/_next/static/chunks/main.js");
+        assert!(urls.iter().all(|u| u.starts_with("https://site.example/")));
     }
 
     #[test]
