@@ -859,6 +859,21 @@ function renderAnalysisCard(site) {
     : '<span class="text-slate-500 text-[10px]">Ninguna</span>';
 
   const caps = site.capabilities || {};
+  const methodNames = {
+    'session-bootstrap': 'Sesión web',
+    'graphql-persisted': 'GraphQL interno',
+    'hls-master': 'HLS',
+    'dash-mpd': 'DASH',
+    'iframe-player': 'Reproductor incrustado',
+    'drm-widevine': 'DRM detectado',
+    'ads-hls': 'Anuncios HLS',
+  };
+  const methods = Array.isArray(caps.playback_methods) && caps.playback_methods.length > 0
+    ? caps.playback_methods
+    : (Array.isArray(caps.player_cases) ? caps.player_cases.map(c => methodNames[c] || c) : []);
+  const verifiedAudio = caps.master_verified
+    ? [caps.sub_verified && 'SUB', caps.dub_verified && 'DUB'].filter(Boolean)
+    : [];
   const capBadges = (values, colors) => (Array.isArray(values) && values.length > 0)
     ? values.map(v => {
         const text = String(v);
@@ -883,7 +898,7 @@ function renderAnalysisCard(site) {
           : '<span class="text-slate-500 text-[10px]">No detectada</span>'
       }</div>
       <div><span class="text-[10px] text-slate-500">${escapeHtml(t('analysis.region_note'))}</span></div>
-      <div><span class="text-[10px] text-slate-400">Casos:</span> ${capBadges(caps.player_cases, 'bg-amber-500/10 text-amber-300 border border-amber-500/20')}</div>
+      <div><span class="text-[10px] text-slate-400">${escapeHtml(t('analysis.methods'))}:</span> ${capBadges(methods, 'bg-amber-500/10 text-amber-300 border border-amber-500/20')}</div>
     </div>`;
 
   const warnings = Array.isArray(site.warnings) ? site.warnings : [];
@@ -951,8 +966,8 @@ function renderAnalysisCard(site) {
         <span class="font-medium text-slate-300 capitalize">${escapeHtml(site.cms)}</span>
       </div>
       <div>
-        <span class="text-slate-500 block text-[10px]">Doblaje (SUB/DUB)</span>
-        <span class="font-medium ${site.has_sub_dub ? 'text-emerald-400' : 'text-slate-400'}">${site.has_sub_dub ? 'Detectado en Embeds' : 'No explícito'}</span>
+        <span class="text-slate-500 block text-[10px]">Pistas SUB/DUB verificadas</span>
+        <span class="font-medium ${verifiedAudio.length ? 'text-emerald-400' : 'text-slate-400'}">${verifiedAudio.length ? escapeHtml(verifiedAudio.join(' + ')) : 'Sin verificar (no se ofrecerá)'}</span>
       </div>
     </div>
 

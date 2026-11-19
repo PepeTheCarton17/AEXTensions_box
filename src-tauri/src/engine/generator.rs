@@ -1,4 +1,4 @@
-use crate::engine::analyzer::AnalysisResult;
+use crate::engine::analyzer::{AnalysisResult, SiteAnalyzer, SiteCapabilities};
 use std::collections::HashMap;
 
 pub struct ExtensionBundle {
@@ -106,7 +106,14 @@ impl ExtensionGenerator {
                     &pkg_lang,
                     pkg_prefix,
                 ),
-                generate_kotlin_filters(&class_name, &pkg_slug, lang, &pkg_lang, pkg_prefix),
+                generate_kotlin_filters(
+                    &class_name,
+                    &pkg_slug,
+                    lang,
+                    &pkg_lang,
+                    pkg_prefix,
+                    &analysis.capabilities,
+                ),
             )
         };
         files.insert(kt_path, kt_content.into_bytes());
@@ -212,7 +219,8 @@ struct I18nData {
     pref_audio_summary: &'static str,
     pref_api_title: &'static str,
     pref_api_entries: &'static [&'static str],
-    pref_api_summary: &'static str,
+    /// Etiqueta del aviso que enumera los métodos encontrados de reproducción.
+    methods_title: &'static str,
     pref_server_title: &'static str,
     pref_server_summary: &'static str,
     pref_quality_title: &'static str,
@@ -233,10 +241,10 @@ fn get_i18n(lang: &str) -> I18nData {
         "en" => I18nData {
             pref_audio_title: "Preferred Audio (SUB / DUB)",
             pref_audio_entries: &["Show All", "Prioritize Subbed", "Prioritize Dubbed (DUB)"],
-            pref_audio_summary: "Only applies when the source actually declares audio/subtitle tracks; DUB is never invented.",
-            pref_api_title: "Resolution method (site endpoints)",
-            pref_api_entries: &["Automatic (recommended)", "Web session (boot/start)", "Internal GraphQL (site hashes)", "HTML scraping / embeds"],
-            pref_api_summary: "There is no public API: these are internal routes read from the site and reimplemented. It cannot activate a route the site does not use.",
+            pref_audio_summary: "Shown only because AEXT verified these tracks in a real stream; nothing is invented.",
+            pref_api_title: "Preferred API",
+            pref_api_entries: &["Automatic", "Web session", "GraphQL", "HTML"],
+            methods_title: "Playback methods found",
             pref_server_title: "Preferred Server (Default stream)",
             pref_server_summary: "Only reorders servers already found; it does not enable an unavailable server.",
             pref_quality_title: "Preferred Quality (Default stream)",
@@ -271,10 +279,10 @@ fn get_i18n(lang: &str) -> I18nData {
         "pt-br" | "pt" => I18nData {
             pref_audio_title: "Áudio Preferido (LEG / DUB)",
             pref_audio_entries: &["Mostrar Todos", "Priorizar Legendado", "Priorizar Dublado (DUB)"],
-            pref_audio_summary: "Só se aplica quando a fonte declara faixas de áudio/legenda; DUB nunca é inventado.",
-            pref_api_title: "Método de resolução (endpoints do site)",
-            pref_api_entries: &["Automático (recomendado)", "Sessão web (boot/start)", "GraphQL interno (hashes do site)", "Scraping HTML / embeds"],
-            pref_api_summary: "Não existe API pública: são rotas internas lidas do site e replicadas. Não ativa uma rota que o site não usa.",
+            pref_audio_summary: "Exibido apenas porque o AEXT verificou estas faixas num stream real; nada é inventado.",
+            pref_api_title: "API preferida",
+            pref_api_entries: &["Automático", "Sessão web", "GraphQL", "HTML"],
+            methods_title: "Métodos de reprodução encontrados",
             pref_server_title: "Servidor Preferido (Stream Padrão)",
             pref_server_summary: "Apenas reordena servidores já encontrados; não ativa um servidor indisponível.",
             pref_quality_title: "Qualidade Preferida (Stream Padrão)",
@@ -309,10 +317,10 @@ fn get_i18n(lang: &str) -> I18nData {
         _ => I18nData {
             pref_audio_title: "Audio Preferido (SUB / DUB)",
             pref_audio_entries: &["Mostrar Todos", "Priorizar Subtitulado", "Priorizar Doblaje (DUB)"],
-            pref_audio_summary: "Solo se aplica si la fuente declara pistas de audio/subtítulos; DUB nunca se inventa.",
-            pref_api_title: "Método de resolución (endpoints del sitio)",
-            pref_api_entries: &["Automático (recomendado)", "Sesión web (boot/start)", "GraphQL interno (hashes del sitio)", "Scraping HTML / embeds"],
-            pref_api_summary: "No hay API pública: son rutas internas leídas del sitio y replicadas. No activa una ruta que el sitio no usa.",
+            pref_audio_summary: "Aparece solo porque AEXT verificó estas pistas en un stream real; nada se inventa.",
+            pref_api_title: "API preferida",
+            pref_api_entries: &["Automático", "Sesión web", "GraphQL", "HTML"],
+            methods_title: "Métodos disponibles encontrados de reproducción",
             pref_server_title: "Servidor Preferido (Stream por Defecto)",
             pref_server_summary: "Solo reordena servidores ya detectados; no activa un servidor que no está disponible.",
             pref_quality_title: "Calidad Preferida (Stream por Defecto)",
@@ -346,6 +354,15 @@ fn get_i18n(lang: &str) -> I18nData {
             ],
         },
     }
+}
+
+/// Devuelve (mostrar_selector, sub_verificado, dub_verificado). Sin un máster
+/// HLS abierto por AEXT no se genera ningún control SUB/DUB: el DOM o un texto
+/// "DUB" en el HTML no es evidencia de una pista real.
+fn verified_audio_selection(caps: &SiteCapabilities) -> (bool, bool, bool) {
+    let sub = caps.master_verified && caps.sub_verified;
+    let dub = caps.master_verified && caps.dub_verified;
+    (sub || dub, sub, dub)
 }
 
 fn transliterate_char(c: char) -> Option<char> {
@@ -523,12 +540,26 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         client.newCall(request).execute().use { response ->
             val body = if (readBody || isPlaylist(url)) response.body?.string().orEmpty() else ""
             val contentType = response.header("Content-Type").orEmpty()
+            val shortUrl = url.substringBefore('?')
+            Log.d("AEXT", "probe $shortUrl -> HTTP ${response.code} $contentType (${body.length} bytes)")
             val tracks = if (body.contains("#EXT-X-MEDIA")) hlsTracks(body) else emptyList<String>() to emptyList<String>()
-            when {
-                !response.isSuccessful -> StreamProbe(false, "HTTP ${response.code}")
-                contentType.startsWith("text/html", ignoreCase = true) -> StreamProbe(false, "HTML en vez de stream")
-                isPlaylist(url) && !body.contains("#EXTM3U") -> StreamProbe(false, "playlist no válida")
-                else -> StreamProbe(
+            // Un 200 con una playlist vacía o una página de error es el fallo
+            // típico que el reproductor resume como `loading failed`. Lo
+            // convertimos en un error concreto y trazable.
+            val detail = when {
+                !response.isSuccessful -> if (response.code == 403) "HTTP 403 (token/región rechazados)" else "HTTP ${response.code}"
+                contentType.startsWith("text/html", ignoreCase = true) -> "HTML en vez de stream"
+                body.contains("BOT_SESSION_BLOCKED", ignoreCase = true) -> "sesión bloqueada por el sitio"
+                isPlaylist(url) && !body.contains("#EXTM3U") -> "playlist no válida"
+                isPlaylist(url) && !body.contains("#EXT-X-STREAM-INF") && !body.contains("#EXTINF") ->
+                    "playlist vacía (${body.length} bytes)"
+                else -> ""
+            }
+            if (detail.isNotEmpty()) {
+                Log.w("AEXT", "probe fallida $shortUrl: $detail")
+                StreamProbe(false, detail, body.length, body)
+            } else {
+                StreamProbe(
                     true, "HTTP ${response.code}", body.length, body,
                     audioLangs = tracks.first, subLangs = tracks.second,
                 )
@@ -537,6 +568,7 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
     } catch (e: Exception) {
         // Un fallo de red no prueba que el stream esté roto: conservamos el
         // candidato y dejamos constancia de que no se pudo verificar.
+        Log.w("AEXT", "probe de red falló: ${url.substringBefore('?')} -> ${e.message}", e)
         StreamProbe(false, e.message ?: "error de red", inconclusive = true)
     }
 
@@ -546,18 +578,26 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         val childLine = first.body.lineSequence()
             .map { it.trim() }
             .firstOrNull { it.isNotBlank() && !it.startsWith("#") }
-            ?: return first
+            ?: return StreamProbe(false, "máster sin variantes")
         val childUrl = absolutize(url, childLine)
+        Log.d("AEXT", "variante ${childUrl.substringBefore('?')}")
         val child = probeOnce(childUrl, extra, readBody = true)
         if (!child.ok && !child.inconclusive) {
             return StreamProbe(false, "variante: ${child.detail}", inconclusive = child.inconclusive)
         }
+        if (child.ok && !child.body.contains("#EXTINF") && !child.body.contains("#EXT-X-STREAM-INF")) {
+            return StreamProbe(false, "variante vacía (${child.body.length} bytes)")
+        }
         val keyRef = hlsKeyRegex.find(child.body)?.groupValues?.get(1)
             ?: hlsKeyRegex.find(first.body)?.groupValues?.get(1)
         if (keyRef != null) {
-            val key = probeOnce(absolutize(childUrl, keyRef), extra)
+            val key = probeOnce(absolutize(childUrl, keyRef), extra, readBody = true)
             if (!key.ok && !key.inconclusive) return StreamProbe(false, "clave AES: ${key.detail}")
+            if (key.ok && key.size == 0) {
+                return StreamProbe(false, "clave AES vacía")
+            }
         }
+        Log.d("AEXT", "HLS verificado ${url.substringBefore('?')}")
         return StreamProbe(
             true, "HLS verificado", first.size,
             audioLangs = (first.audioLangs + child.audioLangs).distinct(),
@@ -585,6 +625,7 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         val parts = mutableListOf<String>()
         if (probe.audioLangs.isNotEmpty()) parts.add("audio " + probe.audioLangs.joinToString("/"))
         if (probe.subLangs.isNotEmpty()) parts.add("subs " + probe.subLangs.joinToString("/"))
+        if (probe.inconclusive) parts.add("sin verificar")
         if (parts.isEmpty()) return video
         return video.copy(quality = video.quality + " · " + parts.joinToString(" · "))
     }
@@ -597,21 +638,33 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
             val url = video.videoUrl ?: continue
             val own = checkStream(url, video.headers ?: headers)
             if (own.ok || own.inconclusive) {
-                verified.add(if (own.ok) labelWithTracks(video, own) else video)
+                if (own.inconclusive) {
+                    Log.w("AEXT", "candidato entregado sin verificación de red: ${url.substringBefore('?')} (${own.detail})")
+                }
+                verified.add(labelWithTracks(video, own))
                 continue
             }
             val browser = checkStream(url, browserHeaders)
             if (browser.ok || browser.inconclusive) {
                 val chosen = if (browser.ok) {
                     labelWithTracks(video, browser).copy(headers = browserHeaders)
-                } else video
+                } else {
+                    labelWithTracks(video, browser)
+                }
+                if (browser.inconclusive) {
+                    Log.w("AEXT", "candidato entregado con cabeceras de navegador sin verificar: ${url.substringBefore('?')}")
+                }
                 verified.add(chosen)
                 continue
             }
-            failures.add("${url.substringBefore('?')}: ${own.detail}; con cabeceras de navegador: ${browser.detail}")
+            val failure = "${url.substringBefore('?')}: ${own.detail}; con cabeceras de navegador: ${browser.detail}"
+            failures.add(failure)
+            Log.w("AEXT", "stream descartado: $failure")
         }
         if (verified.isEmpty()) {
-            throw Exception("AEXT no pudo verificar ningún stream (${failures.take(3).joinToString(" | ")})")
+            val message = "AEXT no pudo verificar ningún stream (${failures.take(3).joinToString(" | ")})"
+            Log.e("AEXT", message)
+            throw Exception(message)
         }
         return distinctVideos(verified)
     }
@@ -735,37 +788,51 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         val html = response.body?.string().orEmpty()
         val ctx = VideoContext(finalUrl, html)
         val errors = mutableListOf<String>()
+        val strategies = orderedStrategies()
+        Log.d("AEXT", "videoListParse $finalUrl · modo ${apiMode()} · métodos ${strategies.map { it.id }} · HTML ${html.length} bytes")
 
-        for (strategy in orderedStrategies()) {
+        for (strategy in strategies) {
             val candidates = try {
                 strategy.resolve(ctx)
             } catch (e: Exception) {
-                errors.add("${strategy.id}: ${e.message ?: "error"}")
+                val message = "${strategy.id}: ${e.message ?: "error"}"
+                Log.e("AEXT", "resolutor $message", e)
+                errors.add(message)
                 recordStrategy(strategy.id, false)
                 null
             }
-            if (candidates == null) continue // estrategia no aplicable a este sitio
+            if (candidates == null) {
+                Log.d("AEXT", "${strategy.id}: no aplicable a esta página")
+                continue // estrategia no aplicable a este sitio
+            }
             if (candidates.isEmpty()) {
                 recordStrategy(strategy.id, false)
                 errors.add("${strategy.id}: sin candidatos")
+                Log.e("AEXT", "${strategy.id}: sin candidatos")
                 continue
             }
             val verified = try {
                 verifyCandidates(candidates)
             } catch (e: Exception) {
-                errors.add("${strategy.id}: ${e.message ?: "sin stream válido"}")
+                val message = "${strategy.id}: ${e.message ?: "sin stream válido"}"
+                Log.e("AEXT", "verificación $message", e)
+                errors.add(message)
                 recordStrategy(strategy.id, false)
                 continue
             }
             recordStrategy(strategy.id, true)
+            Log.d("AEXT", "${strategy.id}: ${verified.size} streams verificados")
             return verified
         }
         val mode = apiMode()
-        val detail = errors.take(4).joinToString(" | ")
-        throw Exception(
-            if (mode == "auto") "AEXT no pudo resolver ningún stream ($detail)"
-            else "AEXT no pudo resolver ningún stream con el modo ${apiModeLabel(mode)} ($detail). Cambia el método de resolución a Automático en los ajustes de la extensión."
-        )
+        val detail = if (errors.isEmpty()) "ningún método aplicable a esta página" else errors.take(4).joinToString(" | ")
+        val message = if (mode == "auto") {
+            "AEXT no pudo resolver ningún stream ($detail)"
+        } else {
+            "AEXT no pudo resolver ningún stream con el modo ${apiModeLabel(mode)} ($detail). Cambia la API preferida a Automático en los ajustes de la extensión."
+        }
+        Log.e("AEXT", message)
+        throw Exception(message)
     }
 
     private fun htmlEmbedVideos(ctx: VideoContext): List<Video> {
@@ -887,8 +954,15 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
             .set("Accept", "application/json")
             .build()
         plutoFreshClient.newCall(Request.Builder().url(url).headers(h).build()).execute().use { r ->
-            if (!r.isSuccessful) throw Exception("Pluto boot/start HTTP ${r.code}")
+            if (!r.isSuccessful) {
+                val hint = if (r.code == 403) " (región o sesión rechazadas)" else ""
+                throw Exception("Pluto boot/start HTTP ${r.code}$hint")
+            }
             val body = r.body?.string().orEmpty()
+            if (body.contains("BOT_SESSION_BLOCKED", ignoreCase = true)) {
+                throw Exception("Pluto boot/start bloqueó la sesión del reproductor")
+            }
+            Log.d("AEXT", "Pluto boot/start OK (${body.length} bytes)")
             val token = plutoJsonField(body, "sessionToken")
                 ?: throw Exception("Pluto boot/start sin sessionToken")
             val params = plutoJsonField(body, "stitcherParams")
@@ -925,13 +999,18 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         if (!ctx.url.contains("pluto.tv", ignoreCase = true)) return null
         val (kind, id) = plutoContentId(ctx)
             ?: throw Exception("No se pudo extraer el contentId de Pluto TV de ${ctx.url.substringBefore('?')} ni del estado del sitio")
+        Log.d("AEXT", "Pluto contentId=$kind/$id")
         val session = plutoBootSession()
         val segment = if (kind == "movie") "movie" else "episode"
         val master = "${session.stitcher}/v2/stitch/hls/$segment/$id/master.m3u8" +
             "?${session.params}&jwt=${Uri.encode(session.token)}" +
             "&includeExtendedEvents=true&masterJWTPassthrough=true"
         // La región depende de la IP: la leemos del token, no de un ajuste falso.
-        val region = plutoSessionRegion(session.token) ?: siteRegion.takeIf { it.isNotBlank() }
+        val tokenRegion = plutoSessionRegion(session.token)
+        if (tokenRegion != null && siteRegion.isNotBlank() && !tokenRegion.equals(siteRegion, ignoreCase = true)) {
+            Log.w("AEXT", "región del token ($tokenRegion) distinta de la detectada ($siteRegion): el catálogo y las pistas pueden cambiar")
+        }
+        val region = tokenRegion ?: siteRegion.takeIf { it.isNotBlank() }
         val locale = siteLocale.takeIf { it.isNotBlank() }
         val context = listOfNotNull(region, locale).joinToString(" · ")
         val label = if (context.isBlank()) "Pluto TV" else "Pluto TV ($context)"
@@ -1498,12 +1577,55 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
     let site_region = analysis.capabilities.region.as_deref().unwrap_or("");
     let site_locale = analysis.capabilities.locale.as_deref().unwrap_or("");
 
+    // SUB/DUB sólo se ofrece si AEXT abrió un máster real y encontró pistas.
+    let (show_audio, sub_ok, dub_ok) = verified_audio_selection(&analysis.capabilities);
+    let mut audio_labels: Vec<&str> = vec![i18n.pref_audio_entries[0]];
+    let mut audio_values: Vec<&str> = vec!["all"];
+    if sub_ok {
+        audio_labels.push(i18n.pref_audio_entries[1]);
+        audio_values.push("sub");
+    }
+    if dub_ok {
+        audio_labels.push(i18n.pref_audio_entries[2]);
+        audio_values.push("dub");
+    }
     let pref_audio_title = i18n.pref_audio_title;
-    let pref_audio_entries = i18n.pref_audio_entries.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
+    let pref_audio_entries = audio_labels.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
+    let pref_audio_values = audio_values.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
     let pref_audio_summary = i18n.pref_audio_summary;
+    let audio_pref_block = if show_audio {
+        format!(
+            "        val audioPref = ListPreference(screen.context).apply {{\n            key = \"preferred_audio\"\n            title = \"{pref_audio_title}\"\n            entries = arrayOf({pref_audio_entries})\n            entryValues = arrayOf({pref_audio_values})\n            setDefaultValue(\"all\")\n            summary = \"{pref_audio_summary} — %s\"\n        }}\n        screen.addPreference(audioPref)\n\n"
+        )
+    } else {
+        String::new()
+    };
+    let search_audio_block = if show_audio {
+        format!(
+            r#"        val audioFilter = filters.filterIsInstance<{class_name}Filters.AudioFilter>().firstOrNull()
+        val isDubSelected = audioFilter?.let {{ it.vals[it.state].second == "dub" }} ?: false
+
+        val finalQuery = when {{
+            isDubSelected && cleanQuery.isNotBlank() -> "$cleanQuery latino"
+            isDubSelected -> "latino"
+            else -> cleanQuery
+        }}
+"#,
+            class_name = class_name
+        )
+    } else {
+        "        val finalQuery = cleanQuery\n".to_string()
+    };
+
     let pref_api_title = i18n.pref_api_title;
     let pref_api_entries = i18n.pref_api_entries.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
-    let pref_api_summary = i18n.pref_api_summary;
+    let methods = if analysis.capabilities.playback_methods.is_empty() {
+        SiteAnalyzer::playback_methods(&analysis.capabilities)
+    } else {
+        analysis.capabilities.playback_methods.clone()
+    };
+    let methods_title = i18n.methods_title;
+    let methods_summary = methods.join(", ");
     let pref_server_title = i18n.pref_server_title;
     let pref_server_summary = i18n.pref_server_summary;
     let pref_quality_title = i18n.pref_quality_title;
@@ -1517,9 +1639,11 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
 import android.app.Application
 import android.content.SharedPreferences
 import android.net.Uri
+import android.util.Log
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.MultiSelectListPreference
+import androidx.preference.Preference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
@@ -1634,15 +1758,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
     // ============================== SEARCH ANIME ==============================
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {{
         val cleanQuery = query.trim()
-        val audioFilter = filters.filterIsInstance<{class_name}Filters.AudioFilter>().firstOrNull()
-        val isDubSelected = audioFilter?.let {{ it.vals[it.state].second == "dub" }} ?: false
-
-        val finalQuery = when {{
-            isDubSelected && cleanQuery.isNotBlank() -> "$cleanQuery latino"
-            isDubSelected -> "latino"
-            else -> cleanQuery
-        }}
-
+{search_audio_block}
         val url = if (finalQuery.isNotBlank()) {{
             searchUrl(finalQuery, page)
         }} else {{
@@ -1740,25 +1856,22 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
 
     // ============================== PREFERENCES ==============================
     override fun setupPreferenceScreen(screen: PreferenceScreen) {{
-        val audioPref = ListPreference(screen.context).apply {{
-            key = "preferred_audio"
-            title = "{pref_audio_title}"
-            entries = arrayOf({pref_audio_entries})
-            entryValues = arrayOf("all", "sub", "dub")
-            setDefaultValue("all")
-            summary = "{pref_audio_summary} — %s"
-        }}
-        screen.addPreference(audioPref)
-
-        val apiPref = ListPreference(screen.context).apply {{
+{audio_pref_block}        val apiPref = ListPreference(screen.context).apply {{
             key = "api_mode"
             title = "{pref_api_title}"
             entries = arrayOf({pref_api_entries})
             entryValues = arrayOf("auto", "session", "graphql", "html")
             setDefaultValue("auto")
-            summary = "{pref_api_summary} — %s"
+            summary = "%s"
         }}
         screen.addPreference(apiPref)
+
+        val methodsPref = Preference(screen.context).apply {{
+            key = "aext_methods_found"
+            title = "{methods_title}"
+            summary = "{methods_summary}"
+        }}
+        screen.addPreference(methodsPref)
 
         val serverPref = ListPreference(screen.context).apply {{
             key = "preferred_server"
@@ -1800,7 +1913,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         screen.addPreference(genreBlacklistPref)
     }}
 }}
-"#, video_engine = VIDEO_ENGINE_KT, site_cap_formats = site_cap_formats, site_app_version = site_app_version, site_player_cases = site_player_cases, site_region = site_region, site_locale = site_locale, pref_audio_summary = pref_audio_summary, pref_api_title = pref_api_title, pref_api_entries = pref_api_entries, pref_api_summary = pref_api_summary, pref_server_summary = pref_server_summary)
+"#, video_engine = VIDEO_ENGINE_KT, site_cap_formats = site_cap_formats, site_app_version = site_app_version, site_player_cases = site_player_cases, site_region = site_region, site_locale = site_locale, search_audio_block = search_audio_block, audio_pref_block = audio_pref_block, pref_api_title = pref_api_title, pref_api_entries = pref_api_entries, methods_title = methods_title, methods_summary = methods_summary, pref_server_summary = pref_server_summary)
 }
 
 fn generate_manga_source(
@@ -1982,12 +2095,56 @@ object {class_name}Filters {{
 "#)
 }
 
-fn generate_kotlin_filters(class_name: &str, pkg_slug: &str, lang: &str, pkg_lang: &str, pkg_prefix: &str) -> String {
+fn generate_kotlin_filters(
+    class_name: &str,
+    pkg_slug: &str,
+    lang: &str,
+    pkg_lang: &str,
+    pkg_prefix: &str,
+    caps: &SiteCapabilities,
+) -> String {
     let i18n = get_i18n(lang);
     let filter_header = i18n.filter_header;
-    let filter_audio_title = i18n.filter_audio_title;
     let filter_genre_title = i18n.filter_genre_title;
-    let audio_entries = i18n.filter_audio_entries.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
+    let (show_audio, sub_ok, dub_ok) = verified_audio_selection(caps);
+    let mut audio_labels: Vec<&str> = vec![i18n.filter_audio_entries[0]];
+    let mut audio_vals: Vec<(&str, &str)> = vec![("all", "")];
+    if sub_ok {
+        audio_labels.push(i18n.filter_audio_entries[1]);
+        audio_vals.push(("sub", "sub"));
+    }
+    if dub_ok {
+        audio_labels.push(i18n.filter_audio_entries[2]);
+        audio_vals.push(("dub", "dub"));
+    }
+    let audio_entries = audio_labels.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
+    let audio_vals_kt = audio_vals
+        .iter()
+        .map(|(k, v)| format!("Pair(\"{}\", \"{}\")", k, v))
+        .collect::<Vec<_>>()
+        .join(",\n            ");
+    let audio_filter_class = if show_audio {
+        let filter_audio_title = i18n.filter_audio_title;
+        format!(
+            r#"    class AudioFilter : AnimeFilter.Select<String>(
+        "{filter_audio_title}",
+        arrayOf({audio_entries})
+    ) {{
+        val vals = arrayOf(
+            {audio_vals_kt}
+        )
+    }}
+
+"#
+        )
+    } else {
+        String::new()
+    };
+    let audio_filter_item = if show_audio {
+        "        AudioFilter(),\n".to_string()
+    } else {
+        String::new()
+    };
 
     let genres_list = i18n.genres.iter()
         .map(|(name, id)| format!("        Genre(\"{}\", \"{}\")", name, id))
@@ -2006,28 +2163,16 @@ object {class_name}Filters {{
     class GenreFilter(name: String, val genres: List<Genre>) :
         AnimeFilter.Select<String>(name, genres.map {{ it.name }}.toTypedArray())
 
-    class AudioFilter : AnimeFilter.Select<String>(
-        "{filter_audio_title}",
-        arrayOf({audio_entries})
-    ) {{
-        val vals = arrayOf(
-            Pair("all", ""),
-            Pair("sub", "sub"),
-            Pair("dub", "dub")
-        )
-    }}
-
-    val DEFAULT_GENRES = listOf(
+{audio_filter_class}    val DEFAULT_GENRES = listOf(
 {genres_list}
     )
 
     fun getFilterList(): AnimeFilterList = AnimeFilterList(
         Header("{filter_header}"),
-        AudioFilter(),
-        GenreFilter("{filter_genre_title}", DEFAULT_GENRES)
+{audio_filter_item}        GenreFilter("{filter_genre_title}", DEFAULT_GENRES)
     )
 }}
-"#)
+"#, audio_filter_class = audio_filter_class, audio_filter_item = audio_filter_item)
 }
 
 fn generate_android_manifest(pkg_id: &str, class_name: &str, app_label: &str, ext_type: &str) -> String {
@@ -2102,7 +2247,7 @@ mod manifest_tests {
 
 #[cfg(test)]
 mod video_engine_tests {
-    use super::{generate_kotlin_source, VIDEO_ENGINE_KT};
+    use super::{generate_kotlin_filters, generate_kotlin_source, VIDEO_ENGINE_KT};
     use crate::engine::analyzer::{AnalysisResult, SiteCapabilities};
 
     fn pluto_fixture() -> AnalysisResult {
@@ -2177,7 +2322,8 @@ mod video_engine_tests {
             "private val browserHeaders",
             "con cabeceras de navegador",
             "val ctx = VideoContext(finalUrl, html)",
-            "for (strategy in orderedStrategies())",
+            "val strategies = orderedStrategies()",
+            "for (strategy in strategies)",
             "verifyCandidates(candidates)",
         ] {
             assert!(
@@ -2268,7 +2414,9 @@ mod video_engine_tests {
             "private val siteRegion = \"MX\"",
             "private val siteLocale = \"es-419\"",
             "private val siteAppVersion = \"10.12.1096\"",
-            "hay API pública",
+            "title = \"API preferida\"",
+            "Métodos disponibles encontrados de reproducción",
+            "summary = \"Sesión web",
         ] {
             assert!(
                 kt.contains(marker),
@@ -2296,6 +2444,60 @@ mod video_engine_tests {
             assert!(
                 VIDEO_ENGINE_KT.contains(marker),
                 "falta la estrategia de sesión en VIDEO_ENGINE_KT: {}",
+                marker
+            );
+        }
+    }
+
+    #[test]
+    fn sub_dub_ui_is_only_generated_when_a_real_master_verifies_tracks() {
+        let unverified = pluto_fixture();
+        let kt = generate_kotlin_source(
+            &unverified, "Pluto TV", "PlutoTv", "pluto", "es", "es",
+            "eu.kanade.tachiyomi.animeextension",
+        );
+        let filters = generate_kotlin_filters(
+            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension",
+            &unverified.capabilities,
+        );
+        assert!(!kt.contains("key = \"preferred_audio\""), "sin verificación no se ofrece SUB/DUB");
+        assert!(!kt.contains("AudioFilter"), "sin verificación no se genera el filtro de audio");
+        assert!(!filters.contains("AudioFilter"), "sin verificación no se genera AudioFilter");
+        assert!(kt.contains("val finalQuery = cleanQuery"), "la búsqueda no debe inventar 'latino'");
+
+        let mut verified = pluto_fixture();
+        verified.capabilities.master_verified = true;
+        verified.capabilities.sub_verified = true;
+        let kt = generate_kotlin_source(
+            &verified, "Pluto TV", "PlutoTv", "pluto", "es", "es",
+            "eu.kanade.tachiyomi.animeextension",
+        );
+        let filters = generate_kotlin_filters(
+            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension",
+            &verified.capabilities,
+        );
+        assert!(kt.contains("key = \"preferred_audio\""), "con SUB verificado sí se ofrece el selector");
+        assert!(filters.contains("class AudioFilter"), "con SUB verificado sí se genera el filtro");
+        assert!(!kt.contains("entryValues = arrayOf(\"all\", \"sub\", \"dub\")"), "DUB no verificado no se ofrece");
+        assert!(kt.contains("entryValues = arrayOf(\"all\", \"sub\")"), "sólo la opción verificada");
+    }
+
+    #[test]
+    fn stream_failures_are_logged_and_explained_instead_of_silent_loading_failed() {
+        for marker in [
+            "import android.util.Log",
+            "Log.e(\"AEXT\"",
+            "Log.w(\"AEXT\"",
+            "playlist vacía",
+            "máster sin variantes",
+            "variante vacía",
+            "HTTP 403 (token/región rechazados)",
+            "sin verificar",
+            "ningún método aplicable a esta página",
+        ] {
+            assert!(
+                VIDEO_ENGINE_KT.contains(marker) || marker == "import android.util.Log",
+                "falta comprobación o traza de errores: {}",
                 marker
             );
         }

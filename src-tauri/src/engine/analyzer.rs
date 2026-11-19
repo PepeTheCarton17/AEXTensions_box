@@ -79,6 +79,18 @@ pub struct SiteCapabilities {
     pub region: Option<String>,
     #[serde(default)]
     pub locale: Option<String>,
+    /// Verificación real contra un máster HLS de ejemplo. Sin esto, AEXT no
+    /// debería ofrecer un selector SUB/DUB: no sabe si existe doblaje.
+    #[serde(default)]
+    pub master_verified: bool,
+    #[serde(default)]
+    pub sub_verified: bool,
+    #[serde(default)]
+    pub dub_verified: bool,
+    /// Métodos de reproducción realmente encontrados, con nombres legibles.
+    /// Se derivan de `player_cases` y `api_endpoints`; no son una API pública.
+    #[serde(default)]
+    pub playback_methods: Vec<String>,
     /// Caso de reproductor detectado, que decide el orden inicial de las
     /// estrategias: `session-bootstrap`, `graphql-persisted`, `hls-master`,
     /// `dash-mpd`, `iframe-player`, `drm-widevine`, `ads-hls`.
@@ -110,6 +122,17 @@ struct DetailProbe {
     html: String,
 }
 
+/// Resultado de abrir un máster HLS de muestra. Sólo se marca como verificado
+/// si el cuerpo es una playlist real; de lo contrario AEXT no ofrece SUB/DUB.
+#[derive(Debug, Default)]
+struct MasterTrackProbe {
+    attempted: bool,
+    verified: bool,
+    detail: String,
+    audio_languages: Vec<String>,
+    subtitle_languages: Vec<String>,
+}
+
 impl SiteAnalyzer {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
@@ -135,7 +158,11 @@ impl SiteAnalyzer {
 
         // El sondeo del detalle se hace aquí, fuera de `analyze_page`, porque
         // `scraper::Html` no es `Send` y no puede sobrevivir a un `await`.
-        if let Some(path) = demo_href {
+        // Si el usuario analizó directamente una ficha, la propia URL ya trae
+        // el contentId; si analizó la portada, se añade la tarjeta de muestra.
+        let mut sample_hints: Vec<String> = vec![result.entry_url.clone()];
+        if let Some(path) = &demo_href {
+            sample_hints.push(path.clone());
             let probe = self
                 .probe_detail(&format!("{}{}", result.url, path))
                 .await;
@@ -145,6 +172,9 @@ impl SiteAnalyzer {
             if !probe.html.is_empty() {
                 let detail_caps = Self::detect_capabilities(&probe.html);
                 Self::merge_capabilities(&mut result.capabilities, &detail_caps);
+                if let Some(hint) = Self::content_id_from_hint(&probe.html) {
+                    sample_hints.push(hint.1);
+                }
             }
             if !probe.fetched {
                 result.warnings.push(format!(
@@ -163,6 +193,38 @@ impl SiteAnalyzer {
                 ));
             }
         }
+
+        // Verificación real contra un máster de muestra. Sin una playlist HLS
+        // abierta y leída, AEXT NO ofrecerá el apartado SUB/DUB en la extensión.
+        let master = self.probe_master_tracks(&result, &sample_hints).await;
+        if master.attempted {
+            if master.verified {
+                result.capabilities.master_verified = true;
+                result.capabilities.audio_languages = master.audio_languages.clone();
+                result.capabilities.subtitle_languages = master.subtitle_languages.clone();
+                result.capabilities.sub_verified = !master.subtitle_languages.is_empty()
+                    || Self::label_mentions(&master.audio_languages, &["sub", "legend"]);
+                result.capabilities.dub_verified =
+                    Self::label_mentions(&master.audio_languages, &["dub", "dobl", "latino", "cast"]);
+                if !result.capabilities.sub_verified && !result.capabilities.dub_verified {
+                    let tracks = if master.audio_languages.is_empty() {
+                        "sin pistas de audio declaradas".to_string()
+                    } else {
+                        format!("solo {}", master.audio_languages.join(", "))
+                    };
+                    result.warnings.push(format!(
+                        "Máster HLS verificado ({}): {}, sin subtítulos ni doblaje confirmados. La extensión no ofrecerá el apartado SUB/DUB.",
+                        master.detail, tracks
+                    ));
+                }
+            } else {
+                result.warnings.push(format!(
+                    "No se pudo verificar un máster HLS de ejemplo ({}). La extensión no afirmará pistas SUB/DUB ni calidades reales.",
+                    master.detail
+                ));
+            }
+        }
+        result.capabilities.playback_methods = Self::playback_methods(&result.capabilities);
 
         // Avisos finales sobre capacidades, ya con la ficha de ejemplo mezclada.
         if result.capabilities.stream_formats.is_empty() {
@@ -419,41 +481,289 @@ impl SiteAnalyzer {
             if !out.contains(&value) {
                 out.push(value);
             }
-            if out.len() >= limit {
-                break;
+        }
+        // En Next.js el código del reproductor vive en `pages/_app`, que suele
+        // ir AFTER de varios chunks de analytics. Priorizarlo evita analizar
+        // sólo librerías de terceros y no ver ningún método de reproducción.
+        out.sort_by_key(|url| {
+            let lower = url.to_lowercase();
+            if lower.contains("pages/_app") || lower.contains("/_app-") {
+                0
+            } else if lower.contains("/chunks/main") {
+                1
+            } else if lower.contains("/chunks/webpack") {
+                2
+            } else if lower.contains("/static/chunks/") {
+                3
+            } else {
+                4
+            }
+        });
+        out.truncate(limit);
+        out
+    }
+
+    /// Lee unos pocos bundles propios y detecta capacidades en su texto. Se
+    /// analiza cada bundle completo (no un recorte): los hashes y el token de
+    /// sesión pueden estar al final de un bundle de 2 MB. Se paran en cuanto
+    /// se han encontrado los dos casos del reproductor web.
+    async fn scan_script_capabilities(&self, entry_url: &str) -> Option<SiteCapabilities> {
+        let html = self.client.get(entry_url).send().await.ok()?.text().await.ok()?;
+        let origin = Url::parse(entry_url).ok()?.origin().ascii_serialization();
+        let urls = Self::script_urls(&html, &origin, 8);
+        if urls.is_empty() {
+            return None;
+        }
+
+        let mut aggregate = SiteCapabilities::default();
+        let mut found_any = false;
+        for url in urls {
+            if let Ok(resp) = self.client.get(&url).send().await {
+                if let Ok(text) = resp.text().await {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    found_any = true;
+                    let caps = Self::detect_capabilities(&text);
+                    Self::merge_capabilities(&mut aggregate, &caps);
+                    let has_session = aggregate.player_cases.iter().any(|c| c == "session-bootstrap");
+                    let has_graphql = aggregate.player_cases.iter().any(|c| c == "graphql-persisted");
+                    if has_session && has_graphql {
+                        break;
+                    }
+                }
+            }
+        }
+        if !found_any {
+            return None;
+        }
+        Some(aggregate)
+    }
+
+    /// Extrae un contentId de muestra de una ruta o de un estado hidratado.
+    fn content_id_from_hint(hint: &str) -> Option<(String, String)> {
+        let flat = hint.replace("\\\"", "\"");
+        if let Ok(re) = Regex::new(r"(?i)(episodes?|movies?)/([0-9a-f]{24})") {
+            if let Some(cap) = re.captures(&flat) {
+                let raw = cap[1].to_lowercase();
+                let kind = if raw.starts_with("movie") { "movie" } else { "episode" };
+                return Some((kind.to_string(), cap[2].to_string()));
+            }
+        }
+        let re = Regex::new(r#"(?i)contentId\s*[:=]\s*["']([0-9a-f]{24})["']"#).ok()?;
+        let id = re.captures(&flat)?[1].to_string();
+        let kind = if flat.to_lowercase().contains("/movie") { "movie" } else { "episode" };
+        Some((kind.to_string(), id))
+    }
+
+    /// Identificador con forma de UUID para el sondeo. Pluto no valida que
+    /// corresponda a una sesión de navegador real, sólo que tenga ese formato.
+    fn probe_client_id() -> String {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let pid = std::process::id() as u64;
+        let tail = (nanos ^ pid.wrapping_mul(0x9e37_79b9_7f4a_7c15)) & 0x0fff_ffff_ffff;
+        format!(
+            "{:08x}-{:04x}-4{:03x}-8{:03x}-{:012x}",
+            (nanos ^ (pid << 32)) as u32,
+            ((nanos >> 32) & 0xffff) as u16,
+            ((nanos >> 12) & 0x0fff) as u16,
+            ((nanos >> 40) & 0x0fff) as u16,
+            tail
+        )
+    }
+
+    /// Comprueba de verdad un máster HLS de muestra. Es la única fuente de las
+    /// banderas `master_verified`/`sub_verified`/`dub_verified`: un texto
+    /// "SUB"/"DUB" en el DOM no cuenta como pista de audio o subtítulo.
+    async fn probe_master_tracks(
+        &self,
+        result: &AnalysisResult,
+        hints: &[String],
+    ) -> MasterTrackProbe {
+        let mut out = MasterTrackProbe::default();
+        let uses_session = result
+            .capabilities
+            .player_cases
+            .iter()
+            .any(|c| c == "session-bootstrap")
+            || result.capabilities.api_endpoints.iter().any(|e| {
+                e.contains("/v4/start") || e.contains("boot.") || e.contains("/stitch/")
+            });
+        if !uses_session {
+            return out;
+        }
+        let Some((kind, id)) = hints.iter().find_map(|h| Self::content_id_from_hint(h)) else {
+            out.detail = "no se encontró un contenido de muestra".to_string();
+            return out;
+        };
+        out.attempted = true;
+
+        let app_version = result
+            .capabilities
+            .app_version
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .unwrap_or("10.12.1096");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let boot_url = format!(
+            "https://boot.pluto.tv/v4/start?appName=web&appVersion={}&deviceVersion=124.0.0.0&deviceModel=web&deviceMake=chrome&deviceType=web&clientID={}&clientModelNumber=1.0.0&serverSideAds=false&clientTime={}",
+            app_version,
+            Self::probe_client_id(),
+            now
+        );
+        let Ok(boot) = self
+            .client
+            .get(&boot_url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            .header("Referer", "https://pluto.tv/")
+            .header("Accept", "application/json")
+            .send()
+            .await
+        else {
+            out.detail = "boot/start no respondió".to_string();
+            return out;
+        };
+        if !boot.status().is_success() {
+            out.detail = format!("boot/start HTTP {}", boot.status());
+            return out;
+        }
+        let Ok(boot_body) = boot.text().await else {
+            out.detail = "boot/start sin cuerpo".to_string();
+            return out;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&boot_body) else {
+            out.detail = "boot/start no devolvió JSON".to_string();
+            return out;
+        };
+        let token = json.get("sessionToken").and_then(|v| v.as_str()).unwrap_or("");
+        let params = json.get("stitcherParams").and_then(|v| v.as_str()).unwrap_or("");
+        let stitcher = json
+            .get("stitcher")
+            .and_then(|v| v.as_str())
+            .unwrap_or("https://service-stitcher.clusters.pluto.tv");
+        if token.is_empty() || params.is_empty() {
+            out.detail = "boot/start sin sesión utilizable".to_string();
+            return out;
+        }
+
+        let segment = if kind == "movie" { "movie" } else { "episode" };
+        let master_url = format!(
+            "{}/v2/stitch/hls/{}/{}/master.m3u8?{}&jwt={}&includeExtendedEvents=true&masterJWTPassthrough=true",
+            stitcher.trim_end_matches('/'), segment, id, params, token
+        );
+        let Ok(master) = self
+            .client
+            .get(&master_url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            .header("Referer", "https://pluto.tv/")
+            .header("Accept", "*/*")
+            .send()
+            .await
+        else {
+            out.detail = "máster HLS no respondió".to_string();
+            return out;
+        };
+        let status = master.status();
+        let Ok(body) = master.text().await else {
+            out.detail = "máster HLS sin cuerpo".to_string();
+            return out;
+        };
+        if !status.is_success() {
+            out.detail = format!("máster HLS HTTP {}", status);
+            if status.as_u16() == 403 {
+                out.detail.push_str(" (token o región rechazados)");
+            }
+            return out;
+        }
+        if !body.contains("#EXTM3U")
+            || !(body.contains("#EXT-X-STREAM-INF") || body.contains("#EXTINF"))
+        {
+            out.detail = format!("respuesta sin playlist ({} bytes)", body.len());
+            return out;
+        }
+
+        out.verified = true;
+        out.detail = format!("máster HLS ({} bytes)", body.len());
+        if let Ok(re) = Regex::new(r#"#EXT-X-MEDIA:([^\r\n]+)"#) {
+            for cap in re.captures_iter(&body) {
+                let line = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+                let attr = |name: &str| -> String {
+                    Regex::new(&format!(r#"{}="([^"]*)""#, name))
+                        .ok()
+                        .and_then(|r| r.captures(line))
+                        .map(|c| c[1].trim().to_string())
+                        .unwrap_or_default()
+                };
+                let kind = attr("TYPE").to_uppercase();
+                let lang = attr("LANGUAGE");
+                let name = attr("NAME");
+                let label = match (name.is_empty(), lang.is_empty() || lang == "und") {
+                    (true, true) => String::new(),
+                    (true, false) => lang,
+                    (false, true) => name,
+                    (false, false) => format!("{} ({})", name, lang),
+                };
+                if label.is_empty() {
+                    continue;
+                }
+                let list = if kind == "AUDIO" {
+                    &mut out.audio_languages
+                } else if kind == "SUBTITLES" {
+                    &mut out.subtitle_languages
+                } else {
+                    continue;
+                };
+                if !list.contains(&label) {
+                    list.push(label);
+                }
             }
         }
         out
     }
 
-    /// Lee unos pocos bundles propios y detecta capacidades en su texto.
-    /// Límites estrictos: el análisis debe seguir siendo rápido y predecible.
-    async fn scan_script_capabilities(&self, entry_url: &str) -> Option<SiteCapabilities> {
-        let html = self.client.get(entry_url).send().await.ok()?.text().await.ok()?;
-        let origin = Url::parse(entry_url).ok()?.origin().ascii_serialization();
-        let urls = Self::script_urls(&html, &origin, 5);
-        if urls.is_empty() {
-            return None;
-        }
+    fn label_mentions(labels: &[String], needles: &[&str]) -> bool {
+        labels.iter().any(|label| {
+            let lower = label.to_lowercase();
+            needles.iter().any(|needle| lower.contains(needle))
+        })
+    }
 
-        let budget = 400_000usize;
-        let mut bundle = String::new();
-        for url in urls {
-            if bundle.len() >= budget {
-                break;
-            }
-            if let Ok(resp) = self.client.get(&url).send().await {
-                if let Ok(text) = resp.text().await {
-                    let room = budget.saturating_sub(bundle.len());
-                    bundle.extend(text.chars().take(room));
-                    bundle.push('\n');
-                }
-            }
+    /// Nombres legibles de los métodos encontrados. Se muestran tal cual: si
+    /// no hay evidencia, se dice expresamente que no hay método confirmado.
+    pub fn playback_methods(caps: &SiteCapabilities) -> Vec<String> {
+        let mut out = Vec::new();
+        let cases = &caps.player_cases;
+        if cases.iter().any(|c| c == "session-bootstrap") {
+            out.push("Sesión web".to_string());
         }
-        if bundle.is_empty() {
-            return None;
+        if cases.iter().any(|c| c == "graphql-persisted") {
+            out.push("GraphQL interno".to_string());
         }
-        Some(Self::detect_capabilities(&bundle))
+        if cases.iter().any(|c| c == "hls-master") {
+            out.push("HLS".to_string());
+        }
+        if cases.iter().any(|c| c == "dash-mpd") {
+            out.push("DASH".to_string());
+        }
+        if cases.iter().any(|c| c == "iframe-player")
+            || caps.stream_formats.iter().any(|f| f == "iframe")
+        {
+            out.push("Reproductor incrustado".to_string());
+        }
+        if caps.stream_formats.iter().any(|f| f == "mp4") {
+            out.push("MP4 directo".to_string());
+        }
+        if out.is_empty() {
+            out.push("Sin método confirmado".to_string());
+        }
+        out
     }
 
     /// Detecta capacidades reales a partir del HTML disponible. Es
@@ -628,6 +938,10 @@ impl SiteAnalyzer {
         merge(&mut base.subtitle_languages, &extra.subtitle_languages);
         merge(&mut base.api_endpoints, &extra.api_endpoints);
         merge(&mut base.player_cases, &extra.player_cases);
+        merge(&mut base.playback_methods, &extra.playback_methods);
+        base.master_verified |= extra.master_verified;
+        base.sub_verified |= extra.sub_verified;
+        base.dub_verified |= extra.dub_verified;
         if base.app_version.is_none() {
             base.app_version = extra.app_version.clone();
         }
@@ -1637,6 +1951,34 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "https://site.example/_next/static/chunks/main.js");
         assert!(urls.iter().all(|u| u.starts_with("https://site.example/")));
+    }
+
+    #[test]
+    fn app_bundle_is_scanned_before_analytics_chunks() {
+        let html = r#"<html><head>
+          <script src="/scripts/tn/dit.svc.datahub.js"></script>
+          <script src="/scripts/tn/adobe.min.js"></script>
+          <script src="/_next/static/chunks/webpack.js"></script>
+          <script src="/_next/static/chunks/pages/_app-33c.js"></script>
+        </head></html>"#;
+        let urls = SiteAnalyzer::script_urls(html, "https://site.example", 2);
+        assert_eq!(urls.len(), 2);
+        assert!(urls[0].contains("pages/_app"), "el bundle del reproductor debe ir primero: {:?}", urls);
+    }
+
+    #[test]
+    fn content_id_and_playback_methods_are_concrete() {
+        let (kind, id) = SiteAnalyzer::content_id_from_hint("/latam/movies/693ace640c94b06078d2a33f/")
+            .expect("contentId de ejemplo");
+        assert_eq!(kind, "movie");
+        assert_eq!(id, "693ace640c94b06078d2a33f");
+        let caps = SiteCapabilities {
+            player_cases: vec!["session-bootstrap".to_string(), "hls-master".to_string()],
+            ..Default::default()
+        };
+        let methods = SiteAnalyzer::playback_methods(&caps);
+        assert_eq!(methods, vec!["Sesión web".to_string(), "HLS".to_string()]);
+        assert_eq!(SiteAnalyzer::playback_methods(&SiteCapabilities::default()), vec!["Sin método confirmado".to_string()]);
     }
 
     #[test]

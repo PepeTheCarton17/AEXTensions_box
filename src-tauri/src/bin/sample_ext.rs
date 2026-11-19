@@ -60,6 +60,16 @@ fn anime_fixture(name: &str, host: &str, episode_selector: &str, catalog: bool) 
             } else {
                 Vec::new()
             },
+            // Un fixture con SUB verificado y otro sin nada verificado: el CI
+            // debe compilar ambos caminos del generador (con y sin AudioFilter).
+            master_verified: catalog,
+            sub_verified: catalog,
+            dub_verified: false,
+            playback_methods: if catalog {
+                vec!["Sesión web".to_string(), "HLS".to_string()]
+            } else {
+                Vec::new()
+            },
             ..Default::default()
         },
     }
