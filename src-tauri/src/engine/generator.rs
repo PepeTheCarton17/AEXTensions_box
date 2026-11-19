@@ -584,11 +584,42 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
             .apply()
     }
 
+    private fun strategyPriority(id: String): Int {
+        // El caso detectado fija el orden inicial; las estadísticas reales lo
+        // corrigen después. Así no empezamos probando una ruta imposible.
+        if (sitePlayerCases.contains("session-bootstrap")) {
+            return when (id) {
+                "api-session" -> 0
+                "api-graphql" -> 1
+                else -> 2
+            }
+        }
+        if (sitePlayerCases.contains("graphql-persisted")) {
+            return when (id) {
+                "api-graphql" -> 0
+                "api-session" -> 1
+                else -> 2
+            }
+        }
+        if (sitePlayerCases.contains("iframe-player") || sitePlayerCases.contains("dash-mpd")) {
+            return when (id) {
+                "html-embeds" -> 0
+                "api-session" -> 1
+                else -> 2
+            }
+        }
+        return when (id) {
+            "api-session" -> 0
+            "api-graphql" -> 1
+            else -> 2
+        }
+    }
+
     private fun orderedStrategies(): List<VideoStrategy> {
         val all = listOf(
-            VideoStrategy("api-session", 0) { ctx -> apiSessionVideos(ctx) },
-            VideoStrategy("api-graphql", 1) { ctx -> plutoGraphqlVideos(ctx) },
-            VideoStrategy("html-embeds", 2) { ctx -> htmlEmbedVideos(ctx) },
+            VideoStrategy("api-session", strategyPriority("api-session")) { ctx -> apiSessionVideos(ctx) },
+            VideoStrategy("api-graphql", strategyPriority("api-graphql")) { ctx -> plutoGraphqlVideos(ctx) },
+            VideoStrategy("html-embeds", strategyPriority("html-embeds")) { ctx -> htmlEmbedVideos(ctx) },
         )
         return all.sortedWith(
             compareByDescending<VideoStrategy> { s ->
@@ -1332,6 +1363,10 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
         .as_deref()
         .filter(|v| !v.is_empty())
         .unwrap_or("10.12.1096");
+    let site_player_cases = analysis.capabilities.player_cases.iter()
+        .map(|c| format!("\"{}\"", c))
+        .collect::<Vec<_>>()
+        .join(", ");
 
     let pref_audio_title = i18n.pref_audio_title;
     let pref_audio_entries = i18n.pref_audio_entries.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
@@ -1562,6 +1597,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
     // a la verificación real: sólo ordenan los candidatos a probar.
     private val siteStreamFormats = setOf<String>({site_cap_formats})
     private val siteAppVersion = "{site_app_version}"
+    private val sitePlayerCases = setOf<String>({site_player_cases})
 
 {video_engine}
 
@@ -1617,7 +1653,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         screen.addPreference(genreBlacklistPref)
     }}
 }}
-"#, video_engine = VIDEO_ENGINE_KT, site_cap_formats = site_cap_formats, site_app_version = site_app_version)
+"#, video_engine = VIDEO_ENGINE_KT, site_cap_formats = site_cap_formats, site_app_version = site_app_version, site_player_cases = site_player_cases)
 }
 
 fn generate_manga_source(
@@ -1982,11 +2018,14 @@ mod video_engine_tests {
             "private fun strategyStats(",
             "private fun recordStrategy(",
             "private fun orderedStrategies()",
-            "VideoStrategy(\"api-session\", 0)",
-            "VideoStrategy(\"api-graphql\", 1)",
-            "VideoStrategy(\"html-embeds\", 2)",
+            "VideoStrategy(\"api-session\", strategyPriority(\"api-session\"))",
+            "VideoStrategy(\"api-graphql\", strategyPriority(\"api-graphql\"))",
+            "VideoStrategy(\"html-embeds\", strategyPriority(\"html-embeds\"))",
             "(ok + 1.0) / (ok + fail + 2.0)",
             "thenBy { it.priority }",
+            "sitePlayerCases.contains(\"session-bootstrap\")",
+            "sitePlayerCases.contains(\"graphql-persisted\")",
+            "sitePlayerCases.contains(\"iframe-player\")",
         ] {
             assert!(
                 VIDEO_ENGINE_KT.contains(marker),

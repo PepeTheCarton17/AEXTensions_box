@@ -876,6 +876,7 @@ function renderAnalysisCard(site) {
       <div><span class="text-[10px] text-slate-400">Subtítulos:</span> ${capBadges(caps.subtitle_languages, 'bg-violet-500/10 text-violet-300 border border-violet-500/20')}</div>
       <div><span class="text-[10px] text-slate-400">APIs:</span> ${capBadges(caps.api_endpoints, 'bg-cyan-500/10 text-cyan-300 border border-cyan-500/20')}</div>
       <div><span class="text-[10px] text-slate-400">App:</span> ${caps.app_version ? escapeHtml(caps.app_version) : '<span class="text-slate-500 text-[10px]">No detectada</span>'}</div>
+      <div><span class="text-[10px] text-slate-400">Casos:</span> ${capBadges(caps.player_cases, 'bg-amber-500/10 text-amber-300 border border-amber-500/20')}</div>
     </div>`;
 
   const warnings = Array.isArray(site.warnings) ? site.warnings : [];

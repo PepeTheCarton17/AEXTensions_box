@@ -46,6 +46,15 @@ fn anime_fixture(name: &str, host: &str, episode_selector: &str, catalog: bool) 
             // Un fixture con sesión bootstrap para que el CI compile también
             // el `siteAppVersion` inyectado en la estrategia de arranque.
             app_version: catalog.then(|| "10.12.1096".to_string()),
+            player_cases: if catalog {
+                vec![
+                    "session-bootstrap".to_string(),
+                    "hls-master".to_string(),
+                    "ads-hls".to_string(),
+                ]
+            } else {
+                Vec::new()
+            },
             api_endpoints: if catalog {
                 vec!["https://boot.pluto.tv/v4/start".to_string()]
             } else {

@@ -71,6 +71,11 @@ pub struct SiteCapabilities {
     /// de sesión la necesita para reproducir el arranque del reproductor web.
     #[serde(default)]
     pub app_version: Option<String>,
+    /// Caso de reproductor detectado, que decide el orden inicial de las
+    /// estrategias: `session-bootstrap`, `graphql-persisted`, `hls-master`,
+    /// `dash-mpd`, `iframe-player`, `drm-widevine`, `ads-hls`.
+    #[serde(default)]
+    pub player_cases: Vec<String>,
     /// Lo que no se pudo confirmar; se muestra como aviso, no como capacidad.
     #[serde(default)]
     pub unverified: Vec<String>,
@@ -158,6 +163,11 @@ impl SiteAnalyzer {
         let capability_notes = result.capabilities.unverified.clone();
         for note in &capability_notes {
             result.warnings.push(note.clone());
+        }
+        if result.capabilities.player_cases.iter().any(|c| c == "drm-widevine") {
+            result.warnings.push(
+                "Se detectó DRM (Widevine/PlayReady/FairPlay): el reproductor de Nekoyomi no puede descifrarlo. Se priorizarán variantes HLS sin DRM; si no existen, la reproducción fallará.".to_string(),
+            );
         }
 
         Ok(result)
@@ -393,6 +403,39 @@ impl SiteAnalyzer {
             caps.stream_formats.push("iframe".to_string());
         }
 
+        // Caso del reproductor. Clasifica el sitio para que el generador pueda
+        // ordenar las estrategias antes de tener aciertos/fallos reales, y para
+        // avisar cuando el stream exige algo que Nekoyomi no puede hacer.
+        let mut cases: Vec<String> = Vec::new();
+        if lower.contains("stitcherparams") || lower.contains("sessiontoken")
+            || (lower.contains("boot.") && lower.contains("/v4/start"))
+        {
+            push_unique(&mut cases, "session-bootstrap".to_string());
+        }
+        if (lower.contains("graphql") || lower.contains("apollo"))
+            && (lower.contains("persisteddocumenthash") || lower.contains("tnpersisteddocumenthash"))
+        {
+            push_unique(&mut cases, "graphql-persisted".to_string());
+        }
+        if caps.stream_formats.iter().any(|f| f == "hls") {
+            push_unique(&mut cases, "hls-master".to_string());
+        }
+        if caps.stream_formats.iter().any(|f| f == "dash") {
+            push_unique(&mut cases, "dash-mpd".to_string());
+        }
+        if caps.stream_formats.iter().any(|f| f == "iframe") {
+            push_unique(&mut cases, "iframe-player".to_string());
+        }
+        if lower.contains("widevine") || lower.contains("playready") || lower.contains("fairplay") {
+            push_unique(&mut cases, "drm-widevine".to_string());
+        }
+        if lower.contains("_ad/") || lower.contains("_ad%2f")
+            || lower.contains("plutotv_filler") || lower.contains("dai.google.com")
+        {
+            push_unique(&mut cases, "ads-hls".to_string());
+        }
+        caps.player_cases = cases;
+
         // Calidades e idiomas de un máster HLS embebido en el propio HTML.
         if let Ok(re) = Regex::new(r#"RESOLUTION\s*=\s*\d+x(\d+)"#) {
             for cap in re.captures_iter(body) {
@@ -477,6 +520,7 @@ impl SiteAnalyzer {
         merge(&mut base.audio_languages, &extra.audio_languages);
         merge(&mut base.subtitle_languages, &extra.subtitle_languages);
         merge(&mut base.api_endpoints, &extra.api_endpoints);
+        merge(&mut base.player_cases, &extra.player_cases);
         if base.app_version.is_none() {
             base.app_version = extra.app_version.clone();
         }
@@ -1498,6 +1542,25 @@ mod tests {
         assert_eq!(caps.app_version.as_deref(), Some("10.12.1096"));
         assert!(caps.api_endpoints.iter().any(|v| v.contains("/v4/start")));
         assert!(caps.stream_formats.contains(&"hls".to_string()));
+        assert!(caps.player_cases.iter().any(|c| c == "session-bootstrap"));
+        assert!(caps.player_cases.iter().any(|c| c == "hls-master"));
+    }
+
+    #[test]
+    fn classifies_graphql_drm_and_ad_cases_from_js_payloads() {
+        let html = r#"<html><body><script>
+          const ext = {"tnPersistedDocumentHash":"abc"};
+          fetch("https://site.example/api/tn/app-shell/graphql/");
+          const license = "com.widevine.alpha";
+          const filler = "plutotv_filler";
+          const mpd = "https://cdn.example.com/stream.mpd";
+        </script></body></html>"#;
+
+        let caps = SiteAnalyzer::detect_capabilities(html);
+        assert!(caps.player_cases.iter().any(|c| c == "graphql-persisted"));
+        assert!(caps.player_cases.iter().any(|c| c == "drm-widevine"));
+        assert!(caps.player_cases.iter().any(|c| c == "ads-hls"));
+        assert!(caps.player_cases.iter().any(|c| c == "dash-mpd"));
     }
 
     #[test]
