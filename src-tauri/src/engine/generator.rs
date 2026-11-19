@@ -625,7 +625,7 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
      *  versiones de la librería de extensiones y provoca un NoSuchMethodError
      *  en tiempo de ejecución antes de mostrar las calidades. */
     private fun rebuildVideo(video: Video, quality: String, headers: Headers?): Video {
-        return Video(video.videoUrl.orEmpty(), video.videoTitle.orEmpty(), quality, headers)
+        return Video(video.url, quality, video.videoUrl, headers)
     }
 
     /** Etiqueta con idiomas REALES del HLS. Si no hay pistas declaradas, no añade nada. */
@@ -1024,7 +1024,7 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         val locale = siteLocale.takeIf { it.isNotBlank() }
         val context = listOfNotNull(region, locale).joinToString(" · ")
         val label = if (context.isBlank()) "Pluto TV" else "Pluto TV ($context)"
-        return listOf(Video(master, label, "HLS", browserHeaders))
+        return listOf(Video(ctx.url, label, master, browserHeaders))
     }
 
     // ---- Estrategia de respaldo: GraphQL legado con hashes persistentes ----
@@ -1185,7 +1185,7 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         //    que se perdía si sólo le pasábamos una variante suelta.
         val masterUrl = plutoPlayout + path.trimStart('/')
         val masterVideoUrl = "$masterUrl?jwt=${Uri.encode(jwt)}"
-        return listOf(Video(masterVideoUrl, "Pluto TV", "HLS", headers))
+        return listOf(Video(ctx.url, "Pluto TV", masterVideoUrl, headers))
     }
 
     private fun serverFromUrl(url: String): String {
@@ -2430,9 +2430,17 @@ mod video_engine_tests {
             !VIDEO_ENGINE_KT.contains(".copy(headers"),
             "el template no debe llamar a Video.copy$default para cambiar cabeceras"
         );
+        assert!(
+            !VIDEO_ENGINE_KT.contains(", \"HLS\", browserHeaders"),
+            "el tercer argumento de Video es videoUrl, no el tipo de stream"
+        );
+        assert!(
+            !VIDEO_ENGINE_KT.contains(", \"HLS\", headers"),
+            "el tercer argumento de Video es videoUrl, no el tipo de stream"
+        );
         for marker in [
             "private fun rebuildVideo(video: Video, quality: String, headers: Headers?): Video",
-            "return Video(video.videoUrl.orEmpty(), video.videoTitle.orEmpty(), quality, headers)",
+            "return Video(video.url, quality, video.videoUrl, headers)",
             "return rebuildVideo(video, labeled, video.headers)",
             "rebuildVideo(labeled, labeled.quality.orEmpty(), browserHeaders)",
         ] {
@@ -2477,7 +2485,7 @@ mod video_engine_tests {
             "plutoJsonField(body, \"sessionToken\")",
             "plutoJsonField(body, \"stitcherParams\")",
             "includeExtendedEvents=true&masterJWTPassthrough=true",
-            "Video(master, label, \"HLS\", browserHeaders)",
+            "Video(ctx.url, label, master, browserHeaders)",
             "private fun plutoSessionRegion(token: String): String?",
             "private fun apiSessionVideos(ctx: VideoContext): List<Video>?",
             "private fun plutoGraphqlVideos(ctx: VideoContext): List<Video>?",
