@@ -620,6 +620,14 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
      *  cabeceras de navegador y entrega el Video con las que sí funcionaron.
      *  Si ninguno funciona, lanza un error concreto en vez de dejar que el
      *  reproductor muestre un genérico `loading failed`. */
+    /** Reconstruye un Video con el constructor público de 4 argumentos. Evita
+     *  `copy`/`copy$default`: esa función sintética no existe en todas las
+     *  versiones de la librería de extensiones y provoca un NoSuchMethodError
+     *  en tiempo de ejecución antes de mostrar las calidades. */
+    private fun rebuildVideo(video: Video, quality: String, headers: Headers?): Video {
+        return Video(video.videoUrl.orEmpty(), video.videoTitle.orEmpty(), quality, headers)
+    }
+
     /** Etiqueta con idiomas REALES del HLS. Si no hay pistas declaradas, no añade nada. */
     private fun labelWithTracks(video: Video, probe: StreamProbe): Video {
         val parts = mutableListOf<String>()
@@ -627,7 +635,8 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
         if (probe.subLangs.isNotEmpty()) parts.add("subs " + probe.subLangs.joinToString("/"))
         if (probe.inconclusive) parts.add("sin verificar")
         if (parts.isEmpty()) return video
-        return video.copy(quality = video.quality + " · " + parts.joinToString(" · "))
+        val labeled = video.quality.orEmpty() + " · " + parts.joinToString(" · ")
+        return rebuildVideo(video, labeled, video.headers)
     }
 
     private fun verifyCandidates(candidates: List<Video>): List<Video> {
@@ -646,10 +655,11 @@ const VIDEO_ENGINE_KT: &str = r##"    // ============================== VIDEO LI
             }
             val browser = checkStream(url, browserHeaders)
             if (browser.ok || browser.inconclusive) {
+                val labeled = labelWithTracks(video, browser)
                 val chosen = if (browser.ok) {
-                    labelWithTracks(video, browser).copy(headers = browserHeaders)
+                    rebuildVideo(labeled, labeled.quality.orEmpty(), browserHeaders)
                 } else {
-                    labelWithTracks(video, browser)
+                    labeled
                 }
                 if (browser.inconclusive) {
                     Log.w("AEXT", "candidato entregado con cabeceras de navegador sin verificar: ${url.substringBefore('?')}")
@@ -2405,6 +2415,30 @@ mod video_engine_tests {
             assert!(
                 VIDEO_ENGINE_KT.contains(marker),
                 "falta detección honesta de idiomas/región/contentId: {}",
+                marker
+            );
+        }
+    }
+
+    #[test]
+    fn generated_kotlin_never_calls_the_video_copy_synthetic() {
+        assert!(
+            !VIDEO_ENGINE_KT.contains("video.copy("),
+            "el template no debe llamar a Video.copy$default: no existe en todas las versiones de Nekoyomi"
+        );
+        assert!(
+            !VIDEO_ENGINE_KT.contains(".copy(headers"),
+            "el template no debe llamar a Video.copy$default para cambiar cabeceras"
+        );
+        for marker in [
+            "private fun rebuildVideo(video: Video, quality: String, headers: Headers?): Video",
+            "return Video(video.videoUrl.orEmpty(), video.videoTitle.orEmpty(), quality, headers)",
+            "return rebuildVideo(video, labeled, video.headers)",
+            "rebuildVideo(labeled, labeled.quality.orEmpty(), browserHeaders)",
+        ] {
+            assert!(
+                VIDEO_ENGINE_KT.contains(marker),
+                "falta la reconstrucción compatible de Video: {}",
                 marker
             );
         }
