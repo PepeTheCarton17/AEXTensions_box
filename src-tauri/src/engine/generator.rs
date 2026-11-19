@@ -1626,6 +1626,12 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
     };
     let methods_title = i18n.methods_title;
     let methods_summary = methods.join(", ");
+    let escape_kt = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let methods_entries = methods
+        .iter()
+        .map(|m| format!("\"{}\"", escape_kt(m)))
+        .collect::<Vec<_>>()
+        .join(", ");
     let pref_server_title = i18n.pref_server_title;
     let pref_server_summary = i18n.pref_server_summary;
     let pref_quality_title = i18n.pref_quality_title;
@@ -1643,7 +1649,6 @@ import android.util.Log
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.MultiSelectListPreference
-import androidx.preference.Preference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
@@ -1866,10 +1871,14 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         }}
         screen.addPreference(apiPref)
 
-        val methodsPref = Preference(screen.context).apply {{
+        val methodsPref = ListPreference(screen.context).apply {{
             key = "aext_methods_found"
             title = "{methods_title}"
+            entries = arrayOf({methods_entries})
+            entryValues = arrayOf({methods_entries})
             summary = "{methods_summary}"
+            setDefaultValue(arrayOf({methods_entries}).first())
+            isEnabled = false
         }}
         screen.addPreference(methodsPref)
 
@@ -1913,7 +1922,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         screen.addPreference(genreBlacklistPref)
     }}
 }}
-"#, video_engine = VIDEO_ENGINE_KT, site_cap_formats = site_cap_formats, site_app_version = site_app_version, site_player_cases = site_player_cases, site_region = site_region, site_locale = site_locale, search_audio_block = search_audio_block, audio_pref_block = audio_pref_block, pref_api_title = pref_api_title, pref_api_entries = pref_api_entries, methods_title = methods_title, methods_summary = methods_summary, pref_server_summary = pref_server_summary)
+"#, video_engine = VIDEO_ENGINE_KT, site_cap_formats = site_cap_formats, site_app_version = site_app_version, site_player_cases = site_player_cases, site_region = site_region, site_locale = site_locale, search_audio_block = search_audio_block, audio_pref_block = audio_pref_block, pref_api_title = pref_api_title, pref_api_entries = pref_api_entries, methods_title = methods_title, methods_summary = methods_summary, methods_entries = methods_entries, pref_server_summary = pref_server_summary)
 }
 
 fn generate_manga_source(
