@@ -4,6 +4,55 @@ use std::collections::{HashMap, HashSet};
 use regex::Regex;
 use url::Url;
 
+/// Equivalencia entre el nombre real del parámetro del sitio y la etiqueta
+/// canónica que muestran las extensiones de la comunidad (Genre, Year, ...).
+/// Se usa tanto para nombrar el filtro como para decidir qué tokens de un
+/// bundle son filtros de catálogo y cuáles son simple configuración interna.
+const CANONICAL_FILTER_NAMES: &[(&str, &str)] = &[
+    ("year", "Year"),
+    ("years", "Year"),
+    ("releaseyear", "Year"),
+    ("country", "Country"),
+    ("countryid", "Country"),
+    ("countryids", "Country"),
+    ("countries", "Country"),
+    ("genre", "Genre"),
+    ("genres", "Genre"),
+    ("genreid", "Genre"),
+    ("genreids", "Genre"),
+    ("category", "Category"),
+    ("categories", "Category"),
+    ("categoryid", "Category"),
+    ("categoryids", "Category"),
+    ("audio", "Audio Language"),
+    ("audiolanguage", "Audio Language"),
+    ("audiolanguageid", "Audio Language"),
+    ("audiolanguageids", "Audio Language"),
+    ("audio_language", "Audio Language"),
+    ("quality", "Quality"),
+    ("qualities", "Quality"),
+    ("copyrightholderids", "Copyright Holder"),
+    ("copyrightholder", "Copyright Holder"),
+    ("isframedub", "Dubbed"),
+    ("dub", "Dubbed"),
+    ("dubbed", "Dubbed"),
+    ("isdub", "Dubbed"),
+    ("sortby", "Sort By"),
+    ("sort_by", "Sort By"),
+    ("sorting", "Sort By"),
+    ("status", "Status"),
+    ("cues", "Subtitles"),
+    ("subtitle", "Subtitles"),
+    ("subtitles", "Subtitles"),
+    ("sub_language", "Subtitles"),
+    ("display", "Display"),
+    ("view", "Display"),
+    ("name", "Search"),
+    ("q", "Search"),
+    ("query", "Search"),
+    ("search", "Search"),
+];
+
 /// Un título real encontrado en datos estructurados (schema.org ItemList).
 /// Se usa cuando el catálogo HTML está vacío por tratarse de una SPA.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2308,8 +2357,14 @@ impl SiteAnalyzer {
             if hits < 2 {
                 continue;
             }
+            // El array puede mezclar filtros reales con claves de configuración
+            // (tiendas, esquemas, timeouts, eventos...). Un `hits >= 2` sólo
+            // demuestra que el array parece una lista de filtros; NO autoriza a
+            // publicar todos sus tokens. Se acepta cada token por separado.
             for token in &tokens {
-                add_param(token);
+                if Self::is_filter_like_token(token, search_param) {
+                    add_param(token);
+                }
             }
         }
 
@@ -2441,6 +2496,21 @@ impl SiteAnalyzer {
         tokens
     }
 
+    /// Un token sólo es un filtro de catálogo si su nombre es reconocible como
+    /// parámetro (year, genreIds, sortBy, isFrameDub...) y no es un dato interno.
+    /// Evita que un array de configuración se convierta en campos raros como
+    /// "Appdeeplinkscheme" o "Authenticationqrcooldown" en la extensión.
+    fn is_filter_like_token(param: &str, search_param: Option<&str>) -> bool {
+        if Self::ignored_filter_param(param, search_param) {
+            return false;
+        }
+        let lower = param.to_lowercase();
+        if CANONICAL_FILTER_NAMES.iter().any(|(key, _)| *key == lower.as_str()) {
+            return true;
+        }
+        lower.ends_with("id") || lower.ends_with("ids") || lower.ends_with("by")
+    }
+
     fn ignored_filter_param(key: &str, search_param: Option<&str>) -> bool {
         let k = key.to_lowercase();
         if k.starts_with("utm_")
@@ -2495,24 +2565,8 @@ impl SiteAnalyzer {
     /// así que se ignora: la equivalencia se hace por nombre de parámetro.
     fn canonical_filter_name(param: &str) -> String {
         let key = param.to_lowercase();
-        let known = match key.as_str() {
-            "year" | "years" | "releaseyear" => "Year",
-            "country" | "countryid" | "countryids" | "countries" => "Country",
-            "genre" | "genres" | "genreid" | "genreids" => "Genre",
-            "category" | "categories" | "categoryid" | "categoryids" => "Category",
-            "audio" | "audiolanguage" | "audiolanguageid" | "audiolanguageids" | "audio_language" => "Audio Language",
-            "quality" | "qualities" => "Quality",
-            "copyrightholderids" | "copyrightholder" => "Copyright Holder",
-            "isframedub" | "dub" | "dubbed" | "isdub" => "Dubbed",
-            "sortby" | "sort_by" | "sorting" => "Sort By",
-            "status" => "Status",
-            "cues" | "subtitle" | "subtitles" | "sub_language" => "Subtitles",
-            "display" | "view" => "Display",
-            "name" | "q" | "query" | "search" => "Search",
-            _ => "",
-        };
-        if !known.is_empty() {
-            return known.to_string();
+        if let Some((_, label)) = CANONICAL_FILTER_NAMES.iter().find(|(name, _)| *name == key.as_str()) {
+            return (*label).to_string();
         }
         let without_suffix = key
             .strip_suffix("ids")
@@ -3600,6 +3654,30 @@ render(nf,{options:opts,instanceId:"catalog"});"#;
         assert!(params.contains(&"genreIds"));
         assert!(params.contains(&"status"));
         assert!(params.contains(&"sortBy"));
+    }
+
+    #[test]
+    fn js_bundles_never_turn_config_keys_into_filters() {
+        // Array real de un bundle: mezcla parámetros de catálogo con claves de
+        // configuración de la app. Antes, un solo `hits >= 2` publicaba TODOS
+        // los tokens como filtros de texto.
+        let js = r#"let nm=["year","countryIds","genreIds","audioLanguageIds","quality"],nh=[...nm,"categoryIds","CopyrightHolderIds","isFrameDub","name","sortBy","status","appDeeplinkScheme","appstoreLink","googleplayLink","authenticationCodeCooldown","authenticationQrCooldown","cookiesExpireInDays","gtmEvents","modals","siteUrl","clickMerchant","clickService","parseCardType","paymeMerchant","plumMerchant","renderCardError","resolveSubFeatureIcon"];
+render(nf,{instanceId:"catalog",options:nh});"#;
+        let filters = SiteAnalyzer::detect_filters_from_js(js, Some("name"));
+        let params: Vec<&str> = filters.iter().map(|f| f.param.as_str()).collect();
+        for expected in ["year", "countryIds", "genreIds", "audioLanguageIds", "quality", "categoryIds", "CopyrightHolderIds", "isFrameDub", "sortBy", "status"] {
+            assert!(params.contains(&expected), "falta el filtro real {expected} en {:?}", params);
+        }
+        for bogus in [
+            "appDeeplinkScheme", "appstoreLink", "googleplayLink", "authenticationCodeCooldown",
+            "authenticationQrCooldown", "cookiesExpireInDays", "gtmEvents", "modals", "siteUrl",
+            "clickMerchant", "clickService", "parseCardType", "paymeMerchant", "plumMerchant",
+            "renderCardError", "resolveSubFeatureIcon",
+        ] {
+            assert!(!params.contains(&bogus), "clave de configuración expuesta como filtro: {bogus}");
+        }
+        assert!(filters.iter().any(|f| f.name == "Dubbed" && f.param == "isFrameDub"));
+        assert!(filters.iter().all(|f| f.name.chars().all(|c| c.is_ascii())));
     }
 
     #[test]

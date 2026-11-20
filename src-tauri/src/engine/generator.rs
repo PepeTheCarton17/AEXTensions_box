@@ -1901,13 +1901,18 @@ fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_n
             r#"        val urlBuilder = Uri.parse(url).buildUpon()
         for (f in filters) {{
             when (f) {{
-                is {class_name}Filters.ParamSelectFilter -> if (f.state > 0) {{
-                    urlBuilder.appendQueryParameter(f.param, f.vals[f.state - 1].second)
+                is {class_name}Filters.QueryPartFilter -> {{
+                    val value = f.toQueryPart()
+                    if (value.isNotBlank()) urlBuilder.appendQueryParameter(f.param, value)
                 }}
-                is {class_name}Filters.ParamCheckFilter -> if (f.state) {{
-                    urlBuilder.appendQueryParameter(f.param, f.value)
+                is {class_name}Filters.CheckBoxFilterList -> {{
+                    f.state.filter {{ it.state }}.forEach {{ box ->
+                        f.pairs.firstOrNull {{ it.first == box.name }}?.second?.let {{ value ->
+                            urlBuilder.appendQueryParameter(f.param, value)
+                        }}
+                    }}
                 }}
-                is {class_name}Filters.ParamTextFilter -> if (f.state.isNotBlank()) {{
+                is {class_name}Filters.TextFilter -> if (f.state.isNotBlank()) {{
                     urlBuilder.appendQueryParameter(f.param, f.state)
                 }}
                 else -> Unit
@@ -2637,7 +2642,7 @@ fn generate_kotlin_filters(
         };
         let entry = &mut grouped[index].1;
         // Un filtro `text` no aporta valores: al quedarse `values` vacío se
-        // genera un ParamTextFilter en lugar de un selector con opciones.
+        // genera un TextFilter en lugar de un selector con opciones.
         if f.kind != "text"
             && !f.value.is_empty()
             && !entry.values.iter().any(|(_, value)| value == &f.value)
@@ -2677,57 +2682,75 @@ fn generate_kotlin_filters(
             format!("        Header(\"{}\"),\n{}", kt(i18n.filter_genre_blacklist_title), items),
         )
     };
-    // El bloque `when (f)` del Kotlin de búsqueda referencia las tres clases
-    // siempre que existan filtros del sitio, así que hay que definirlas todas
-    // juntas. Emitir sólo la clase que se usa deja referencias sin resolver:
-    // dos valores para un mismo parámetro generan un ParamSelectFilter, pero el
-    // `when` sigue mencionando ParamCheckFilter y ParamTextFilter.
+    // Se usan las mismas clases que las extensiones de la comunidad
+    // (QueryPartFilter, CheckBoxFilterList/CheckBoxVal, TextFilter, SortFilter):
+    // nombres y formas estándar en lugar de ParamSelectFilter/ParamCheckFilter.
+    // El bloque `when (f)` de búsqueda referencia todas juntas, así que se
+    // definen en bloque aunque un sitio concreto no use alguna de ellas.
     let mut param_classes = String::new();
     if !grouped.is_empty() {
         param_classes.push_str(
-            r#"    class ParamSelectFilter(name: String, val param: String, val vals: Array<Pair<String, String>>) :
-        AnimeFilter.Select<String>(name, (listOf("All") + vals.map { it.first }).toTypedArray())
+            r#"    open class QueryPartFilter(displayName: String, val param: String, val vals: Array<Pair<String, String>>) :
+        AnimeFilter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
+        fun toQueryPart(): String = vals[state].second
+    }
 
 "#,
         );
         param_classes.push_str(
-            r#"    class ParamCheckFilter(name: String, val param: String, val value: String) :
-        AnimeFilter.CheckBox(name, false)
+            r#"    open class CheckBoxFilterList(name: String, val param: String, val pairs: Array<Pair<String, String>>) :
+        AnimeFilter.Group<AnimeFilter.CheckBox>(name, pairs.map { CheckBoxVal(it.first, false) })
 
 "#,
         );
         param_classes.push_str(
-            r#"    class ParamTextFilter(name: String, val param: String) : AnimeFilter.Text(name)
+            r#"    class CheckBoxVal(name: String, state: Boolean = false) : AnimeFilter.CheckBox(name, state)
+
+"#,
+        );
+        param_classes.push_str(
+            r#"    class TextFilter(name: String, val param: String) : AnimeFilter.Text(name)
 
 "#,
         );
     }
     param_classes.push_str(&exclude_class);
+    // Género, país, categoría, formato, idioma y subtítulos son listas multiselección
+    // en los repos de referencia; año, estado, orden, calidad y similares son select.
+    const MULTISELECT_LABELS: &[&str] = &[
+        "Genre", "Country", "Category", "Format", "Audio Language", "Subtitles", "Copyright Holder",
+    ];
     let param_items = grouped
         .iter()
         .map(|(param, group)| {
-            if group.values.len() > 1 {
-                let vals = group
-                    .values
-                    .iter()
-                    .map(|(label, value)| {
-                        format!("Pair(\"{}\", \"{}\")", kt(label), kt(value))
-                    })
+            let pairs = group
+                .values
+                .iter()
+                .map(|(label, value)| format!("Pair(\"{}\", \"{}\")", kt(label), kt(value)))
+                .collect::<Vec<_>>();
+            if !group.values.is_empty() && MULTISELECT_LABELS.contains(&group.name.as_str()) {
+                format!(
+                    "        CheckBoxFilterList(\"{}\", \"{}\", arrayOf({})),\n",
+                    kt(&group.name),
+                    kt(param),
+                    pairs.join(", ")
+                )
+            } else if !pairs.is_empty() {
+                let opts = std::iter::once("Pair(\"All\", \"\")".to_string())
+                    .chain(pairs)
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!(
-                    "        ParamSelectFilter(\"{}\", \"{}\", arrayOf({})),\n",
-                    kt(&group.name), kt(param), vals
-                )
-            } else if group.values.len() == 1 {
-                format!(
-                    "        ParamCheckFilter(\"{}\", \"{}\", \"{}\"),\n",
-                    kt(&group.name), kt(param), kt(&group.values[0].1)
+                    "        QueryPartFilter(\"{}\", \"{}\", arrayOf({})),\n",
+                    kt(&group.name),
+                    kt(param),
+                    opts
                 )
             } else {
                 format!(
-                    "        ParamTextFilter(\"{}\", \"{}\"),\n",
-                    kt(&group.name), kt(param)
+                    "        TextFilter(\"{}\", \"{}\"),\n",
+                    kt(&group.name),
+                    kt(param)
                 )
             }
         })
@@ -3131,8 +3154,8 @@ mod video_engine_tests {
             "alternateTitle = \"English title\"",
             "withJsonLdFallback(page, lastSearchQuery)",
             "lastSearchQuery = finalQuery",
-            "urlBuilder.appendQueryParameter(f.param, f.vals[f.state - 1].second)",
-            "is PlutoTvFilters.ParamSelectFilter",
+            "val value = f.toQueryPart()",
+            "is PlutoTvFilters.QueryPartFilter",
             "else -> Unit",
             "pickTitle(element, \"h2\")",
             "data-title-es",
@@ -3142,8 +3165,8 @@ mod video_engine_tests {
             assert!(kt.contains(marker), "falta en el Kotlin generado: {marker}");
         }
         for marker in [
-            "class ParamSelectFilter",
-            "ParamSelectFilter(\"Género\", \"genreIds\", arrayOf(Pair(\"1\", \"1\"), Pair(\"2\", \"2\")))",
+            "class QueryPartFilter",
+            "QueryPartFilter(\"Género\", \"genreIds\", arrayOf(Pair(\"All\", \"\"), Pair(\"1\", \"1\"), Pair(\"2\", \"2\")))",
         ] {
             assert!(filters.contains(marker), "falta en los filtros generados: {marker}");
         }
@@ -3164,8 +3187,8 @@ mod video_engine_tests {
         );
         assert!(filters.contains("Header(\"Search & Catalog Filters\")"));
         assert!(!filters.contains("Filtros de búsqueda"));
-        assert!(filters.contains("class ParamTextFilter"));
-        assert!(filters.contains("ParamTextFilter(\"Genre\", \"genreIds\")"));
+        assert!(filters.contains("class TextFilter"));
+        assert!(filters.contains("TextFilter(\"Genre\", \"genreIds\")"));
         assert!(filters.contains("Pair(\"Publish Date\", \"publish_date\")"));
         assert!(filters.contains("Pair(\"Imdb Rating\", \"imdb_rating\")"));
     }
@@ -3259,7 +3282,7 @@ mod video_engine_tests {
         let filters = generate_kotlin_filters(
             "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
         );
-        assert!(filters.contains("ParamSelectFilter(\"Genre\", \"genreIds\", arrayOf(Pair(\"Comedy\", \"4\")"), "{}", filters);
+        assert!(filters.contains("CheckBoxFilterList(\"Genre\", \"genreIds\", arrayOf(Pair(\"Comedy\", \"4\")"), "{}", filters);
         assert!(filters.contains("ExcludeFilter(\"Genre: Comedy\", \"4\")"), "{}", filters);
         assert!(filters.contains("ExcludeFilter(\"Category: Series\", \"3\")"), "{}", filters);
         assert!(!filters.contains("Ecchi"), "no se permiten géneros inventados");
