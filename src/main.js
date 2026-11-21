@@ -101,6 +101,8 @@ async function invokeBackend(command, args = {}) {
     case 'update_extension':
     case 'update_all_extensions':
     case 'sync_extension_catalog':
+    case 'check_extensions_in_repo':
+    case 'restore_extension_repo_state':
     case 'generate_extensions':
       throw new Error('Esta acción requiere la aplicación nativa de AEXT (no está disponible en el modo navegador).');
     case 'delete_extension':
@@ -172,8 +174,12 @@ const elements = {
 
   // Catalog
   extensionsCatalogGrid: document.getElementById('extensions-catalog-grid'),
+  deletedExtensionsSection: document.getElementById('deleted-extensions-section'),
+  deletedExtensionsGrid: document.getElementById('deleted-extensions-grid'),
+  deletedExtCount: document.getElementById('deleted-ext-count'),
   badgeExtCount: document.getElementById('badge-ext-count'),
   btnRefreshExtensions: document.getElementById('btn-refresh-extensions'),
+  btnCheckRepo: document.getElementById('btn-check-repo'),
   extSearch: document.getElementById('ext-search'),
   extRepoFilter: document.getElementById('ext-repo-filter'),
   btnSyncExtensions: document.getElementById('btn-sync-extensions'),
@@ -1441,6 +1447,10 @@ if (elements.btnSuccessCopyRepo) {
 }
 
 // ==================== EXTENSIONS CATALOG ====================
+function isRepoMissing(ext) {
+  return ext.repo_state === 'missing' && !ext.repo_ignore_missing;
+}
+
 function filteredExtensions(list = state.extensions) {
   const query = (elements.extSearch?.value || '').trim().toLowerCase();
   const repo = (elements.extRepoFilter?.value || '').replace(/\/$/, '');
@@ -1453,7 +1463,7 @@ function filteredExtensions(list = state.extensions) {
 }
 
 function refreshRepoFilters() {
-  const repos = [...new Set(state.extensions.map((e) => e.github_repo_url).filter(Boolean))]
+  const repos = [...new Set(state.extensions.filter((e) => !isRepoMissing(e)).map((e) => e.github_repo_url).filter(Boolean))]
     .map((url) => url.replace(/\/$/, ''))
     .sort();
   for (const select of [elements.extRepoFilter, elements.updatePromptRepo]) {
@@ -1480,7 +1490,7 @@ async function loadExtensions() {
     const list = await invokeBackend('get_created_extensions') || [];
     state.extensions = list;
     refreshRepoFilters();
-    elements.badgeExtCount.textContent = filteredExtensions(list).length;
+    elements.badgeExtCount.textContent = filteredExtensions(list.filter((e) => !isRepoMissing(e))).length;
     renderExtensionsGrid(list);
   } catch (e) {
     console.error('Error cargando extensiones:', e);
@@ -1488,7 +1498,7 @@ async function loadExtensions() {
 }
 
 function renderExtensionsGrid(list = state.extensions) {
-  const visible = filteredExtensions(list);
+  const visible = filteredExtensions(list).filter((ext) => !isRepoMissing(ext));
   if (visible.length === 0) {
     elements.extensionsCatalogGrid.innerHTML = `
       <div class="col-span-full py-12 text-center text-slate-500 text-xs">
@@ -1774,9 +1784,122 @@ function renderExtensionsGrid(list = state.extensions) {
       }
     });
   });
+
+  renderDeletedExtensionsGrid(list);
 }
 
-elements.btnRefreshExtensions.addEventListener('click', loadExtensions);
+function renderDeletedExtensionsGrid(list = state.extensions) {
+  const section = elements.deletedExtensionsSection;
+  const grid = elements.deletedExtensionsGrid;
+  if (!section || !grid) return;
+
+  const visible = filteredExtensions(list).filter(isRepoMissing);
+  if (visible.length === 0) {
+    section.classList.add('hidden');
+    grid.innerHTML = '';
+    return;
+  }
+
+  section.classList.remove('hidden');
+  if (elements.deletedExtCount) elements.deletedExtCount.textContent = String(visible.length);
+  grid.innerHTML = '';
+
+  for (const ext of visible) {
+    const icon = escapeHtml(iconFor(ext));
+    const iconFallback = escapeHtml(fallbackIcon(ext.name));
+    const card = document.createElement('div');
+    card.className = 'p-4 rounded-2xl bg-surface-900/60 border border-rose-500/20 opacity-80 space-y-3';
+    card.innerHTML = `
+      <div class="flex items-start gap-3">
+        <img class="w-10 h-10 rounded-xl bg-surface-950 object-cover ring-1 ring-white/10" src="${icon}" onerror="this.onerror=null;this.src='${iconFallback}'" alt="${escapeHtml(ext.name)}">
+        <div class="min-w-0 flex-1">
+          <h3 class="text-sm font-bold text-slate-300 truncate">${escapeHtml(ext.name)} <span class="ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-300 border border-rose-500/20">${escapeHtml(t('ext.deleted_badge'))}</span></h3>
+          <p class="text-[11px] font-mono text-slate-500 truncate">${escapeHtml(ext.pkg_id)}</p>
+          <p class="mt-1 text-[11px] text-slate-500">${escapeHtml(t('ext.deleted_hint'))}</p>
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-2 border-t border-surface-800 pt-3">
+        <button data-restore-repo-pkg="${escapeHtml(ext.pkg_id)}" class="btn-restore-ext-repo px-3 py-2 rounded-xl text-xs font-semibold bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 transition-all">
+          ${escapeHtml(t('ext.restore'))}
+        </button>
+        <button data-delete-pkg="${escapeHtml(ext.pkg_id)}" class="btn-delete-ext px-3 py-2 rounded-xl text-xs font-medium bg-surface-800 hover:bg-red-500/10 text-slate-400 hover:text-red-400 border border-surface-700 transition-all" title="${escapeHtml(t('ext.delete'))}">
+          ${escapeHtml(t('ext.delete'))}
+        </button>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+
+  grid.querySelectorAll('.btn-restore-ext-repo').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      const pkgId = e.currentTarget.getAttribute('data-restore-repo-pkg');
+      if (!pkgId) return;
+      if (!confirm(t('alerts.confirm_restore_repo', { pkg: pkgId }))) return;
+      const button = e.currentTarget;
+      button.disabled = true;
+      try {
+        await invokeBackend('restore_extension_repo_state', { pkgId });
+        appendTerminalLog('SUCCESS', t('logs.restored_repo', { pkg: pkgId }));
+        await loadExtensions();
+      } catch (err) {
+        const detail = String(err);
+        appendTerminalLog('ERROR', detail);
+        alert(detail);
+        button.disabled = false;
+      }
+    });
+  });
+
+  grid.querySelectorAll('.btn-delete-ext').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      const pkgId = e.currentTarget.getAttribute('data-delete-pkg');
+      if (!confirm(t('alerts.confirm_delete', { pkg: pkgId }))) return;
+      try {
+        await invokeBackend('delete_extension', { pkgId });
+        appendTerminalLog('SUCCESS', `${pkgId}: ${t('ext.delete')}`);
+        await loadExtensions();
+        refreshBackupExtensions();
+      } catch (err) {
+        const detail = String(err);
+        appendTerminalLog('ERROR', detail);
+        alert(detail);
+      }
+    });
+  });
+}
+
+async function checkRepoState() {
+  if (!elements.btnCheckRepo) return 0;
+  const button = elements.btnCheckRepo;
+  button.disabled = true;
+  button.classList.add('opacity-60', 'cursor-wait');
+  try {
+    const result = await invokeBackend('check_extensions_in_repo');
+    if (result && result.missing > 0) {
+      appendTerminalLog('WARN', t('logs.repo_missing', { count: result.missing }));
+    } else if (result) {
+      appendTerminalLog('SUCCESS', t('logs.repo_ok', { count: result.checked || 0 }));
+    }
+    return result ? result.missing || 0 : 0;
+  } catch (err) {
+    // Sin sesión de GitHub o sin red no podemos afirmar nada: se mantienen los
+    // estados anteriores y se muestra el motivo.
+    appendTerminalLog('WARN', t('logs.repo_check_error', { error: String(err) }));
+    return 0;
+  } finally {
+    button.disabled = false;
+    button.classList.remove('opacity-60', 'cursor-wait');
+  }
+}
+
+elements.btnRefreshExtensions.addEventListener('click', async () => {
+  await checkRepoState();
+  await loadExtensions();
+});
+elements.btnCheckRepo?.addEventListener('click', async () => {
+  await checkRepoState();
+  await loadExtensions();
+});
 
 // ==================== UPDATES AFTER INSTALLING A NEW AEXT VERSION ====================
 // Se guarda la versión exacta de AEXT que ya vio el aviso. Al instalar otra
@@ -1787,7 +1910,7 @@ function extensionsForRepo(repoUrl) {
   if (!repoUrl) return state.extensions;
   const selected = repoUrl.replace(/\/$/, '');
   return state.extensions.filter(
-    (ext) => (ext.github_repo_url || '').replace(/\/$/, '') === selected
+    (ext) => !isRepoMissing(ext) && (ext.github_repo_url || '').replace(/\/$/, '') === selected
   );
 }
 
@@ -2186,6 +2309,9 @@ elements.btnClearLogs.addEventListener('click', () => {
 window.addEventListener('DOMContentLoaded', async () => {
   appendTerminalLog('INFO', t('logs.init'));
   await checkAuthStatus();
+  // Detección automática al abrir AEXT: si un módulo ya no está en su repo,
+  // la ficha pasa a «Eliminadas» sin que el usuario tenga que buscarla.
+  await checkRepoState();
   await loadExtensions();
   refreshBackupExtensions();
 

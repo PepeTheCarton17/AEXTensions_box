@@ -200,6 +200,10 @@ export const I18N = {
     'logs.compile_fail': 'La compilación de {pkg} falló.',
     'logs.compile_detail': 'Detalle de Gradle: {detail}',
     'logs.restore_ok': 'Copia {backup} restaurada ({count} archivos).',
+    'logs.restored_repo': 'Ficha de {pkg} restaurada en AEXT. El módulo remoto no se ha tocado.',
+    'logs.repo_ok': 'Módulos verificados en el repositorio: {count}.',
+    'logs.repo_missing': '{count} extensión(es) ya no están en el repositorio y se movieron a «Eliminadas».',
+    'logs.repo_check_error': 'No se pudo verificar el repositorio: {error}',
     'logs.patch_ok': 'Parche aplicado a {pkg} (nueva versión {version}).',
     'logs.folder': 'Código en: {path}',
 
@@ -233,6 +237,7 @@ export const I18N = {
     'alerts.missing_ext': 'Primero genera o selecciona una extensión.',
     'alerts.restore_ok': 'Copia restaurada: {count} archivos.',
     'alerts.restore_error': 'No se pudo restaurar la copia: {error}',
+    'alerts.confirm_restore_repo': '¿Volver a activar la ficha de {pkg} en AEXT?\n\nEsto NO vuelve a crear el módulo en GitHub; solo lo saca de «Eliminadas».',
 
     'ext.cms': 'CMS Detectado',
     'ext.audio': 'Audio Preferido',
@@ -256,6 +261,11 @@ export const I18N = {
     'ext.no_download': 'Sin descarga disponible',
     'ext.github': 'Ver repositorio en GitHub',
     'ext.open_folder': 'Abrir carpeta',
+    'ext.check_repo': 'Verificar repositorio',
+    'ext.deleted_section': 'Eliminadas del repositorio',
+    'ext.deleted_badge': 'Eliminada',
+    'ext.deleted_hint': 'El módulo ya no existe en el repositorio de GitHub. La ficha está deshabilitada.',
+    'ext.restore': 'Restaurar ficha',
   },
 
   en: {
@@ -455,6 +465,10 @@ export const I18N = {
     'logs.compile_fail': 'Build of {pkg} failed.',
     'logs.compile_detail': 'Gradle detail: {detail}',
     'logs.restore_ok': 'Backup {backup} restored ({count} files).',
+    'logs.restored_repo': 'Entry for {pkg} restored in AEXT. The remote module was not touched.',
+    'logs.repo_ok': 'Modules checked in the repository: {count}.',
+    'logs.repo_missing': '{count} extension(s) are no longer in the repository and were moved to "Deleted".',
+    'logs.repo_check_error': 'Could not check the repository: {error}',
     'logs.patch_ok': 'Patch applied to {pkg} (new version {version}).',
     'logs.folder': 'Code at: {path}',
 
@@ -488,6 +502,7 @@ export const I18N = {
     'alerts.missing_ext': 'Generate or select an extension first.',
     'alerts.restore_ok': 'Backup restored: {count} files.',
     'alerts.restore_error': 'Could not restore the backup: {error}',
+    'alerts.confirm_restore_repo': 'Reactivate the entry for {pkg} in AEXT?\n\nThis does NOT recreate the module on GitHub; it only moves it out of "Deleted".',
 
     'ext.cms': 'Detected CMS',
     'ext.audio': 'Preferred Audio',
@@ -511,6 +526,11 @@ export const I18N = {
     'ext.no_download': 'No download available',
     'ext.github': 'View repository on GitHub',
     'ext.open_folder': 'Open folder',
+    'ext.check_repo': 'Verify repository',
+    'ext.deleted_section': 'Deleted from repository',
+    'ext.deleted_badge': 'Deleted',
+    'ext.deleted_hint': 'The module no longer exists in the GitHub repository. This entry is disabled.',
+    'ext.restore': 'Restore entry',
   },
 };
 

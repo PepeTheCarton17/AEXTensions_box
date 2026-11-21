@@ -168,6 +168,7 @@
         </div>
         <div class="flex flex-wrap gap-2">
           <button id="btn-sync-extensions" class="px-3 py-2 rounded-xl text-xs font-semibold bg-surface-800 hover:bg-surface-700 text-slate-200 transition-all" data-i18n="ext.sync">Sincronizar variantes</button>
+          <button id="btn-check-repo" class="px-3 py-2 rounded-xl text-xs font-semibold bg-surface-800 hover:bg-surface-700 text-slate-200 transition-all" data-i18n="ext.check_repo">Verificar repositorio</button>
           <button id="btn-update-all" class="px-3 py-2 rounded-xl text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white transition-all" data-i18n="ext.update_all">Actualizar todas</button>
           <button id="btn-update-repo" class="px-3 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-all" data-i18n="ext.update_repo">Actualizar las de este repo</button>
         </div>
@@ -177,6 +178,14 @@
         <div class="col-span-full py-12 text-center text-slate-500 text-xs" data-i18n="ext.empty">
           No hay extensiones generadas aún. Ingresa una URL en el Generador para comenzar.
         </div>
+      </div>
+
+      <div id="deleted-extensions-section" class="hidden space-y-3 pt-2">
+        <div class="flex items-center gap-2">
+          <h3 class="text-sm font-semibold text-rose-300" data-i18n="ext.deleted_section">Eliminadas del repositorio</h3>
+          <span id="deleted-ext-count" class="px-1.5 py-0.5 rounded-full text-[10px] bg-rose-500/10 text-rose-300">0</span>
+        </div>
+        <div id="deleted-extensions-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
       </div>
     </section>
 

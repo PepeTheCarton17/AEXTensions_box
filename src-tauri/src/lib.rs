@@ -33,6 +33,8 @@ pub fn run() {
             commands::update_extension,
             commands::update_all_extensions,
             commands::sync_extension_catalog,
+            commands::check_extensions_in_repo,
+            commands::restore_extension_repo_state,
             commands::delete_extension,
             commands::delete_extension_github,
             commands::get_system_logs,

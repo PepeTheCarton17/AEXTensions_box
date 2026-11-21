@@ -51,6 +51,28 @@ pub struct ExtensionItem {
     /// SHA del commit que AEXT subió; permite volver a consultar ese run.
     #[serde(default)]
     pub actions_commit_sha: Option<String>,
+    /// Estado del módulo en el repo: "present" | "missing". `None` significa
+    /// que no se ha comprobado (o que la extensión es solo local).
+    #[serde(default)]
+    pub repo_state: Option<String>,
+    /// Momento en que se comprobó por última vez el módulo en GitHub.
+    #[serde(default)]
+    pub repo_checked_at: Option<String>,
+    /// Momento en que el módulo dejó de existir en el repositorio.
+    #[serde(default)]
+    pub repo_deleted_at: Option<String>,
+    /// El usuario restauró la ficha aun sabiendo que el módulo no está en el
+    /// repo. Se respeta hasta que el módulo vuelve a aparecer.
+    #[serde(default)]
+    pub repo_ignore_missing: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoCheckResult {
+    pub checked: usize,
+    pub present: usize,
+    pub missing: usize,
+    pub errors: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
