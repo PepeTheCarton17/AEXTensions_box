@@ -86,7 +86,7 @@ pub(crate) async fn upload_bundle_to_github(
                 // recién creado con `auto_init` NO está vacío, pero sí necesita
                 // workflow, wrapper, keystore y build files. En cambio, los que
                 // ya existen pertenecen al usuario y no se tocan.
-                reconcile_repo_files(&client, &repo, &mut bundle).await?;
+                reconcile_repo_files(&client, &repo, bundle).await?;
 
                 state
                     .add_log(
