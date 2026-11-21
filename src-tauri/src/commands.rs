@@ -9,6 +9,7 @@ use crate::models::{
     LogEntry, SystemStatus,
 };
 use crate::state::AppState;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use tauri::State;
@@ -502,9 +503,9 @@ pub async fn get_created_extensions(state: State<'_, AppState>) -> Result<Vec<Ex
 /// Regenera una extensión existente (re-analiza su sitio, sube la versión y
 /// reescribe los archivos locales y, si aplica, el repositorio de GitHub).
 #[tauri::command]
-pub async fn update_extension(
+async fn update_extension_inner(
     pkg_id: String,
-    state: State<'_, AppState>,
+    state: &AppState,
 ) -> Result<ExtensionItem, String> {
     let existing = {
         let list = state.extensions.read().await;
@@ -715,6 +716,216 @@ pub async fn update_extension(
         )
         .await;
 
+    Ok(updated)
+}
+
+/// El índice publicado (`gh-pages/index.min.json`) es la fuente de verdad de
+/// las variantes que GitHub ya compila. Si AEXT no las adopta, `update_extension`
+/// no puede saber que existen y su versión se queda congelada para siempre.
+/// Se llama antes de cada actualización para que la lista local se reconcilie
+/// sola, sin intervención manual.
+async fn sync_published_variants(state: &AppState) -> usize {
+    let repos: Vec<String> = {
+        let list = state.extensions.read().await;
+        list.iter()
+            .filter_map(|e| e.github_repo_url.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect()
+    };
+
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("AEXT/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .unwrap_or_default();
+    let mut adopted = 0usize;
+
+    for repo_url in repos {
+        let Some((owner, repo_name)) = parse_github_url(&repo_url) else {
+            continue;
+        };
+        let index_url = format!(
+            "https://raw.githubusercontent.com/{}/{}/gh-pages/index.min.json",
+            owner, repo_name
+        );
+        let Ok(resp) = client.get(&index_url).send().await else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(json) = resp.json::<serde_json::Value>().await else {
+            continue;
+        };
+        let Some(entries) = json.as_array() else {
+            continue;
+        };
+
+        for item in entries {
+            let Some(pkg_id) = item.get("pkg").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let lang = item
+                .get("lang")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("all");
+            let version = item
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let version_code = item
+                .get("code")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32;
+            if version.is_empty() || version_code <= 0 {
+                continue;
+            }
+            let indexed_name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(pkg_id);
+            let raw_name = indexed_name
+                .strip_prefix("Aniyomi: ")
+                .unwrap_or(indexed_name)
+                .to_string();
+            let class_name: String = raw_name
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect();
+            if class_name.is_empty() {
+                continue;
+            }
+            let base_url = item
+                .get("sources")
+                .and_then(|v| v.as_array())
+                .and_then(|sources| sources.first())
+                .and_then(|source| source.get("baseUrl").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            let apk = item
+                .get("apk")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|apk| {
+                    format!(
+                        "https://raw.githubusercontent.com/{}/{}/gh-pages/{}",
+                        owner, repo_name, apk
+                    )
+                });
+
+            let mut list = state.extensions.write().await;
+            if list
+                .iter()
+                .any(|e| e.pkg_id == pkg_id || e.id == pkg_id)
+            {
+                continue;
+            }
+            list.push(ExtensionItem {
+                id: pkg_id.to_string(),
+                pkg_id: pkg_id.to_string(),
+                name: raw_name,
+                class_name,
+                base_url: base_url.to_string(),
+                lang: lang.to_string(),
+                ext_type: "anime".to_string(),
+                version: version.to_string(),
+                version_code,
+                cms: "generic".to_string(),
+                has_sub_dub: false,
+                icon_base64: None,
+                github_repo_url: Some(repo_url.clone()),
+                nekoyomi_repo_url: Some(index_url.clone()),
+                apk_download_url: apk,
+                created_at: chrono::Utc::now().to_rfc3339(),
+                build_status: None,
+                build_error: None,
+                build_apk_path: None,
+                actions_run_url: None,
+                actions_commit_sha: None,
+            });
+            adopted += 1;
+        }
+    }
+
+    if adopted > 0 {
+        state.persist_extensions().await;
+        state
+            .add_log(
+                "INFO",
+                &format!(
+                    "Adoptadas {} variante(s) publicadas que AEXT no seguía",
+                    adopted
+                ),
+            )
+            .await;
+    }
+    adopted
+}
+
+#[tauri::command]
+pub async fn sync_extension_catalog(state: State<'_, AppState>) -> Result<usize, String> {
+    Ok(sync_published_variants(&state).await)
+}
+
+#[tauri::command]
+pub async fn update_extension(
+    pkg_id: String,
+    state: State<'_, AppState>,
+) -> Result<ExtensionItem, String> {
+    sync_published_variants(&state).await;
+    update_extension_inner(pkg_id, &state).await
+}
+
+/// Actualiza todas las extensiones visibles o, si se indica un repo, todas las
+/// que apuntan a ese mismo repositorio. Se hacen en secuencia: así cada commit
+/// usa el SHA base correcto y no aparece el 422 de escrituras concurrentes.
+#[tauri::command]
+pub async fn update_all_extensions(
+    repo_url: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ExtensionItem>, String> {
+    sync_published_variants(&state).await;
+
+    let targets: Vec<String> = {
+        let list = state.extensions.read().await;
+        list.iter()
+            .filter(|ext| match repo_url.as_deref() {
+                None => true,
+                Some(selected) => {
+                    let selected = selected.trim_end_matches('/');
+                    ext.github_repo_url
+                        .as_deref()
+                        .map(|url| url.trim_end_matches('/') == selected)
+                        .unwrap_or(false)
+                }
+            })
+            .map(|ext| ext.pkg_id.clone())
+            .collect()
+    };
+
+    if targets.is_empty() {
+        return Err("No hay extensiones que coincidan con ese repositorio".to_string());
+    }
+
+    state
+        .add_log(
+            "INFO",
+            &format!("Actualizando {} extensión(es) en secuencia", targets.len()),
+        )
+        .await;
+
+    let mut updated = Vec::new();
+    for pkg_id in targets {
+        match update_extension_inner(pkg_id.clone(), &state).await {
+            Ok(item) => updated.push(item),
+            Err(err) => {
+                state
+                    .add_log("ERROR", &format!("No se pudo actualizar {}: {}", pkg_id, err))
+                    .await;
+                return Err(format!("{}: {}", pkg_id, err));
+            }
+        }
+    }
     Ok(updated)
 }
 

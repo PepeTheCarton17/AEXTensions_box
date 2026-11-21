@@ -1,5 +1,37 @@
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+/// Dos actualizaciones en paralelo contra el mismo repo leían el mismo commit
+/// base y luego competían por mover la rama; GitHub respondía 422/409. Se
+/// serializan TODOS los commits que salen de esta instancia de AEXT.
+fn commit_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// El generador emite `icon/<pkg>.png` e `icon/ic_launcher.png` una vez por
+/// cada densidad. Un árbol con la misma ruta repetida produce 422
+/// (`duplicate_entries`) en la API Git Data. Se conserva la última versión.
+fn dedup_files(files: &[(String, Vec<u8>)]) -> Vec<(String, Vec<u8>)> {
+    let mut content: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for (path, bytes) in files {
+        if !content.contains_key(path) {
+            order.push(path.clone());
+        }
+        content.insert(path.clone(), bytes.clone());
+    }
+    order
+        .into_iter()
+        .filter_map(|path| {
+            content
+                .remove(&path)
+                .map(|bytes| (path, bytes))
+        })
+        .collect()
+}
 
 pub struct GithubApiClient {
     client: reqwest::Client,
@@ -422,9 +454,13 @@ impl GithubApiClient {
         message: &str,
         branch: &str,
     ) -> Result<String, String> {
+        let files = dedup_files(files);
         if files.is_empty() {
             return Err("No hay archivos para subir".to_string());
         }
+        // Se mantiene el candado durante todo el flujo blob → tree → commit →
+        // ref para que dos extensiones del mismo repo no se pisen el SHA base.
+        let _guard = commit_lock().lock().await;
         let api = format!("https://api.github.com/repos/{}/{}", owner, repo);
         let branch = if branch.is_empty() { "main" } else { branch };
 
@@ -938,4 +974,27 @@ fn base64_encode(data: &[u8]) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod github_client_tests {
+    use super::dedup_files;
+
+    #[test]
+    fn repeated_icon_paths_are_collapsed_before_building_a_tree() {
+        let files = vec![
+            ("src/module/App.kt".to_string(), vec![1]),
+            ("icon/ic_launcher.png".to_string(), vec![2]),
+            ("icon/all.frame.png".to_string(), vec![3]),
+            ("icon/ic_launcher.png".to_string(), vec![4]),
+            ("icon/all.frame.png".to_string(), vec![5]),
+        ];
+        let deduped = dedup_files(&files);
+        assert_eq!(deduped.len(), 3);
+        assert_eq!(deduped[0].0, "src/module/App.kt");
+        assert_eq!(deduped[1].1, vec![4], "se conserva el último contenido");
+        assert_eq!(deduped[2].1, vec![5]);
+        let paths: Vec<&str> = deduped.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(paths.len(), paths.iter().collect::<std::collections::HashSet<_>>().len());
+    }
 }

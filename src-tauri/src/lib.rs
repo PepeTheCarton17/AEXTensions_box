@@ -31,6 +31,8 @@ pub fn run() {
             commands::generate_extensions,
             commands::get_created_extensions,
             commands::update_extension,
+            commands::update_all_extensions,
+            commands::sync_extension_catalog,
             commands::delete_extension,
             commands::delete_extension_github,
             commands::get_system_logs,

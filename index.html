@@ -159,6 +159,20 @@
         </button>
       </div>
 
+      <div class="rounded-2xl bg-surface-900 border border-surface-800 p-3 space-y-3">
+        <div class="flex flex-col md:flex-row gap-2">
+          <input id="ext-search" type="search" placeholder="Buscar extensión, paquete o URL…" data-i18n-ph="ext.search_ph" class="flex-1 bg-surface-950 border border-surface-800 rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-brand-500">
+          <select id="ext-repo-filter" class="bg-surface-950 border border-surface-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-brand-500">
+            <option value="" data-i18n="ext.all_repos">Todos los repositorios</option>
+          </select>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button id="btn-sync-extensions" class="px-3 py-2 rounded-xl text-xs font-semibold bg-surface-800 hover:bg-surface-700 text-slate-200 transition-all" data-i18n="ext.sync">Sincronizar variantes</button>
+          <button id="btn-update-all" class="px-3 py-2 rounded-xl text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white transition-all" data-i18n="ext.update_all">Actualizar todas</button>
+          <button id="btn-update-repo" class="px-3 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-all" data-i18n="ext.update_repo">Actualizar las de este repo</button>
+        </div>
+      </div>
+
       <div id="extensions-catalog-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div class="col-span-full py-12 text-center text-slate-500 text-xs" data-i18n="ext.empty">
           No hay extensiones generadas aún. Ingresa una URL en el Generador para comenzar.
@@ -624,6 +638,24 @@
 
           <button id="btn-submit-pat" class="w-full py-2.5 rounded-xl text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-brand-500/20 transition-all" data-i18n="auth.pat_submit">Guardar e Iniciar Sesión</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Aviso que aparece una sola vez por versión de AEXT recién instalada. -->
+  <div id="update-prompt-modal" class="hidden fixed inset-0 z-50 items-center justify-center bg-black/70 p-4">
+    <div class="w-full max-w-lg rounded-2xl bg-surface-900 border border-surface-800 shadow-2xl p-5 space-y-4">
+      <div>
+        <h3 class="text-base font-semibold text-slate-100" data-i18n="prompt.title">Nueva versión de AEXT instalada</h3>
+        <p class="text-xs text-slate-400 mt-1" data-i18n="prompt.desc">¿Quieres actualizar las extensiones generadas? Puedes actualizarlas todas o solo las de un repositorio.</p>
+      </div>
+      <select id="update-prompt-repo" class="w-full bg-surface-950 border border-surface-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-brand-500">
+        <option value="" data-i18n="ext.all_repos">Todos los repositorios</option>
+      </select>
+      <div class="flex flex-wrap gap-2">
+        <button id="btn-update-prompt-all" class="px-3 py-2 rounded-xl text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white" data-i18n="ext.update_all">Actualizar todas</button>
+        <button id="btn-update-prompt-repo" class="px-3 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white" data-i18n="ext.update_repo">Actualizar las de este repo</button>
+        <button id="btn-update-prompt-later" class="px-3 py-2 rounded-xl text-xs font-semibold bg-surface-800 hover:bg-surface-700 text-slate-200" data-i18n="prompt.later">Ahora no</button>
       </div>
     </div>
   </div>

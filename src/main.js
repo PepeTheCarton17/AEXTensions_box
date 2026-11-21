@@ -99,6 +99,8 @@ async function invokeBackend(command, args = {}) {
       return [];
     }
     case 'update_extension':
+    case 'update_all_extensions':
+    case 'sync_extension_catalog':
     case 'generate_extensions':
       throw new Error('Esta acción requiere la aplicación nativa de AEXT (no está disponible en el modo navegador).');
     case 'delete_extension':
@@ -172,6 +174,16 @@ const elements = {
   extensionsCatalogGrid: document.getElementById('extensions-catalog-grid'),
   badgeExtCount: document.getElementById('badge-ext-count'),
   btnRefreshExtensions: document.getElementById('btn-refresh-extensions'),
+  extSearch: document.getElementById('ext-search'),
+  extRepoFilter: document.getElementById('ext-repo-filter'),
+  btnSyncExtensions: document.getElementById('btn-sync-extensions'),
+  btnUpdateAll: document.getElementById('btn-update-all'),
+  btnUpdateRepo: document.getElementById('btn-update-repo'),
+  updatePromptModal: document.getElementById('update-prompt-modal'),
+  updatePromptRepo: document.getElementById('update-prompt-repo'),
+  btnUpdatePromptAll: document.getElementById('btn-update-prompt-all'),
+  btnUpdatePromptRepo: document.getElementById('btn-update-prompt-repo'),
+  btnUpdatePromptLater: document.getElementById('btn-update-prompt-later'),
 
   // Diagnostics & Stream Tester
   testStreamInput: document.getElementById('test-stream-input'),
@@ -1429,19 +1441,55 @@ if (elements.btnSuccessCopyRepo) {
 }
 
 // ==================== EXTENSIONS CATALOG ====================
+function filteredExtensions(list = state.extensions) {
+  const query = (elements.extSearch?.value || '').trim().toLowerCase();
+  const repo = (elements.extRepoFilter?.value || '').replace(/\/$/, '');
+  return list.filter((ext) => {
+    if (repo && (ext.github_repo_url || '').replace(/\/$/, '') !== repo) return false;
+    if (!query) return true;
+    return [ext.name, ext.pkg_id, ext.base_url, ext.lang, ext.github_repo_url || '']
+      .some((value) => String(value).toLowerCase().includes(query));
+  });
+}
+
+function refreshRepoFilters() {
+  const repos = [...new Set(state.extensions.map((e) => e.github_repo_url).filter(Boolean))]
+    .map((url) => url.replace(/\/$/, ''))
+    .sort();
+  for (const select of [elements.extRepoFilter, elements.updatePromptRepo]) {
+    if (!select) continue;
+    const previous = select.value;
+    select.innerHTML = '';
+    const all = document.createElement('option');
+    all.value = '';
+    all.textContent = t('ext.all_repos');
+    all.setAttribute('data-i18n', 'ext.all_repos');
+    select.appendChild(all);
+    for (const repo of repos) {
+      const option = document.createElement('option');
+      option.value = repo;
+      option.textContent = repo;
+      select.appendChild(option);
+    }
+    select.value = repos.includes(previous) ? previous : '';
+  }
+}
+
 async function loadExtensions() {
   try {
     const list = await invokeBackend('get_created_extensions') || [];
     state.extensions = list;
-    elements.badgeExtCount.textContent = list.length;
+    refreshRepoFilters();
+    elements.badgeExtCount.textContent = filteredExtensions(list).length;
     renderExtensionsGrid(list);
   } catch (e) {
     console.error('Error cargando extensiones:', e);
   }
 }
 
-function renderExtensionsGrid(list) {
-  if (list.length === 0) {
+function renderExtensionsGrid(list = state.extensions) {
+  const visible = filteredExtensions(list);
+  if (visible.length === 0) {
     elements.extensionsCatalogGrid.innerHTML = `
       <div class="col-span-full py-12 text-center text-slate-500 text-xs">
         ${escapeHtml(t('ext.empty'))}
@@ -1451,7 +1499,7 @@ function renderExtensionsGrid(list) {
   }
 
   elements.extensionsCatalogGrid.innerHTML = '';
-  for (const ext of list) {
+  for (const ext of visible) {
     const card = document.createElement('div');
     card.className = 'p-4 rounded-2xl bg-surface-900 border border-surface-800 space-y-4 hover:border-slate-700 transition-all shadow-lg';
 
@@ -1729,6 +1777,142 @@ function renderExtensionsGrid(list) {
 }
 
 elements.btnRefreshExtensions.addEventListener('click', loadExtensions);
+
+// ==================== UPDATES AFTER INSTALLING A NEW AEXT VERSION ====================
+// Se guarda la versión exacta de AEXT que ya vio el aviso. Al instalar otra
+// versión, la clave no coincide y el aviso vuelve a aparecer una sola vez.
+const UPDATE_PROMPT_KEY = 'aext.update_prompt_version';
+
+function extensionsForRepo(repoUrl) {
+  if (!repoUrl) return state.extensions;
+  const selected = repoUrl.replace(/\/$/, '');
+  return state.extensions.filter(
+    (ext) => (ext.github_repo_url || '').replace(/\/$/, '') === selected
+  );
+}
+
+function setBulkBusy(busy) {
+  for (const btn of [
+    elements.btnSyncExtensions,
+    elements.btnUpdateAll,
+    elements.btnUpdateRepo,
+    elements.btnUpdatePromptAll,
+    elements.btnUpdatePromptRepo,
+  ]) {
+    if (!btn) continue;
+    btn.disabled = busy;
+    btn.classList.toggle('opacity-60', busy);
+    btn.classList.toggle('cursor-wait', busy);
+  }
+}
+
+function closeUpdatePrompt(markSeen = true) {
+  if (!elements.updatePromptModal) return;
+  if (markSeen && state.appVersion) {
+    try {
+      localStorage.setItem(UPDATE_PROMPT_KEY, state.appVersion);
+    } catch (_) {
+      // localStorage puede estar bloqueado; el aviso simplemente se repetirá.
+    }
+  }
+  elements.updatePromptModal.classList.add('hidden');
+  elements.updatePromptModal.classList.remove('flex');
+}
+
+function openUpdatePrompt() {
+  if (!elements.updatePromptModal) return;
+  refreshRepoFilters();
+  elements.updatePromptModal.classList.remove('hidden');
+  elements.updatePromptModal.classList.add('flex');
+}
+
+async function runBulkUpdate(repoUrl = '') {
+  const targets = extensionsForRepo(repoUrl);
+  if (targets.length === 0) {
+    alert(t('ext.select_repo'));
+    return;
+  }
+  setBulkBusy(true);
+  appendTerminalLog('INFO', t('ext.bulk_updating', { count: targets.length }));
+  try {
+    const updated = await invokeBackend('update_all_extensions', {
+      repoUrl: repoUrl ? repoUrl.replace(/\/$/, '') : null,
+    });
+    appendTerminalLog('SUCCESS', t('ext.bulk_ok', { count: updated ? updated.length : 0 }));
+    closeUpdatePrompt();
+    await loadExtensions();
+    refreshBackupExtensions();
+  } catch (err) {
+    const detail = String(err);
+    appendTerminalLog('ERROR', detail);
+    alert(detail);
+  } finally {
+    setBulkBusy(false);
+  }
+}
+
+function maybeShowUpdatePrompt() {
+  if (!state.appVersion || state.appVersion === 'dev' || !elements.updatePromptModal) return;
+  let seen = null;
+  try {
+    seen = localStorage.getItem(UPDATE_PROMPT_KEY);
+  } catch (_) {
+    // Sin localStorage no podemos recordar la versión; mostramos el aviso.
+  }
+  if (seen === state.appVersion) return;
+  if (state.extensions.length === 0) {
+    closeUpdatePrompt();
+    return;
+  }
+  openUpdatePrompt();
+}
+
+elements.extSearch?.addEventListener('input', () => {
+  elements.badgeExtCount.textContent = filteredExtensions().length;
+  renderExtensionsGrid();
+});
+
+elements.extRepoFilter?.addEventListener('change', () => {
+  elements.badgeExtCount.textContent = filteredExtensions().length;
+  renderExtensionsGrid();
+});
+
+elements.btnSyncExtensions?.addEventListener('click', async () => {
+  setBulkBusy(true);
+  try {
+    const adopted = await invokeBackend('sync_extension_catalog');
+    appendTerminalLog('SUCCESS', t('ext.sync_ok', { count: adopted || 0 }));
+    await loadExtensions();
+    refreshBackupExtensions();
+  } catch (err) {
+    const detail = String(err);
+    appendTerminalLog('ERROR', detail);
+    alert(detail);
+  } finally {
+    setBulkBusy(false);
+  }
+});
+
+elements.btnUpdateAll?.addEventListener('click', () => runBulkUpdate(''));
+elements.btnUpdateRepo?.addEventListener('click', () => {
+  const repo = elements.extRepoFilter?.value || '';
+  if (!repo) {
+    alert(t('ext.select_repo'));
+    return;
+  }
+  runBulkUpdate(repo);
+});
+
+elements.btnUpdatePromptAll?.addEventListener('click', () => runBulkUpdate(''));
+elements.btnUpdatePromptRepo?.addEventListener('click', () => {
+  const repo = elements.updatePromptRepo?.value || '';
+  if (!repo) {
+    alert(t('ext.select_repo'));
+    return;
+  }
+  runBulkUpdate(repo);
+});
+elements.btnUpdatePromptLater?.addEventListener('click', () => closeUpdatePrompt());
 
 // ==================== STREAM EXTRACTOR TESTER & DIAGNOSTICS ====================
 elements.btnTestStream.addEventListener('click', async () => {
@@ -2017,5 +2201,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   // La tabla de descargas se llena con los assets reales de la última release.
-  refreshReleaseInfo();
+  await refreshReleaseInfo();
+
+  // Aviso automático (una vez por versión instalada) para actualizar las
+  // extensiones ya generadas a la siguiente versión de código.
+  maybeShowUpdatePrompt();
 });
