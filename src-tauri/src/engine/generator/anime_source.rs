@@ -8,6 +8,7 @@ use super::templates::anime_blocks::{
     exclusion_capture_kt_fmt, filter_block_kt_fmt, search_audio_block_kt_fmt,
 };
 use super::templates::anime_source::anime_source_kt_fmt;
+use super::templates::video_engine::VIDEO_ENGINE_KT;
 
 pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &str, class_name: &str, pkg_slug: &str, lang: &str, pkg_lang: &str, pkg_prefix: &str) -> String {
     let base_url = &analysis.url;
