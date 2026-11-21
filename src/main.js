@@ -187,6 +187,7 @@ const elements = {
   btnUpdateRepo: document.getElementById('btn-update-repo'),
   updatePromptModal: document.getElementById('update-prompt-modal'),
   updatePromptRepo: document.getElementById('update-prompt-repo'),
+  updatePromptCount: document.getElementById('update-prompt-count'),
   btnUpdatePromptAll: document.getElementById('btn-update-prompt-all'),
   btnUpdatePromptRepo: document.getElementById('btn-update-prompt-repo'),
   btnUpdatePromptLater: document.getElementById('btn-update-prompt-later'),
@@ -2031,7 +2032,10 @@ elements.btnCheckRepo?.addEventListener('click', async () => {
 const UPDATE_PROMPT_KEY = 'aext.update_prompt_version';
 
 function extensionsForRepo(repoUrl) {
-  if (!repoUrl) return state.extensions;
+  // El backend excluye las fichas marcadas como eliminadas. El conteo de la UI
+  // debe usar exactamente el mismo criterio o anunciará más extensiones de las
+  // que realmente se van a actualizar.
+  if (!repoUrl) return state.extensions.filter((ext) => !isRepoMissing(ext));
   const selected = repoUrl.replace(/\/$/, '');
   return state.extensions.filter(
     (ext) => !isRepoMissing(ext) && (ext.github_repo_url || '').replace(/\/$/, '') === selected
@@ -2066,9 +2070,28 @@ function closeUpdatePrompt(markSeen = true) {
   elements.updatePromptModal.classList.remove('flex');
 }
 
+function refreshUpdatePromptCount() {
+  if (!elements.updatePromptCount) return;
+  const repo = elements.updatePromptRepo?.value || '';
+  const selected = repo.replace(/\/$/, '');
+  const detected = repo
+    ? state.extensions.filter(
+        (ext) => (ext.github_repo_url || '').replace(/\/$/, '') === selected
+      )
+    : state.extensions;
+  const targets = extensionsForRepo(repo);
+  const skipped = detected.length - targets.length;
+  elements.updatePromptCount.textContent = [
+    t('ext.bulk_detected', { count: detected.length }),
+    t('ext.bulk_updating', { count: targets.length }),
+    skipped > 0 ? t('ext.bulk_skipped', { count: skipped }) : '',
+  ].filter(Boolean).join(' ');
+}
+
 function openUpdatePrompt() {
   if (!elements.updatePromptModal) return;
   refreshRepoFilters();
+  refreshUpdatePromptCount();
   elements.updatePromptModal.classList.remove('hidden');
   elements.updatePromptModal.classList.add('flex');
 }
@@ -2079,8 +2102,19 @@ async function runBulkUpdate(repoUrl = '') {
     alert(t('ext.select_repo'));
     return;
   }
+  const selected = repoUrl.replace(/\/$/, '');
+  const detected = repoUrl
+    ? state.extensions.filter(
+        (ext) => (ext.github_repo_url || '').replace(/\/$/, '') === selected
+      )
+    : state.extensions;
   setBulkBusy(true);
+  appendTerminalLog('INFO', t('ext.bulk_detected', { count: detected.length }));
   appendTerminalLog('INFO', t('ext.bulk_updating', { count: targets.length }));
+  const skipped = detected.length - targets.length;
+  if (skipped > 0) {
+    appendTerminalLog('WARN', t('ext.bulk_skipped', { count: skipped }));
+  }
   try {
     const updated = await invokeBackend('update_all_extensions', {
       repoUrl: repoUrl ? repoUrl.replace(/\/$/, '') : null,
@@ -2150,6 +2184,7 @@ elements.btnUpdateRepo?.addEventListener('click', () => {
   runBulkUpdate(repo);
 });
 
+elements.updatePromptRepo?.addEventListener('change', refreshUpdatePromptCount);
 elements.btnUpdatePromptAll?.addEventListener('click', () => runBulkUpdate(''));
 elements.btnUpdatePromptRepo?.addEventListener('click', () => {
   const repo = elements.updatePromptRepo?.value || '';
