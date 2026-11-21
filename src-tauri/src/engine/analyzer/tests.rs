@@ -490,7 +490,7 @@ render(nf,{instanceId:"catalog",options:all});"#;
     }
 
     #[test]
-    fn normalize_filters_drops_search_dub_and_duplicate_labels() {
+    fn normalize_filters_drops_search_dub_and_duplicate_tuples() {
         let mut filters = vec![
             SiteFilterParam { name: "Search".to_string(), param: "name".to_string(), value: String::new(), kind: "text".to_string() },
             SiteFilterParam { name: "Search".to_string(), param: "q".to_string(), value: String::new(), kind: "text".to_string() },
@@ -503,8 +503,18 @@ render(nf,{instanceId:"catalog",options:all});"#;
 
         SiteAnalyzer::normalize_filter_params(&mut filters);
         let params: Vec<&str> = filters.iter().map(|f| f.param.as_str()).collect();
-        assert_eq!(params, vec!["sortBy", "sortBy"], "sólo el orden con valores reales: {:?}", filters);
-        assert!(filters.iter().all(|f| !f.value.is_empty()));
+        assert_eq!(
+            params,
+            vec!["sort", "sortBy", "sortBy"],
+            "se conservan los parámetros reales y sólo se deduplica el duplicado exacto: {:?}",
+            filters
+        );
+        assert!(
+            filters.iter().any(|f| f.param == "sort" && f.kind == "text" && f.value.is_empty()),
+            "un parámetro real sin valores debe seguir siendo TextFilter: {:?}",
+            filters
+        );
+        assert!(!params.iter().any(|p| *p == "name" || *p == "q" || *p == "isFrameDub"));
     }
 
     #[test]

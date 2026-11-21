@@ -254,7 +254,9 @@ function renderExtensionsGrid(list = state.extensions) {
       if (label) label.textContent = t('ext.updating');
       appendTerminalLog('INFO', `↻ ${pkgId}…`);
       try {
-        const updated = await invokeBackend('update_extension', { pkgId });
+        // El idioma elegido en ajustes se aplica también al regenerar.
+        const lang = localStorage.getItem('aext_lang') || 'es';
+        const updated = await invokeBackend('update_extension', { pkgId, lang });
         appendTerminalLog('SUCCESS', t('logs.updated', {
           name: updated ? updated.name : pkgId,
           version: updated ? updated.version : '?',

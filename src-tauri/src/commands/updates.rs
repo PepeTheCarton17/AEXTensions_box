@@ -7,10 +7,11 @@ use tauri::State;
 #[tauri::command]
 pub async fn update_extension(
     pkg_id: String,
+    lang: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ExtensionItem, String> {
     sync_published_variants(&state).await;
-    update_extension_inner(pkg_id, &state).await
+    update_extension_inner(pkg_id, lang, &state).await
 }
 
 /// Actualiza todas las extensiones visibles o, si se indica un repo, todas las
@@ -19,6 +20,7 @@ pub async fn update_extension(
 #[tauri::command]
 pub async fn update_all_extensions(
     repo_url: Option<String>,
+    lang: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Vec<ExtensionItem>, String> {
     sync_published_variants(&state).await;
@@ -59,7 +61,7 @@ pub async fn update_all_extensions(
     let mut updated = Vec::new();
     let mut failures = Vec::new();
     for pkg_id in targets {
-        match update_extension_inner(pkg_id.clone(), &state).await {
+        match update_extension_inner(pkg_id.clone(), lang.clone(), &state).await {
             Ok(item) => updated.push(item),
             Err(err) => {
                 state

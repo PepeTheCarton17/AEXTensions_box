@@ -97,9 +97,11 @@ pub(crate) fn generate_kotlin_filters(
             continue;
         }
         let canonical = f.name.trim();
+        // Agrupar por parámetro real, no por etiqueta: `sort` y `sortBy`
+        // comparten etiqueta canónica pero son dos filtros distintos del sitio.
         let index = match grouped
             .iter()
-            .position(|(_, group)| group.canonical == canonical)
+            .position(|(param, _)| param == &f.param)
         {
             Some(index) => index,
             None => {

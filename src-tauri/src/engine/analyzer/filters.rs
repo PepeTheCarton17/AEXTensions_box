@@ -1,5 +1,5 @@
 use scraper::{Html, Selector};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use url::Url;
 
 use super::models::{SiteAnalyzer, SiteFilterParam};
@@ -80,14 +80,6 @@ const SEARCH_LIKE_PARAMS: &[&str] = &[
 /// generaban un `Dubbed` inútil y engañoso.
 const DUB_LIKE_PARAMS: &[&str] = &[
     "dub", "dubbed", "isdub", "isframedub", "framedub", "doblado", "isdublado",
-];
-
-/// Etiquetas que sólo tienen sentido con valores enumerados del sitio. Un
-/// `TextFilter` de "Orden"/"Género" no produce una consulta válida.
-const ENUM_ONLY_LABELS: &[&str] = &[
-    "Sort By", "Genre", "Country", "Category", "Format", "Season", "Status",
-    "Quality", "Year", "Subtitles", "Audio Language", "Display", "Type",
-    "Language", "Rating",
 ];
 
 impl SiteAnalyzer {
@@ -284,52 +276,18 @@ impl SiteAnalyzer {
             .join(" ")
     }
 
-    /// Deja un único filtro por etiqueta canónica y descarta los parámetros que
-    /// no son filtros de catálogo (búsqueda, doblaje no verificado, textos de
-    /// listas enumeradas). `sort`/`order` se conservan si el sitio aporta
-    /// valores reales: es el `Sort order` de los repos de referencia.
+    /// Descarta los parámetros que no son filtros de catálogo (búsqueda,
+    /// doblaje no verificado, paginación, credenciales) y elimina sólo los
+    /// duplicados exactos. Un parámetro real sin valores enumerados se conserva
+    /// como `TextFilter`: borrarlo era lo que dejaba las extensiones sin filtros.
     pub(crate) fn normalize_filter_params(filters: &mut Vec<SiteFilterParam>) {
         filters.retain(|f| {
-            !f.param.is_empty()
-                && !Self::ignored_filter_param(&f.param, None)
-                && !(f.kind == "text"
-                    && ENUM_ONLY_LABELS.contains(&Self::canonical_filter_name(&f.param).as_str()))
+            !f.param.is_empty() && !Self::ignored_filter_param(&f.param, None)
         });
 
         let mut seen = HashSet::new();
         filters.retain(|f| {
             seen.insert(format!("{}\u{1}{}\u{1}{}", f.param, f.value, f.kind))
-        });
-
-        let mut labels: Vec<String> = Vec::new();
-        for f in filters.iter() {
-            let label = Self::canonical_filter_name(&f.param);
-            if !labels.contains(&label) {
-                labels.push(label);
-            }
-        }
-
-        let mut chosen: HashMap<String, (String, usize)> = HashMap::new();
-        for label in &labels {
-            for (index, f) in filters.iter().enumerate() {
-                if Self::canonical_filter_name(&f.param) != *label {
-                    continue;
-                }
-                let score = if f.value.is_empty() { 0 } else { 1 };
-                let better = chosen
-                    .get(label)
-                    .map(|(_, best)| score > *best)
-                    .unwrap_or(true);
-                if better {
-                    chosen.insert(label.clone(), (f.param.clone(), score));
-                }
-            }
-        }
-        filters.retain(|f| {
-            chosen
-                .get(&Self::canonical_filter_name(&f.param))
-                .map(|(param, _)| param == &f.param)
-                .unwrap_or(false)
         });
     }
 

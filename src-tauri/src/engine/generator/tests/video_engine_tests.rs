@@ -372,6 +372,24 @@ mod video_engine_tests {
     }
 
     #[test]
+    fn distinct_params_with_the_same_label_stay_as_separate_filters() {
+        let mut fixture = pluto_fixture();
+        fixture.filter_params = vec![
+            SiteFilterParam { name: "Sort By".to_string(), param: "sort".to_string(), value: String::new(), kind: "text".to_string() },
+            SiteFilterParam { name: "Sort By".to_string(), param: "sortBy".to_string(), value: "publish_date".to_string(), kind: "select".to_string() },
+        ];
+        let filters = generate_kotlin_filters(
+            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
+        );
+        for marker in [
+            "TextFilter(\"Orden\", \"sort\")",
+            "QueryPartFilter(\"Orden\", \"sortBy\", arrayOf(Pair(\"Todos\", \"\"), Pair(\"Fecha de publicación\", \"publish_date\")))",
+        ] {
+            assert!(filters.contains(marker), "falta en los filtros generados: {marker}\n{}", filters);
+        }
+    }
+
+    #[test]
     fn ui_selected_language_wins_and_site_locales_never_force_all() {
         use crate::engine::generator::ExtensionGenerator;
         let mut fixture = pluto_fixture();

@@ -92,6 +92,7 @@ async function runBulkUpdate(repoUrl = '') {
   try {
     const updated = await invokeBackend('update_all_extensions', {
       repoUrl: repoUrl ? repoUrl.replace(/\/$/, '') : null,
+      lang: localStorage.getItem('aext_lang') || 'es',
     });
     appendTerminalLog('SUCCESS', t('ext.bulk_ok', { count: updated ? updated.length : 0 }));
     closeUpdatePrompt();

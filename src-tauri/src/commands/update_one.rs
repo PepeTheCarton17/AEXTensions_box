@@ -13,11 +13,21 @@ use crate::models::ExtensionItem;
 use crate::state::AppState;
 use std::fs;
 
+/// El idioma elegido en AEXT prevalece sobre el idioma persistido; si no se
+/// envió (o vino vacío), se mantiene el de la extensión existente.
+pub(crate) fn resolve_update_lang<'a>(requested: Option<&'a str>, existing: &'a str) -> &'a str {
+    requested
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(existing)
+}
+
 /// Regenera una extensión existente (re-analiza su sitio, sube la versión y
 /// reescribe los archivos locales y, si aplica, el repositorio de GitHub).
 #[tauri::command]
 pub(crate) async fn update_extension_inner(
     pkg_id: String,
+    requested_lang: Option<String>,
     state: &AppState,
 ) -> Result<ExtensionItem, String> {
     let existing = {
@@ -57,10 +67,15 @@ pub(crate) async fn update_extension_inner(
     .await
     .unwrap_or_else(|_| (std::collections::HashMap::new(), String::new()));
 
+    // El idioma elegido en AEXT manda también en las actualizaciones: reutilizar
+    // `existing.lang` hacía que una extensión pedida en español se regenerara
+    // en `all` (inglés) cada vez que se actualizaba.
+    let lang = resolve_update_lang(requested_lang.as_deref(), existing.lang.as_str());
+
     let mut bundle = ExtensionGenerator::generate_with_version(
         &analysis,
         Some(existing.name.as_str()),
-        Some(existing.lang.as_str()),
+        Some(lang),
         Some(existing.ext_type.as_str()),
         next_code,
         &next_version,
@@ -236,4 +251,17 @@ pub(crate) async fn update_extension_inner(
         .await;
 
     Ok(updated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_update_lang;
+
+    #[test]
+    fn chosen_language_wins_on_update() {
+        assert_eq!(resolve_update_lang(Some("es"), "all"), "es");
+        assert_eq!(resolve_update_lang(Some("  pt-br "), "es"), "pt-br");
+        assert_eq!(resolve_update_lang(Some("   "), "es"), "es");
+        assert_eq!(resolve_update_lang(None, "en"), "en");
+    }
 }
