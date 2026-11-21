@@ -102,10 +102,10 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
     let exclusion_capture = if exclusion_pairs.is_empty() {
         String::new()
     } else {
-        format!(exclusion_capture_kt_fmt(), class_name = class_name)
+        format!(concat!(exclusion_capture_kt_fmt!()), class_name = class_name)
     };
     let filter_block = if has_site_filters {
-        format!(filter_block_kt_fmt(), class_name = class_name)
+        format!(concat!(filter_block_kt_fmt!()), class_name = class_name)
     } else {
         "        val finalUrl = url\n".to_string()
     };
@@ -134,7 +134,7 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
         String::new()
     };
     let search_audio_block = if show_audio {
-        format!(search_audio_block_kt_fmt(), class_name = class_name)
+        format!(concat!(search_audio_block_kt_fmt!()), class_name = class_name)
     } else {
         "        val finalQuery = cleanQuery\n".to_string()
     };
@@ -163,7 +163,7 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
     let pref_genre_blacklist_summary = i18n.pref_genre_blacklist_summary;
 
     format!(
-        anime_source_kt_fmt(),
+        concat!(anime_source_kt_fmt!()),
         video_engine = VIDEO_ENGINE_KT,
         site_cap_formats = site_cap_formats,
         site_app_version = site_app_version,

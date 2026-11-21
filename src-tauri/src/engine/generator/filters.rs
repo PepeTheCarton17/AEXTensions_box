@@ -62,7 +62,7 @@ pub(crate) fn generate_kotlin_filters(
     let audio_filter_class = if show_audio {
         let filter_audio_title = i18n.filter_audio_title;
         format!(
-            audio_filter_class_kt_fmt(),
+            concat!(audio_filter_class_kt_fmt!()),
             audio_entries = audio_entries,
             audio_vals_kt = audio_vals_kt,
             filter_audio_title = kt(filter_audio_title),
@@ -219,7 +219,7 @@ pub(crate) fn generate_kotlin_filters(
         .collect::<String>();
 
     format!(
-        kotlin_filters_kt_fmt(),
+        concat!(kotlin_filters_kt_fmt!()),
         filter_header = kt(filter_header),
         param_classes = param_classes,
         audio_filter_class = audio_filter_class,

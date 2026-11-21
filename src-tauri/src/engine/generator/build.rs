@@ -17,7 +17,7 @@ pub(crate) fn generate_build_gradle(
         "com.github.aniyomiorg:extensions-lib:14"
     };
     format!(
-        build_gradle_kt_fmt(),
+        concat!(build_gradle_kt_fmt!()),
         extensions_lib = extensions_lib,
         pkg_id = pkg_id,
         version_code = version_code,
@@ -28,5 +28,5 @@ pub(crate) fn generate_build_gradle(
 }
 
 pub(crate) fn generate_settings_gradle(pkg_lang: &str, pkg_slug: &str) -> String {
-    format!(settings_gradle_kt_fmt(), pkg_lang = pkg_lang, pkg_slug = pkg_slug)
+    format!(concat!(settings_gradle_kt_fmt!()), pkg_lang = pkg_lang, pkg_slug = pkg_slug)
 }

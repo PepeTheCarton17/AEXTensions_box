@@ -20,7 +20,7 @@ pub fn generate_repo_readme(owner: &str, repo: &str, html_url: &str) -> String {
         owner, repo
     );
     format!(
-        repo_readme_md_fmt(),
+        concat!(repo_readme_md_fmt!()),
         install_url = install_url,
         html_url = html_url,
     )

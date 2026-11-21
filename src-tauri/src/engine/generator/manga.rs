@@ -30,7 +30,7 @@ pub(crate) fn generate_manga_source(
     let supports_latest = if latest_path.is_empty() { "false" } else { "true" };
 
     format!(
-        manga_source_kt_fmt(),
+        concat!(manga_source_kt_fmt!()),
         pkg_prefix = pkg_prefix,
         pkg_lang = pkg_lang,
         pkg_slug = pkg_slug,
@@ -57,7 +57,7 @@ pub(crate) fn generate_manga_filters(
     pkg_prefix: &str,
 ) -> String {
     format!(
-        manga_filters_kt_fmt(),
+        concat!(manga_filters_kt_fmt!()),
         pkg_prefix = pkg_prefix,
         pkg_lang = pkg_lang,
         pkg_slug = pkg_slug,

@@ -8,7 +8,7 @@ pub(crate) fn generate_android_manifest(pkg_id: &str, class_name: &str, app_labe
     };
 
     format!(
-        android_manifest_xml_fmt(),
+        concat!(android_manifest_xml_fmt!()),
         app_label = app_label,
         class_name = class_name,
         tag = tag,
