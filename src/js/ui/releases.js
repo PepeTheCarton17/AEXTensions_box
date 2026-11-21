@@ -1,5 +1,5 @@
 // Tabla de assets de la última release y comprobación de versiones.
-import { state, elements, escapeHtml } from '../state.js';
+import { state, elements, escapeHtml, formatBytes } from '../state.js';
 import { invokeBackend, openExternal } from '../services/tauri.js';
 import { t } from '../i18n/index.js';
 

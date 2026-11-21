@@ -2,7 +2,7 @@
 import { state, elements, appendTerminalLog, fallbackIcon, iconFor } from '../state.js';
 import { saveLocalZip } from '../services/tauri.js';
 import { t } from '../i18n/index.js';
-import { loadToolchain } from './build.js';
+import { loadToolchain, compileSuccessExtension } from './build.js';
 import { openExtensionFolder } from './shared.js';
 
 // ==================== SUCCESS MODAL ====================

@@ -2,8 +2,10 @@
 import { state, elements, appendTerminalLog } from '../state.js';
 import { invokeBackend } from '../services/tauri.js';
 import { t } from '../i18n/index.js';
+import { filteredExtensions } from '../services/search.js';
 import { refreshRepoFilters, loadExtensions, renderExtensionsGrid } from './catalog.js';
 import { runBulkUpdate, closeUpdatePrompt, refreshUpdatePromptCount, setBulkBusy } from './updates.js';
+import { refreshBackupExtensions } from './shared.js';
 
 async function checkRepoState() {
   if (!elements.btnCheckRepo) return 0;
