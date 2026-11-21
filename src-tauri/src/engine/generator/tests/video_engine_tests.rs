@@ -402,6 +402,27 @@ mod video_engine_tests {
         assert_eq!(bundle.lang, "uz");
         assert!(bundle.pkg_id.contains(".uz."));
 
+        // El idioma declarado dentro del Kotlin debe coincidir con el paquete,
+        // aunque el usuario eligiera español para los textos visibles. De lo
+        // contrario Nekoyomi instala la extensión en "en" y la mueve a "es".
+        let source = bundle
+            .files
+            .iter()
+            .find(|(path, _)| path.ends_with("/PlutoTv.kt"))
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .expect("falta la fuente Kotlin generada");
+        assert!(source.contains("override val lang = \"uz\""), "{source}");
+        assert!(!source.contains("override val lang = \"es\""), "{source}");
+        assert!(source.contains("data-title-uz"), "{source}");
+
+        let filters = bundle
+            .files
+            .iter()
+            .find(|(path, _)| path.ends_with("/PlutoTvFilters.kt"))
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .expect("faltan los filtros Kotlin generados");
+        assert!(filters.contains("La búsqueda por texto ignora el filtro"), "{filters}");
+
         let es = generate_kotlin_filters(
             "PlutoTv", "pluto", "es", "uz", "eu.kanade.tachiyomi.animeextension", &fixture,
         );

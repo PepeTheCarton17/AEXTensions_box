@@ -55,7 +55,7 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
     let site_locale = analysis.capabilities.locale.as_deref().unwrap_or("");
     let kt_str = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace(['\n', '\r', '\t'], " ");
     let detected_language = if analysis.detected_language.trim().is_empty() {
-        lang.to_string()
+        pkg_lang.to_string()
     } else {
         analysis.detected_language.clone()
     };

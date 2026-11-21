@@ -23,7 +23,7 @@ class {class_name} : ParsedHttpSource() {{
 
     override val baseUrl = "{base_url}"
 
-    override val lang = "{lang}"
+    override val lang = "{pkg_lang}"
 
     override val supportsLatest = {supports_latest}
 

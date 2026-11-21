@@ -38,7 +38,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
 
     override val baseUrl = "{base_url}"
 
-    override val lang = "{lang}"
+    override val lang = "{pkg_lang}"
 
     override val supportsLatest = {supports_latest}
 
@@ -89,7 +89,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         val attrs = if (lang == "en") {{
             listOf("data-title-en", "title")
         }} else {{
-            listOf("data-title-{lang}", "data-title-en", "title")
+            listOf("data-title-{pkg_lang}", "data-title-en", "title")
         }}
         if (pageLanguage == lang && text.isNotBlank()) return text
         for (name in attrs) {{
