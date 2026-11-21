@@ -1,0 +1,7 @@
+@import './base/typography.css';
+@import './components/scrollbars.css';
+@import './layout/scroll-visibility.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
