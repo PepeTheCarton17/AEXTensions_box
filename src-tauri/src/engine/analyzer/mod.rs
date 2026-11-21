@@ -8,6 +8,7 @@ mod api;
 mod capabilities;
 mod catalog;
 mod filters;
+mod filters_form;
 mod filters_js;
 mod identity;
 mod models;

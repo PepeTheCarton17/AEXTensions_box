@@ -48,6 +48,76 @@ pub(crate) fn api_option_lists<'a>(analysis: &'a AnalysisResult, param: &str) ->
         .collect()
 }
 
+/// Grupo de filtro construido sólo con listas REST que AEXT verificó.
+pub(crate) struct ApiFilterGroup {
+    pub(crate) param: String,
+    pub(crate) canonical: String,
+    pub(crate) values: Vec<(String, String)>,
+}
+
+/// Listas que realmente alimentan un selector. Un endpoint `/filters/genres`
+/// con JSON también es evidencia de filtro aunque el HTML no tenga `<select>`
+/// ni el bundle deje ver un parámetro de URL: en ese caso se usa el recurso
+/// como parámetro, nunca un nombre inventado.
+pub(crate) fn api_filter_groups(analysis: &AnalysisResult) -> Vec<ApiFilterGroup> {
+    const FILTERABLE: &[&str] = &[
+        "genre", "category", "country", "year", "quality", "format", "season",
+        "status", "sort", "audio", "audio-language", "language",
+        "copyright-holder", "profession", "tv-category", "tag", "type", "rating",
+    ];
+    let mut out: Vec<ApiFilterGroup> = Vec::new();
+    for api in &analysis.api_lists {
+        if api.options.len() < 2 {
+            continue;
+        }
+        let stem = api_stem(&api.resource);
+        if !FILTERABLE.contains(&stem.as_str()) {
+            continue;
+        }
+        // Si el sitio ya declaró el parámetro en HTML o en un bundle, ése gana:
+        // `/filters/genres` suele consultarse con `genreIds`, no con `genres`.
+        let param = analysis
+            .filter_params
+            .iter()
+            .find(|f| api_field_stem(&f.param) == stem)
+            .map(|f| f.param.clone())
+            .unwrap_or_else(|| api.resource.clone());
+        if out.iter().any(|g| g.param == param) {
+            continue;
+        }
+        let canonical = match stem.as_str() {
+            "genre" => "Genre",
+            "category" => "Category",
+            "country" => "Country",
+            "year" => "Year",
+            "quality" => "Quality",
+            "format" => "Format",
+            "season" => "Season",
+            "status" => "Status",
+            "sort" => "Sort By",
+            "audio" | "audio-language" => "Audio Language",
+            "language" => "Language",
+            "copyright-holder" => "Copyright Holder",
+            "profession" => "Profession",
+            "tv-category" => "TV Category",
+            "tag" => "Tag",
+            "type" => "Type",
+            "rating" => "Rating",
+            _ => "Filter",
+        };
+        out.push(ApiFilterGroup {
+            param,
+            canonical: canonical.to_string(),
+            values: api
+                .options
+                .iter()
+                .map(|o| (o.label.clone(), o.value.clone()))
+                .collect(),
+        });
+    }
+    out
+}
+
 /// Metadatos que un sitio publica como lista y que se pueden excluir con
 /// evidencia real. No hay géneros anime prefijados: si el sitio no los expone,
 /// no hay filtro.

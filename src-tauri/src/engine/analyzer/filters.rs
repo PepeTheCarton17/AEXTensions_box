@@ -1,6 +1,5 @@
 use scraper::{Html, Selector};
 use std::collections::HashSet;
-use url::Url;
 
 use super::models::{SiteAnalyzer, SiteFilterParam};
 
@@ -291,45 +290,19 @@ impl SiteAnalyzer {
         });
     }
 
-    /// Parámetros de filtro realmente presentes en enlaces o formularios.
-    pub(crate) fn detect_filter_params(
-        doc: &Html,
-        origin: &str,
-        host: &str,
-        search_param: Option<&str>,
-    ) -> Vec<SiteFilterParam> {
-        let mut result = Vec::new();
-        let mut seen = HashSet::new();
-        let mut add = |param: &str, value: &str| {
-            if param.is_empty() || value.is_empty() || Self::ignored_filter_param(param, search_param) {
-                return;
-            }
-            if seen.insert(format!("{param}={value}")) && result.len() < 40 {
-                result.push(SiteFilterParam {
-                    name: Self::canonical_filter_name(param),
-                    param: param.to_string(),
-                    value: value.to_string(),
-                    kind: "check".to_string(),
-                });
-            }
-        };
-
-        if let Ok(sel) = Selector::parse("a[href]") {
-            for a in doc.select(&sel) {
-                let Some(path) = Self::same_origin_path(a.value().attr("href").unwrap_or(""), origin, host) else { continue };
-                let Ok(url) = Url::parse(&format!("{origin}{path}")) else { continue };
-                for (k, v) in url.query_pairs() {
-                    add(k.as_ref(), v.as_ref());
-                }
-            }
+    /// ¿Este token puede ser un parámetro de catálogo? Se usa para aceptar
+    /// enlaces y controles sin valor y para no publicar claves internas de un
+    /// bundle como si fueran filtros.
+    pub(crate) fn is_declared_filter_param(param: &str) -> bool {
+        if Self::ignored_filter_param(param, None) {
+            return false;
         }
-        if let Ok(sel) = Selector::parse("form input[name]") {
-            for input in doc.select(&sel) {
-                let key = input.value().attr("name").unwrap_or("");
-                let value = input.value().attr("value").unwrap_or("");
-                add(key, value);
-            }
-        }
-        result
+        let lower = param.to_lowercase();
+        CANONICAL_FILTER_NAMES
+            .iter()
+            .any(|(name, label)| *name == lower.as_str() && *label != "Search")
+            || lower.ends_with("id")
+            || lower.ends_with("ids")
+            || lower.ends_with("by")
     }
 }

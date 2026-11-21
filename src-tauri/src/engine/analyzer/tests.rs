@@ -567,10 +567,13 @@ render(nf,{href:"/catalog?genreIds=1"});"#;
     }
 
     #[test]
-    fn api_path_priority_puts_catalog_resources_first() {
+    fn api_path_priority_puts_filter_endpoints_first() {
+        let filters = SiteAnalyzer::api_path_priority("/filters/genres");
         let genres = SiteAnalyzer::api_path_priority("/genres");
         let categories = SiteAnalyzer::api_path_priority("/categories");
         let other = SiteAnalyzer::api_path_priority("/banners");
+        assert_eq!(filters, 0, "un endpoint /filters/* debe sondearse antes que nada");
+        assert!(filters < genres);
         assert!(genres < other);
         assert!(categories < other);
         assert_eq!(genres, SiteAnalyzer::api_path_priority("genres"));
@@ -594,8 +597,9 @@ render(nf,{href:"/catalog?genreIds=1"});"#;
         let mut ordered = candidates.paths.clone();
         ordered.sort_by_key(|path| SiteAnalyzer::api_path_priority(path));
         let urls = SiteAnalyzer::api_probe_urls(&candidates, &ordered);
-        assert!(urls[0].contains("/auth/api/v1/genres"));
-        assert!(urls[1].contains("/user/api/v1/genres"), "la segunda base no debe quedar fuera del presupuesto: {:?}", urls);
+        assert!(urls[0].contains("/user/api/v1/genres"), "la base pública va primero: {:?}", urls);
+        assert!(urls[1].contains("/user/api/genres"), "el fallback sin versión se intercala: {:?}", urls);
+        assert!(urls.iter().take(12).any(|u| u.contains("/auth/api/v1/genres")), "la base de autenticación también se prueba: {:?}", urls);
         assert!(urls.iter().take(12).any(|u| u.contains("/user/api/v1/contents")));
         assert!(urls.iter().all(|u| u.contains("/v1/") || !u.contains("/v")), "sin versión sólo como fallback: {:?}", urls);
     }
@@ -605,4 +609,75 @@ render(nf,{href:"/catalog?genreIds=1"});"#;
         assert!(SiteAnalyzer::host_related_to("https://api.frame.uz/user/api/v1/genres", "frame.uz"));
         assert!(SiteAnalyzer::host_related_to("https://pluto.tv/api/list", "www.pluto.tv"));
         assert!(!SiteAnalyzer::host_related_to("https://third-party.example/genres", "frame.uz"));
+    }
+
+    #[test]
+    fn html_selects_and_empty_query_params_are_real_filters() {
+        let html = r#"<html><body>
+<a href="/catalog?genreIds=">Todos</a>
+<select name="year"><option value="2024">2024</option><option value="2023">2023</option></select>
+<select name="name"><option value="x">x</option></select>
+<input name="isFrameDub" value="true">
+</body></html>"#;
+        let doc = Html::parse_document(html);
+        let filters =
+            SiteAnalyzer::detect_filter_params(&doc, "https://example.com", "example.com", Some("name"));
+        assert!(
+            filters.iter().any(|f| f.param == "genreIds" && f.kind == "text" && f.value.is_empty()),
+            "un enlace `?genreIds=` declara el parámetro aunque rellene el valor en cliente: {:?}",
+            filters
+        );
+        assert_eq!(filters.iter().filter(|f| f.param == "year").count(), 2);
+        assert!(filters.iter().all(|f| f.param != "name" && f.param != "isFrameDub"));
+    }
+
+    #[test]
+    fn js_query_strings_and_param_objects_reveal_catalog_filters() {
+        let js = r#"let a="/catalog?genreIds=1&year=2024&isFrameDub=true&page=2&id=uz.frame.cinema";
+let b = paramsToQuery({categoryIds:t("category_id"), profile_id:e, sortBy:"year"});"#;
+        let filters = SiteAnalyzer::detect_filters_from_js(js, Some("name"));
+        let params: Vec<&str> = filters.iter().map(|f| f.param.as_str()).collect();
+        for expected in ["genreIds", "year", "categoryIds", "sortBy"] {
+            assert!(params.contains(&expected), "falta {expected} en {:?}", params);
+        }
+        assert!(filters.iter().any(|f| f.param == "genreIds" && f.value == "1"));
+        assert!(filters.iter().any(|f| f.param == "year" && f.value == "2024"));
+        assert!(filters.iter().any(|f| f.param == "categoryIds" && f.kind == "text"));
+        for bogus in ["isFrameDub", "page", "id", "profile_id", "name"] {
+            assert!(!params.contains(&bogus), "parámetro no filtrable expuesto: {bogus}");
+        }
+    }
+
+    #[test]
+    fn scalar_api_lists_become_filter_options() {
+        let years: serde_json::Value =
+            serde_json::from_str(r#"[{"year":2026,"sort_order":1},{"year":2025,"sort_order":2}]"#).unwrap();
+        let result = SiteAnalyzer::parse_api_list(
+            "https://api.example/user/api/v1/filters/years",
+            &years,
+        )
+        .unwrap();
+        assert_eq!(result.options.len(), 2);
+        assert_eq!(result.options[0].value, "2026");
+        assert_eq!(result.options[0].label, "2026");
+
+        let qualities: serde_json::Value =
+            serde_json::from_str(r#"[{"quality":"Sd"},{"quality":"Hd"}]"#).unwrap();
+        let result = SiteAnalyzer::parse_api_list(
+            "https://api.example/user/api/v1/filters/qualities",
+            &qualities,
+        )
+        .unwrap();
+        assert_eq!(result.options.len(), 2);
+        assert_eq!(result.options[0].value, "Sd");
+
+        let companies: serde_json::Value =
+            serde_json::from_str(r#"[{"company_name":"Warner"},{"company_name":"Disney"}]"#).unwrap();
+        let result = SiteAnalyzer::parse_api_list(
+            "https://api.example/user/api/v1/filters/copyright-holders",
+            &companies,
+        )
+        .unwrap();
+        assert_eq!(result.options.len(), 2);
+        assert_eq!(result.options[1].label, "Disney");
     }

@@ -23,7 +23,7 @@ impl SiteAnalyzer {
                     .and_then(|s| s.filter(|p| !p.is_empty()).last().map(|p| p.to_string()))
             })
             .unwrap_or_default();
-        let options: Vec<ApiOption> = arr
+        let mut options: Vec<ApiOption> = arr
             .iter()
             .filter_map(|v| {
                 let obj = v.as_object()?;
@@ -32,8 +32,30 @@ impl SiteAnalyzer {
                 Some(ApiOption { value, label })
             })
             .collect();
+        // Muchas listas de filtros no traen `{id,name}` sino un único campo
+        // escalar: `[{"year":2026}]`, `[{"quality":"Sd"}]`, `[{"company_name":"..."}]`.
+        // Ese campo es a la vez valor y etiqueta: es un dato real del sitio.
+        if options.len() < 2 {
+            options = arr
+                .iter()
+                .filter_map(Self::scalar_api_option)
+                .collect();
+        }
         let first = arr[0].as_object()?;
-        let title_field = Self::detect_json_field(first, &["title", "name", "original_title", "originalName"]);
+        let mut title_field = Self::detect_json_field(first, &["title", "name", "original_title", "originalName"]);
+        if title_field.is_empty() && options.len() >= 2 {
+            title_field = first
+                .keys()
+                .find(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "id" | "value" | "key" | "slug" | "sort_order"
+                            | "is_popular" | "is_mini" | "year" | "quality"
+                    )
+                })
+                .cloned()
+                .unwrap_or_default();
+        }
         let image_field = Self::detect_json_field(
             first,
             &["poster_link", "poster", "image", "thumbnail", "cover", "img", "backdrop_path"],
@@ -51,6 +73,42 @@ impl SiteAnalyzer {
             image_field,
             url_field,
             record_count: arr.len(),
+        })
+    }
+
+    /// Opción de una lista cuyo registro es un único campo escalar. Se ignoran
+    /// metadatos y claves de presentación para no confundir un `sort_order` con
+    /// un valor de filtro.
+    fn scalar_api_option(value: &serde_json::Value) -> Option<ApiOption> {
+        const IGNORED: &[&str] = &[
+            "id", "value", "key", "slug", "name", "label", "title", "sort_order",
+            "sortorder", "is_popular", "ispopular", "is_mini", "ismini", "active",
+            "created_at", "updated_at",
+        ];
+        let obj = value.as_object()?;
+        let mut fields: Vec<(&String, String)> = obj
+            .iter()
+            .filter(|(key, _)| !IGNORED.contains(&key.to_lowercase().as_str()))
+            .filter_map(|(key, value)| {
+                let text = match value {
+                    serde_json::Value::String(s) => s.trim().to_string(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    _ => return None,
+                };
+                if text.is_empty() {
+                    None
+                } else {
+                    Some((key, text))
+                }
+            })
+            .collect();
+        if fields.len() != 1 {
+            return None;
+        }
+        let (_, text) = fields.remove(0);
+        Some(ApiOption {
+            value: text.clone(),
+            label: text,
         })
     }
 
@@ -107,10 +165,15 @@ impl SiteAnalyzer {
             "collections", "top", "new", "popular", "search",
         ];
         let low = path.trim_start_matches('/').to_lowercase();
+        // Los endpoints `/filters/*` alimentan directamente los selectores:
+        // van antes que catálogos y mucho antes que banners o publicidad.
+        if low == "filters" || low.starts_with("filters/") {
+            return 0;
+        }
         PREFERRED
             .iter()
             .position(|name| low == *name || low.starts_with(&format!("{}s", name)))
-            .map(|index| index as u8)
+            .map(|index| index as u8 + 1)
             .unwrap_or(u8::MAX)
     }
 
@@ -124,21 +187,27 @@ impl SiteAnalyzer {
             .as_deref()
             .map(|v| v.trim().trim_start_matches('/').trim_end_matches('/'))
             .filter(|v| !v.is_empty());
+        let mut bases: Vec<String> = candidates.bases.clone();
+        // Un sitio puede declarar `auth/api` y `user/api`; sondear primero la
+        // de autenticación agota el presupuesto con rutas privadas que nunca
+        // devuelven el catálogo público.
+        bases.sort_by_key(|b| if b.to_lowercase().contains("/auth") { 1 } else { 0 });
         let mut urls: Vec<String> = Vec::new();
-        for with_version in [true, false] {
-            if with_version && version.is_none() {
-                continue;
-            }
+        for base in &bases {
+            let root = base.trim_end_matches('/');
             for path in ordered {
-                for base in &candidates.bases {
-                    let root = base.trim_end_matches('/');
-                    let full = match (with_version, version) {
-                        (true, Some(v)) => format!("{}/{}{}", root, v, path),
-                        _ => format!("{}{}", root, path),
-                    };
+                // Se prueba la ruta con la versión declarada y, sólo después,
+                // sin ella. Así cada base tiene una oportunidad real antes de
+                // gastar el presupuesto en fallbacks.
+                if let Some(v) = version {
+                    let full = format!("{}/{}{}", root, v, path);
                     if !urls.contains(&full) {
                         urls.push(full);
                     }
+                }
+                let plain = format!("{}{}", root, path);
+                if !urls.contains(&plain) {
+                    urls.push(plain);
                 }
             }
         }
@@ -156,7 +225,7 @@ impl SiteAnalyzer {
         ordered.sort_by_key(|path| Self::api_path_priority(path));
         let urls = Self::api_probe_urls(candidates, &ordered);
         let mut out = Vec::new();
-        for url in urls.into_iter().take(12) {
+        for url in urls.into_iter().take(32) {
             if !Self::host_related_to(&url, site_host) {
                 continue;
             }
@@ -165,7 +234,7 @@ impl SiteAnalyzer {
                 .get(&url)
                 .header("Accept", "application/json")
                 .header("Accept-Language", "en")
-                .timeout(std::time::Duration::from_secs(8))
+                .timeout(std::time::Duration::from_secs(5))
                 .send()
                 .await
             else {

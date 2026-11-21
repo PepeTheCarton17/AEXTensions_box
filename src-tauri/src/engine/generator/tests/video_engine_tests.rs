@@ -522,4 +522,56 @@ mod video_engine_tests {
         assert!(kt.contains("excluded_api_values"), "{}", kt);
         assert!(kt.contains(".filter { it.state }"), "{}", kt);
     }
+
+    #[test]
+    fn verified_filter_lists_generate_filters_without_html_params() {
+        use crate::engine::analyzer::{ApiListResult, ApiOption};
+        let mut fixture = pluto_fixture();
+        // SPA sin `<select>` y sin parámetros en bundles: sólo listas REST
+        // verificadas con un GET público.
+        fixture.filter_params = Vec::new();
+        fixture.api_lists = vec![
+            ApiListResult {
+                url: "https://api.example/user/api/v1/filters/genres".to_string(),
+                resource: "genres".to_string(),
+                options: vec![
+                    ApiOption { value: "4".to_string(), label: "Comedy".to_string() },
+                    ApiOption { value: "9".to_string(), label: "Horror".to_string() },
+                ],
+                record_count: 2,
+                ..Default::default()
+            },
+            ApiListResult {
+                url: "https://api.example/user/api/v1/filters/years".to_string(),
+                resource: "years".to_string(),
+                options: vec![
+                    ApiOption { value: "2026".to_string(), label: "2026".to_string() },
+                    ApiOption { value: "2025".to_string(), label: "2025".to_string() },
+                ],
+                record_count: 2,
+                ..Default::default()
+            },
+        ];
+
+        let filters = generate_kotlin_filters(
+            "Frame", "frame", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
+        );
+        assert!(
+            filters.contains("CheckBoxFilterList(\"Género\", \"genres\", arrayOf(Pair(\"Comedy\", \"4\")"),
+            "{}",
+            filters
+        );
+        assert!(
+            filters.contains("QueryPartFilter(\"Año\", \"years\", arrayOf(Pair(\"Todos\", \"\"), Pair(\"2026\", \"2026\")"),
+            "{}",
+            filters
+        );
+
+        let kt = generate_kotlin_source(
+            &fixture, "Frame", "Frame", "frame", "es", "es",
+            "eu.kanade.tachiyomi.animeextension",
+        );
+        assert!(kt.contains("is FrameFilters.QueryPartFilter"), "{}", kt);
+        assert!(kt.contains("excluded_api_values"), "{}", kt);
+    }
 }

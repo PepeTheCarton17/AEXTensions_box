@@ -1,6 +1,8 @@
 use crate::engine::analyzer::AnalysisResult;
 
-use super::api_helpers::{api_exclusion_pairs, api_option_lists, verified_audio_selection};
+use super::api_helpers::{
+    api_exclusion_pairs, api_filter_groups, api_option_lists, verified_audio_selection,
+};
 use super::i18n::{filter_label, filter_value, get_i18n};
 use super::templates::filters::{audio_filter_class_kt_fmt, kotlin_filters_kt_fmt};
 
@@ -142,6 +144,23 @@ pub(crate) fn generate_kotlin_filters(
                 }
             }
         }
+    }
+    // En SPAs el HTML y los bundles pueden no declarar ningún parámetro:
+    // basta con que el sitio sirva `/filters/*` con JSON real para ofrecer
+    // esos filtros. Se añaden los grupos que falten, sin duplicar los ya
+    // detectados, y se respeta el parámetro real cuando se conoce.
+    for api_group in api_filter_groups(analysis) {
+        if grouped.iter().any(|(param, _)| param == &api_group.param) {
+            continue;
+        }
+        grouped.push((
+            api_group.param,
+            ParamGroup {
+                canonical: api_group.canonical.clone(),
+                name: filter_label(lang, &api_group.canonical),
+                values: api_group.values,
+            },
+        ));
     }
     // Exclusión con evidencia: los valores son los ids/nombres reales de las
     // listas verificadas. Si el sitio no publica esas listas, no hay filtro.

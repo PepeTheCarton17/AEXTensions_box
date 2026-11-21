@@ -67,7 +67,10 @@ impl SiteAnalyzer {
     ) -> Option<(SiteCapabilities, Vec<SiteFilterParam>, ApiCandidates)> {
         let html = self.client.get(entry_url).send().await.ok()?.text().await.ok()?;
         let origin = Url::parse(entry_url).ok()?.origin().ascii_serialization();
-        let urls = Self::script_urls(&html, &origin, 8);
+        // Los primeros bundles suelen ser framework y analítica; en Next.js
+        // las rutas de filtros y los parámetros del catálogo viven en chunks
+        // posteriores. Se amplía el escaneo y se para en cuanto hay evidencia.
+        let urls = Self::script_urls(&html, &origin, 24);
         if urls.is_empty() {
             return None;
         }
@@ -76,8 +79,16 @@ impl SiteAnalyzer {
         let mut filters: Vec<SiteFilterParam> = Vec::new();
         let mut api_candidates = ApiCandidates::default();
         let mut found_any = false;
+        let mut checked = 0usize;
         for url in urls {
-            if let Ok(resp) = self.client.get(&url).send().await {
+            checked += 1;
+            if let Ok(resp) = self
+                .client
+                .get(&url)
+                .timeout(std::time::Duration::from_secs(8))
+                .send()
+                .await
+            {
                 if let Ok(text) = resp.text().await {
                     if text.is_empty() {
                         continue;
@@ -114,6 +125,21 @@ impl SiteAnalyzer {
                         break;
                     }
                 }
+            }
+            // Con filtros y recursos `/filters/*` ya verificados, seguir
+            // descargando bundles sólo añade latencia sin cambiar el resultado.
+            let distinct_params = filters
+                .iter()
+                .map(|f| f.param.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            let filter_paths = api_candidates
+                .paths
+                .iter()
+                .filter(|p| p.starts_with("/filters/"))
+                .count();
+            if checked >= 8 && distinct_params >= 2 && filter_paths >= 2 {
+                break;
             }
         }
         if !found_any {

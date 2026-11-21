@@ -180,7 +180,123 @@ impl SiteAnalyzer {
                 }
             }
         }
+
+        // Los SPAs no declaran `<select>`: construyen la URL del catálogo con
+        // query strings (`/catalog?genreIds=1`) y con helpers tipo
+        // `paramsToQuery({categoryIds: ...})`. Son evidencia del parámetro real
+        // que acepta el sitio, así que se añaden aunque no haya arrays de
+        // opciones: el generador los ofrecerá como texto libre.
+        for (param, value) in Self::detect_query_string_params(text, search_param) {
+            Self::push_js_param(&mut result, &param, &value, search_param);
+        }
+        for param in Self::detect_param_object_keys(text, search_param) {
+            Self::push_js_param(&mut result, &param, "", search_param);
+        }
         result
+    }
+
+    /// Añade un parámetro detectado en un bundle sin duplicar la combinación
+    /// exacta `param/valor`. Un filtro `text` existente gana sobre uno `select`
+    /// del mismo parámetro para no estrechar un campo libre sin evidencia.
+    fn push_js_param(
+        out: &mut Vec<SiteFilterParam>,
+        param: &str,
+        value: &str,
+        search_param: Option<&str>,
+    ) {
+        if Self::ignored_filter_param(param, search_param) {
+            return;
+        }
+        if out.iter().any(|old| {
+            old.param == param && (old.value == value || (old.kind == "text" && value.is_empty()))
+        }) {
+            return;
+        }
+        out.push(SiteFilterParam {
+            name: Self::canonical_filter_name(param),
+            param: param.to_string(),
+            value: value.to_string(),
+            kind: if value.is_empty() { "text" } else { "select" }.to_string(),
+        });
+    }
+
+    /// Parámetros de filtro presentes en URLs literales del bundle. Sólo se
+    /// aceptan nombres reconocibles (`genreIds`, `year`, `sortBy`...) y valores
+    /// simples: un id de sesión o una ruta con puntos no es una opción real.
+    pub(crate) fn detect_query_string_params(
+        text: &str,
+        search_param: Option<&str>,
+    ) -> Vec<(String, String)> {
+        let Ok(re) = Regex::new(r#"[?&]([A-Za-z][A-Za-z0-9_]{1,39})=([^&"'\s\\]{0,40})"#) else {
+            return Vec::new();
+        };
+        let mut out: Vec<(String, String)> = Vec::new();
+        for cap in re.captures_iter(text) {
+            let param = cap[1].trim();
+            let lower = param.to_lowercase();
+            // `?id=` es un identificador de ficha, no un filtro de catálogo.
+            let recognised = CANONICAL_FILTER_NAMES
+                .iter()
+                .any(|(key, label)| *key == lower.as_str() && *label != "Search")
+                || lower.ends_with("ids")
+                || lower.ends_with("_id")
+                || lower.ends_with("by");
+            if !recognised || !Self::is_filter_like_token(param, search_param) {
+                continue;
+            }
+            let raw = cap[2]
+                .trim()
+                .trim_end_matches(|c| matches!(c, ',' | ')' | '}'));
+            let value = if Self::plain_js_value(raw) {
+                raw.to_string()
+            } else {
+                String::new()
+            };
+            if !out.iter().any(|(p, v)| p == param && v == &value) {
+                out.push((param.to_string(), value));
+            }
+        }
+        out
+    }
+
+    /// Claves de filtro pasadas a un constructor de query strings del propio
+    /// sitio (`paramsToQuery`, `buildQuery`, `toQueryString`). El valor se
+    /// calcula en tiempo de ejecución, así que sólo se guarda la clave.
+    pub(crate) fn detect_param_object_keys(
+        text: &str,
+        search_param: Option<&str>,
+    ) -> Vec<String> {
+        let Ok(call_re) = Regex::new(
+            r#"(?i)\b(?:paramsToQuery|buildQuery|toQueryString|queryParams)\s*\(\s*\{([^{}]{1,400})\}\s*\)"#,
+        ) else {
+            return Vec::new();
+        };
+        let Ok(key_re) = Regex::new(r#"([A-Za-z][A-Za-z0-9_]{1,39})\s*:"#) else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = Vec::new();
+        for call in call_re.captures_iter(text) {
+            for key in key_re.captures_iter(&call[1]) {
+                let param = key[1].trim();
+                if Self::is_filter_like_token(param, search_param)
+                    && !out.iter().any(|p| p == param)
+                {
+                    out.push(param.to_string());
+                }
+            }
+        }
+        out
+    }
+
+    /// Un literal simple y completo: ids numéricos, slugs y enumeraciones.
+    /// Rechaza plantillas, puntos (identificadores compuestos) y comandos JS.
+    fn plain_js_value(raw: &str) -> bool {
+        !raw.is_empty()
+            && raw.len() <= 30
+            && raw
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && !raw.chars().all(|c| c.is_ascii_digit() && c == '0')
     }
 
     pub(crate) fn js_array_tokens(
@@ -224,6 +340,12 @@ impl SiteAnalyzer {
             "merchant", "service", "scheme", "deeplink", "cooldown", "expire",
             "gtm", "modal", "icon", "render", "parse", "resolve", "appstore",
             "googleplay", "siteurl", "cardtype", "feature", "event",
+            // Los helpers `paramsToQuery` mezclan filtros con claves de sesión,
+            // perfil, notificaciones y pago. Ninguna es un filtro de catálogo.
+            "profile", "request", "device", "token", "user", "avatar",
+            "history", "favourite", "favorite", "wallet", "promo",
+            "subscription", "notification", "comment", "person", "franchise",
+            "banner", "setting", "payment", "billing", "region", "locale",
         ];
         if CONFIG_LIKE_SUBSTRINGS.iter().any(|key| lower.contains(key)) {
             return false;

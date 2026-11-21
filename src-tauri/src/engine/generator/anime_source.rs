@@ -1,7 +1,9 @@
 use crate::engine::analyzer::{AnalysisResult, SiteAnalyzer};
 use std::collections::HashSet;
 
-use super::api_helpers::{api_catalog_records, api_exclusion_pairs, verified_audio_selection};
+use super::api_helpers::{
+    api_catalog_records, api_exclusion_pairs, api_filter_groups, verified_audio_selection,
+};
 use super::i18n::get_i18n;
 use super::naming::kt_path_literal;
 use super::templates::anime_blocks::{
@@ -95,7 +97,7 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
     };
     let has_site_filters = analysis.filter_params.iter().any(|f| {
         !f.param.is_empty() && (f.kind == "text" || !f.value.is_empty())
-    });
+    }) || !api_filter_groups(analysis).is_empty();
     // La exclusión es un filtro real: sus valores vienen de las listas `{id,name}`
     // que el sitio publica en su API. Se guarda en preferencias para que also
     // afecte a popular/latest, que no reciben el AnimeFilterList.

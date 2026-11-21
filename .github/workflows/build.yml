@@ -46,6 +46,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Run engine tests
+        if: matrix.platform == 'ubuntu-latest'
+        working-directory: src-tauri
+        run: cargo test
+
       - name: Build Desktop App
         run: npm run tauri build
 
