@@ -187,7 +187,6 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
         card_sel = card_sel,
         class_name = class_name,
         episode_sel = episode_sel,
-        lang = lang,
         latest_path = latest_path,
         name = name,
         next_sel = next_sel,

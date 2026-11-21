@@ -8,7 +8,7 @@ pub(crate) fn generate_manga_source(
     display_name: &str,
     class_name: &str,
     pkg_slug: &str,
-    lang: &str,
+    _labels_lang: &str,
     pkg_lang: &str,
     pkg_prefix: &str,
 ) -> String {
@@ -37,7 +37,6 @@ pub(crate) fn generate_manga_source(
         class_name = class_name,
         name = name,
         base_url = base_url,
-        lang = lang,
         supports_latest = supports_latest,
         popular_path = popular_path,
         latest_path = latest_path,
