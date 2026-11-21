@@ -23,7 +23,7 @@ impl SiteAnalyzer {
                     .and_then(|s| s.filter(|p| !p.is_empty()).last().map(|p| p.to_string()))
             })
             .unwrap_or_default();
-        let mut options: Vec<ApiOption> = arr
+        let paired_options: Vec<ApiOption> = arr
             .iter()
             .filter_map(|v| {
                 let obj = v.as_object()?;
@@ -35,12 +35,17 @@ impl SiteAnalyzer {
         // Muchas listas de filtros no traen `{id,name}` sino un único campo
         // escalar: `[{"year":2026}]`, `[{"quality":"Sd"}]`, `[{"company_name":"..."}]`.
         // Ese campo es a la vez valor y etiqueta: es un dato real del sitio.
-        if options.len() < 2 {
-            options = arr
-                .iter()
-                .filter_map(Self::scalar_api_option)
-                .collect();
-        }
+        let scalar_options: Vec<ApiOption> = arr
+            .iter()
+            .filter_map(Self::scalar_api_option)
+            .collect();
+        // Nunca se sustituye un par `id/nombre` válido por el fallback: una
+        // lista de un solo registro con `slug/title` sigue siendo una opción.
+        let options = if scalar_options.len() > paired_options.len() {
+            scalar_options
+        } else {
+            paired_options
+        };
         let first = arr[0].as_object()?;
         let mut title_field = Self::detect_json_field(first, &["title", "name", "original_title", "originalName"]);
         if title_field.is_empty() && options.len() >= 2 {
