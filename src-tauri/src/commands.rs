@@ -842,11 +842,24 @@ async fn sync_published_variants(state: &AppState) -> usize {
                     changed = true;
                 }
                 if existing.apk_download_url.is_none() {
-                    existing.apk_download_url = apk;
+                    existing.apk_download_url = apk.clone();
                     changed = true;
                 }
                 if existing.nekoyomi_repo_url.is_none() {
                     existing.nekoyomi_repo_url = Some(index_url.clone());
+                    changed = true;
+                }
+                // El índice vuelve a publicar esta variante: su módulo existe
+                // otra vez, así que no debe seguir oculta como "eliminada".
+                if existing.repo_state.as_deref() == Some("missing") {
+                    existing.repo_state = Some("present".to_string());
+                    existing.repo_deleted_at = None;
+                    existing.repo_ignore_missing = false;
+                    changed = true;
+                }
+                if version_code > existing.version_code {
+                    existing.version = version.to_string();
+                    existing.version_code = version_code;
                     changed = true;
                 }
                 if changed {
@@ -1136,6 +1149,7 @@ pub async fn update_all_extensions(
         .await;
 
     let mut updated = Vec::new();
+    let mut failures = Vec::new();
     for pkg_id in targets {
         match update_extension_inner(pkg_id.clone(), &state).await {
             Ok(item) => updated.push(item),
@@ -1143,9 +1157,20 @@ pub async fn update_all_extensions(
                 state
                     .add_log("ERROR", &format!("No se pudo actualizar {}: {}", pkg_id, err))
                     .await;
-                return Err(format!("{}: {}", pkg_id, err));
+                failures.push(format!("{}: {}", pkg_id, err));
             }
         }
+    }
+    if updated.is_empty() {
+        return Err(failures.join("; "));
+    }
+    if !failures.is_empty() {
+        state
+            .add_log(
+                "WARN",
+                &format!("{} extensión(es) no se actualizaron: {}", failures.len(), failures.join("; ")),
+            )
+            .await;
     }
     Ok(updated)
 }

@@ -31,6 +31,10 @@ const CANONICAL_FILTER_NAMES: &[(&str, &str)] = &[
     ("audio_language", "Audio Language"),
     ("quality", "Quality"),
     ("qualities", "Quality"),
+    ("format", "Format"),
+    ("formats", "Format"),
+    ("season", "Season"),
+    ("seasons", "Season"),
     ("copyrightholderids", "Copyright Holder"),
     ("copyrightholder", "Copyright Holder"),
     ("isframedub", "Dubbed"),
@@ -2322,12 +2326,6 @@ impl SiteAnalyzer {
         for cap in plain_re.captures_iter(text) {
             raw_arrays.push(cap[1].to_string());
         }
-        let known = [
-            "year", "years", "status", "quality", "qualities", "cues", "display", "dub",
-            "sortby", "sort_by", "genre", "genres", "country", "countries", "category",
-            "categories", "audio", "name", "format", "season", "view", "subtitle",
-            "sub_language", "audiolanguage", "audiolanguageids",
-        ];
         for raw in raw_arrays {
             // Los Arrays de opciones son objetos `{value, label}`, no params.
             if raw.contains("value:") || raw.contains("label:") {
@@ -2346,13 +2344,7 @@ impl SiteAnalyzer {
             }
             let hits = tokens
                 .iter()
-                .filter(|t| {
-                    let lower = t.to_lowercase();
-                    known.contains(&lower.as_str())
-                        || lower.ends_with("ids")
-                        || lower.ends_with("id")
-                        || lower.ends_with("by")
-                })
+                .filter(|t| Self::is_filter_like_token(t, search_param))
                 .count();
             if hits < 2 {
                 continue;
@@ -2505,6 +2497,17 @@ impl SiteAnalyzer {
             return false;
         }
         let lower = param.to_lowercase();
+        // Un sufijo `Id` no convierte una clave interna en filtro: los bundles
+        // mezclan `clickMerchantId`, `paymeMerchantId`, etc. con parámetros
+        // reales. El contexto (array de opciones) no basta para publicarlos.
+        const CONFIG_LIKE_SUBSTRINGS: &[&str] = &[
+            "merchant", "service", "scheme", "deeplink", "cooldown", "expire",
+            "gtm", "modal", "icon", "render", "parse", "resolve", "appstore",
+            "googleplay", "siteurl", "cardtype", "feature", "event",
+        ];
+        if CONFIG_LIKE_SUBSTRINGS.iter().any(|key| lower.contains(key)) {
+            return false;
+        }
         if CANONICAL_FILTER_NAMES.iter().any(|(key, _)| *key == lower.as_str()) {
             return true;
         }
@@ -2645,6 +2648,14 @@ impl SiteAnalyzer {
             "nav", "menu", "footer", "header", "breadcrumb", "sidebar", "dropdown",
             "promo", "banner", "pagination", "pager", "navbar", "toolbar",
         ];
+        // En un ancestro, el token suelto `nav` es demasiado amplio: los
+        // carruseles usan clases como `container--nav-ready` y eso no convierte
+        // sus tarjetas en navegación. Sólo los tokens explícitamente de
+        // navegación pueden descartar un elemento por su contenedor.
+        const ANCESTOR_NAV_TOKENS: &[&str] = &[
+            "menu", "footer", "header", "breadcrumb", "sidebar", "dropdown",
+            "promo", "banner", "pagination", "pager", "navbar", "toolbar",
+        ];
         let own = format!(
             "{} {}",
             el.value().attr("class").unwrap_or(""),
@@ -2666,7 +2677,7 @@ impl SiteAnalyzer {
                     parent_el.attr("id").unwrap_or("")
                 )
                 .to_lowercase();
-                if Self::matches_any(&hay, NAV_TOKENS) {
+                if Self::matches_any(&hay, ANCESTOR_NAV_TOKENS) {
                     return true;
                 }
             }
@@ -3352,6 +3363,27 @@ mod tests {
     }
 
     #[test]
+    fn carousel_nav_ready_container_does_not_hide_cards() {
+        let analyzer = SiteAnalyzer::new();
+        let doc = Html::parse_document(
+            r#"<!doctype html><html><body>
+<div class="carousel__container carousel__container--nav-ready">
+  <div class="swiper-slide"><a class="CardLink_cardLink__xYz" href="/shows/one/"><img alt="One" src="/a.jpg"></a></div>
+  <div class="swiper-slide"><a class="CardLink_cardLink__xYz" href="/shows/two/"><img alt="Two" src="/b.jpg"></a></div>
+  <div class="swiper-slide"><a class="CardLink_cardLink__xYz" href="/shows/three/"><img alt="Three" src="/c.jpg"></a></div>
+  <div class="swiper-slide"><a class="CardLink_cardLink__xYz" href="/shows/four/"><img alt="Four" src="/d.jpg"></a></div>
+  <div class="swiper-slide"><a class="CardLink_cardLink__xYz" href="/shows/five/"><img alt="Five" src="/e.jpg"></a></div>
+  <div class="swiper-slide"><a class="CardLink_cardLink__xYz" href="/shows/six/"><img alt="Six" src="/f.jpg"></a></div>
+</div>
+</body></html>"#,
+        );
+
+        let catalog = analyzer.detect_catalog(&doc, "https://example.com", "example.com");
+        assert!(catalog.count >= 4, "las tarjetas del carrusel deben conservarse");
+        assert_eq!(catalog.card_selector, "a.CardLink_cardLink__xYz");
+    }
+
+    #[test]
     fn detects_episode_selector_ignoring_live_tv_menu() {
         let html = r#"<!doctype html><html><body>
 <nav><a href="/latam/watch/live-tv/">TV en directo</a></nav>
@@ -3678,6 +3710,20 @@ render(nf,{instanceId:"catalog",options:nh});"#;
         }
         assert!(filters.iter().any(|f| f.name == "Dubbed" && f.param == "isFrameDub"));
         assert!(filters.iter().all(|f| f.name.chars().all(|c| c.is_ascii())));
+    }
+
+    #[test]
+    fn js_bundles_keep_generic_catalog_params_and_reject_config_ids() {
+        let js = r#"let base=["year","format","season","status"],all=[...base,"clickMerchantId","paymeMerchantId","appDeeplinkScheme","renderCardError"];
+render(nf,{instanceId:"catalog",options:all});"#;
+        let filters = SiteAnalyzer::detect_filters_from_js(js, Some("name"));
+        let params: Vec<&str> = filters.iter().map(|f| f.param.as_str()).collect();
+        for expected in ["year", "format", "season", "status"] {
+            assert!(params.contains(&expected), "falta el parámetro {expected} en {:?}", params);
+        }
+        for bogus in ["clickMerchantId", "paymeMerchantId", "appDeeplinkScheme", "renderCardError"] {
+            assert!(!params.contains(&bogus), "clave de configuración expuesta como filtro: {bogus}");
+        }
     }
 
     #[test]
