@@ -51,6 +51,10 @@ pub struct ExtensionItem {
     /// SHA del commit que AEXT subió; permite volver a consultar ese run.
     #[serde(default)]
     pub actions_commit_sha: Option<String>,
+    /// Icono publicado en `gh-pages/icon/<pkg>.png` para variantes adoptadas
+    /// desde el índice (no llevan `icon_base64` generado localmente).
+    #[serde(default)]
+    pub icon_url: Option<String>,
     /// Estado del módulo en el repo: "present" | "missing". `None` significa
     /// que no se ha comprobado (o que la extensión es solo local).
     #[serde(default)]

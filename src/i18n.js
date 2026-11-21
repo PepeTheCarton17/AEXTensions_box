@@ -266,6 +266,8 @@ export const I18N = {
     'ext.deleted_badge': 'Eliminada',
     'ext.deleted_hint': 'El módulo ya no existe en el repositorio de GitHub. La ficha está deshabilitada.',
     'ext.restore': 'Restaurar ficha',
+    'ext.download_apk': 'Descargar APK',
+    'ext.no_results': 'Ninguna extensión coincide con esa búsqueda.',
   },
 
   en: {
@@ -531,6 +533,8 @@ export const I18N = {
     'ext.deleted_badge': 'Deleted',
     'ext.deleted_hint': 'The module no longer exists in the GitHub repository. This entry is disabled.',
     'ext.restore': 'Restore entry',
+    'ext.download_apk': 'Download APK',
+    'ext.no_results': 'No extension matches that search.',
   },
 };
 

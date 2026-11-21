@@ -307,8 +307,12 @@ function fallbackIcon(name) {
 }
 
 function iconFor(ext) {
-  const icon = ext && typeof ext.icon_base64 === 'string' ? ext.icon_base64.trim() : '';
-  return icon || fallbackIcon(ext && ext.name);
+  const embedded = ext && typeof ext.icon_base64 === 'string' ? ext.icon_base64.trim() : '';
+  if (embedded) return embedded;
+  // Las variantes adoptadas desde el índice publicado no tienen icono incrustado:
+  // su PNG vive en gh-pages/icon/<pkg>.png.
+  const published = ext && typeof ext.icon_url === 'string' ? ext.icon_url.trim() : '';
+  return published || fallbackIcon(ext && ext.name);
 }
 
 // Descarga un artefacto del servidor local.
@@ -1451,15 +1455,125 @@ function isRepoMissing(ext) {
   return ext.repo_state === 'missing' && !ext.repo_ignore_missing;
 }
 
+function normalizeSearchText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+// Distancia de edición con transposición de caracteres adyacentes: tolera
+// errores de una letra y también que el usuario intercambie dos ("frmae").
+function editDistance(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let prev2 = null;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const curr = new Array(b.length + 1);
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      let best = Math.min(
+        curr[j - 1] + 1,
+        prev[j] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        best = Math.min(best, prev2[j - 2] + 1);
+      }
+      curr[j] = best;
+    }
+    prev2 = prev;
+    prev = curr;
+  }
+  return prev[b.length];
+}
+
+function lcsLength(a, b) {
+  if (!a.length || !b.length) return 0;
+  let prev = new Array(b.length + 1).fill(0);
+  for (let i = 1; i <= a.length; i++) {
+    const curr = new Array(b.length + 1).fill(0);
+    for (let j = 1; j <= b.length; j++) {
+      curr[j] = a[i - 1] === b[j - 1]
+        ? prev[j - 1] + 1
+        : Math.max(prev[j], curr[j - 1]);
+    }
+    prev = curr;
+  }
+  return prev[b.length];
+}
+
+function tokenMatchScore(query, token) {
+  if (!query || !token) return -1;
+  if (token === query) return 1;
+  if (token.startsWith(query)) return 0.96;
+  const at = token.indexOf(query);
+  if (at >= 0) {
+    return 0.9 - Math.min(0.08, at * 0.01) - Math.min(0.05, (token.length - query.length) * 0.002);
+  }
+  if (query.length < 3) return -1;
+  const lev = 1 - editDistance(query, token) / Math.max(query.length, token.length);
+  // Cuántas letras escritas aparecen, en orden, en el título candidato. Así
+  // "puta" encuentra "pluto3" sin que "guayaba" encuentre nada parecido.
+  const coverage = lcsLength(query, token) / query.length;
+  const gap = Math.abs(query.length - token.length);
+  const penalty = gap > Math.max(3, query.length) ? 0.15 : 0;
+  const score = Math.max(lev * 0.95, coverage * 0.9) - penalty;
+  return score >= 0.62 ? score : -1;
+}
+
+function searchScore(query, text) {
+  if (!query) return 0;
+  if (!text) return -1;
+  const qTokens = query.split(/\s+/).filter(Boolean);
+  const cTokens = text.split(/\s+/).filter(Boolean);
+  if (!cTokens.length) return -1;
+  if (qTokens.length === 1) {
+    return Math.max(...cTokens.map((token) => tokenMatchScore(qTokens[0], token)));
+  }
+  let total = 0;
+  for (const q of qTokens) {
+    let best = -1;
+    for (const c of cTokens) best = Math.max(best, tokenMatchScore(q, c));
+    if (best < 0) return -1;
+    total += best;
+  }
+  return total / qTokens.length;
+}
+
+function extensionSearchText(ext) {
+  return normalizeSearchText([
+    ext.name,
+    ext.pkg_id,
+    ext.class_name,
+    ext.base_url,
+    ext.lang,
+    ext.ext_type,
+    ext.github_repo_url || '',
+  ].join(' '));
+}
+
 function filteredExtensions(list = state.extensions) {
-  const query = (elements.extSearch?.value || '').trim().toLowerCase();
+  const query = normalizeSearchText(elements.extSearch?.value || '');
   const repo = (elements.extRepoFilter?.value || '').replace(/\/$/, '');
-  return list.filter((ext) => {
-    if (repo && (ext.github_repo_url || '').replace(/\/$/, '') !== repo) return false;
-    if (!query) return true;
-    return [ext.name, ext.pkg_id, ext.base_url, ext.lang, ext.github_repo_url || '']
-      .some((value) => String(value).toLowerCase().includes(query));
-  });
+  const scored = [];
+  for (const ext of list) {
+    if (repo && (ext.github_repo_url || '').replace(/\/$/, '') !== repo) continue;
+    if (!query) {
+      scored.push({ ext, score: 0 });
+      continue;
+    }
+    const score = searchScore(query, extensionSearchText(ext));
+    if (score >= 0) scored.push({ ext, score });
+  }
+  if (query) {
+    scored.sort((a, b) => b.score - a.score || String(a.ext.name).localeCompare(String(b.ext.name)));
+  }
+  return scored.map((entry) => entry.ext);
 }
 
 function refreshRepoFilters() {
@@ -1498,11 +1612,13 @@ async function loadExtensions() {
 }
 
 function renderExtensionsGrid(list = state.extensions) {
+  renderDeletedExtensionsGrid(list);
   const visible = filteredExtensions(list).filter((ext) => !isRepoMissing(ext));
   if (visible.length === 0) {
+    const searching = Boolean(normalizeSearchText(elements.extSearch?.value || ''));
     elements.extensionsCatalogGrid.innerHTML = `
       <div class="col-span-full py-12 text-center text-slate-500 text-xs">
-        ${escapeHtml(t('ext.empty'))}
+        ${escapeHtml(t(searching ? 'ext.no_results' : 'ext.empty'))}
       </div>
     `;
     return;
@@ -1591,6 +1707,12 @@ function renderExtensionsGrid(list = state.extensions) {
       <!-- Action Buttons -->
       <div class="pt-2 border-t border-surface-800 flex flex-wrap items-center gap-2">
         ${primaryAction}
+
+        ${isRealApk && hasGithub ? `
+          <a href="${escapeHtml(downloadUrl)}" class="p-2 rounded-xl text-slate-500 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all" title="${escapeHtml(t('ext.download_apk'))}" aria-label="${escapeHtml(t('ext.download_apk'))}">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+          </a>
+        ` : ''}
 
         <button data-update-pkg="${escapeHtml(ext.pkg_id)}" class="btn-update-ext py-2 px-3 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 flex items-center gap-1.5 transition-all" title="${escapeHtml(t('ext.update'))}">
           <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
@@ -1785,7 +1907,6 @@ function renderExtensionsGrid(list = state.extensions) {
     });
   });
 
-  renderDeletedExtensionsGrid(list);
 }
 
 function renderDeletedExtensionsGrid(list = state.extensions) {

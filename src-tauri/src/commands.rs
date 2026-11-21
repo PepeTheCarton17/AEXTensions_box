@@ -251,6 +251,7 @@ pub async fn generate_extensions(
             build_apk_path: None,
             actions_run_url: None,
             actions_commit_sha: None,
+            icon_url: None,
             repo_state: None,
             repo_checked_at: None,
             repo_deleted_at: None,
@@ -749,6 +750,7 @@ async fn sync_published_variants(state: &AppState) -> usize {
         .build()
         .unwrap_or_default();
     let mut adopted = 0usize;
+    let mut repaired = 0usize;
 
     for repo_url in repos {
         let Some((owner, repo_name)) = parse_github_url(&repo_url) else {
@@ -822,12 +824,34 @@ async fn sync_published_variants(state: &AppState) -> usize {
                         owner, repo_name, apk
                     )
                 });
+            let icon_url = format!(
+                "https://raw.githubusercontent.com/{}/{}/gh-pages/icon/{}.png",
+                owner, repo_name, pkg_id
+            );
 
             let mut list = state.extensions.write().await;
-            if list
-                .iter()
-                .any(|e| e.pkg_id == pkg_id || e.id == pkg_id)
+            if let Some(existing) = list
+                .iter_mut()
+                .find(|e| e.pkg_id == pkg_id || e.id == pkg_id)
             {
+                // Variantes ya adoptadas por versiones anteriores: completamos
+                // solo los datos que faltaban, sin sobrescribir nada del usuario.
+                let mut changed = false;
+                if existing.icon_url.is_none() {
+                    existing.icon_url = Some(icon_url);
+                    changed = true;
+                }
+                if existing.apk_download_url.is_none() {
+                    existing.apk_download_url = apk;
+                    changed = true;
+                }
+                if existing.nekoyomi_repo_url.is_none() {
+                    existing.nekoyomi_repo_url = Some(index_url.clone());
+                    changed = true;
+                }
+                if changed {
+                    repaired += 1;
+                }
                 continue;
             }
             list.push(ExtensionItem {
@@ -852,6 +876,7 @@ async fn sync_published_variants(state: &AppState) -> usize {
                 build_apk_path: None,
                 actions_run_url: None,
                 actions_commit_sha: None,
+                icon_url: Some(icon_url),
                 repo_state: None,
                 repo_checked_at: None,
                 repo_deleted_at: None,
@@ -861,14 +886,14 @@ async fn sync_published_variants(state: &AppState) -> usize {
         }
     }
 
-    if adopted > 0 {
+    if adopted > 0 || repaired > 0 {
         state.persist_extensions().await;
         state
             .add_log(
                 "INFO",
                 &format!(
-                    "Adoptadas {} variante(s) publicadas que AEXT no seguía",
-                    adopted
+                    "Sincronización del índice: {} variante(s) adoptadas, {} ficha(s) completadas",
+                    adopted, repaired
                 ),
             )
             .await;
