@@ -67,7 +67,6 @@ pub async fn generate_extensions(
             request.custom_name.as_deref(),
             request.lang.as_deref(),
             request.ext_type.as_deref(),
-            None,
         );
 
         // 3. Manejar según el modo (Local vs GitHub)
