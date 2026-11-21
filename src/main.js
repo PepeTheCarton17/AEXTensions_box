@@ -1515,11 +1515,14 @@ function tokenMatchScore(query, token) {
   if (at >= 0) {
     return 0.9 - Math.min(0.08, at * 0.01) - Math.min(0.05, (token.length - query.length) * 0.002);
   }
-  if (query.length < 3) return -1;
+  if (query.length < 3 || token.length < 3) return -1;
   const lev = 1 - editDistance(query, token) / Math.max(query.length, token.length);
   // Cuántas letras escritas aparecen, en orden, en el título candidato. Así
   // "puta" encuentra "pluto3" sin que "guayaba" encuentre nada parecido.
   const coverage = lcsLength(query, token) / query.length;
+  // Exigir una coincidencia real de letras (o una distancia muy corta) evita
+  // que un par de caracteres sueltos arrastren extensiones sin parentesco.
+  if (coverage < 0.7 && lev < 0.8) return -1;
   const gap = Math.abs(query.length - token.length);
   const penalty = gap > Math.max(3, query.length) ? 0.15 : 0;
   const score = Math.max(lev * 0.95, coverage * 0.9) - penalty;
@@ -1546,14 +1549,14 @@ function searchScore(query, text) {
 }
 
 function extensionSearchText(ext) {
+  // Solo datos de identidad de la extensión. El repo de GitHub, el tipo y el
+  // idioma son comunes a todas las variantes: si entraran en el índice,
+  // buscar "puta" o "Pluto3" también sacaría Frame por el nombre del repo.
   return normalizeSearchText([
     ext.name,
     ext.pkg_id,
     ext.class_name,
     ext.base_url,
-    ext.lang,
-    ext.ext_type,
-    ext.github_repo_url || '',
   ].join(' '));
 }
 
