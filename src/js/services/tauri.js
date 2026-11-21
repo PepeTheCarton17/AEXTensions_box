@@ -100,6 +100,7 @@ async function invokeBackend(command, args = {}) {
       throw new Error('Esta acción requiere la aplicación nativa de AEXT (no está disponible en el modo navegador).');
     case 'delete_extension':
     case 'delete_extension_github':
+    case 'delete_extension_permanently':
       throw new Error('Eliminar extensiones requiere la aplicación nativa de AEXT.');
     default:
       console.warn(`Comando '${command}' ejecutado en fallback HTTP`);

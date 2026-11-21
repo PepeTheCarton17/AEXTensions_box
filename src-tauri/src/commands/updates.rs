@@ -29,6 +29,9 @@ pub async fn update_all_extensions(
         let list = state.extensions.read().await;
         list.iter()
             .filter(|ext| {
+                if ext.trashed {
+                    return false;
+                }
                 if ext.repo_state.as_deref() == Some("missing") && !ext.repo_ignore_missing {
                     return false;
                 }

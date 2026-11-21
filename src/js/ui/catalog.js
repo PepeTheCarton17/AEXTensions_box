@@ -305,7 +305,7 @@ function renderExtensionsGrid(list = state.extensions) {
       if (!confirm(t('alerts.confirm_delete', { pkg: pkgId }))) return;
       try {
         await invokeBackend('delete_extension', { pkgId });
-        appendTerminalLog('SUCCESS', `${pkgId}: ${t('ext.delete')}`);
+        appendTerminalLog('SUCCESS', t('logs.moved_to_deleted', { pkg: pkgId }));
         await loadExtensions();
         refreshBackupExtensions();
       } catch (err) {
@@ -327,7 +327,7 @@ function renderExtensionsGrid(list = state.extensions) {
       if (!confirm(t('alerts.confirm_delete_github', { pkg: pkgId, module: modulePath }))) return;
       try {
         await invokeBackend('delete_extension_github', { pkgId });
-        appendTerminalLog('SUCCESS', t('logs.deleted_github', { pkg: pkgId, module: modulePath }));
+        appendTerminalLog('SUCCESS', t('logs.moved_to_deleted', { pkg: pkgId }));
         await loadExtensions();
         refreshBackupExtensions();
       } catch (err) {
@@ -374,8 +374,8 @@ function renderDeletedExtensionsGrid(list = state.extensions) {
         <button data-restore-repo-pkg="${escapeHtml(ext.pkg_id)}" class="btn-restore-ext-repo px-3 py-2 rounded-xl text-xs font-semibold bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 transition-all">
           ${escapeHtml(t('ext.restore'))}
         </button>
-        <button data-delete-pkg="${escapeHtml(ext.pkg_id)}" class="btn-delete-ext px-3 py-2 rounded-xl text-xs font-medium bg-surface-800 hover:bg-red-500/10 text-slate-400 hover:text-red-400 border border-surface-700 transition-all" title="${escapeHtml(t('ext.delete'))}">
-          ${escapeHtml(t('ext.delete'))}
+        <button data-delete-pkg="${escapeHtml(ext.pkg_id)}" class="btn-delete-ext px-3 py-2 rounded-xl text-xs font-medium bg-surface-800 hover:bg-red-500/10 text-slate-400 hover:text-red-400 border border-surface-700 transition-all" title="${escapeHtml(t('ext.delete_permanent'))}">
+          ${escapeHtml(t('ext.delete_permanent'))}
         </button>
       </div>
     `;
@@ -405,10 +405,10 @@ function renderDeletedExtensionsGrid(list = state.extensions) {
   grid.querySelectorAll('.btn-delete-ext').forEach((btn) => {
     btn.addEventListener('click', async (e) => {
       const pkgId = e.currentTarget.getAttribute('data-delete-pkg');
-      if (!confirm(t('alerts.confirm_delete', { pkg: pkgId }))) return;
+      if (!confirm(t('alerts.confirm_delete_permanent', { pkg: pkgId }))) return;
       try {
-        await invokeBackend('delete_extension', { pkgId });
-        appendTerminalLog('SUCCESS', `${pkgId}: ${t('ext.delete')}`);
+        await invokeBackend('delete_extension_permanently', { pkgId });
+        appendTerminalLog('SUCCESS', t('logs.deleted_permanently', { pkg: pkgId }));
         await loadExtensions();
         refreshBackupExtensions();
       } catch (err) {

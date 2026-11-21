@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod catalog_check;
 pub mod constants;
 pub mod deletion;
+pub mod deletion_permanent;
 pub mod downloads;
 pub mod files;
 pub mod generation;
@@ -29,6 +30,7 @@ pub use build::compile_extension;
 pub use catalog::{get_created_extensions, sync_extension_catalog};
 pub use catalog_check::{check_extensions_in_repo, restore_extension_repo_state};
 pub use deletion::{delete_extension, delete_extension_github};
+pub use deletion_permanent::delete_extension_permanently;
 pub use downloads::save_extension_zip;
 pub use files::{
     list_extension_backups, local_extension_dir, open_extension_folder, restore_extension_backup,

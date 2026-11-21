@@ -33,19 +33,31 @@ impl ExtensionGenerator {
     pub fn generate(
         analysis: &AnalysisResult,
         custom_name: Option<&str>,
-        target_lang: Option<&str>,
+        labels_lang: Option<&str>,
         custom_ext_type: Option<&str>,
     ) -> ExtensionBundle {
-        Self::generate_with_version(analysis, custom_name, target_lang, custom_ext_type, 1, "16.1")
+        Self::generate_with_version(
+            analysis,
+            custom_name,
+            labels_lang,
+            custom_ext_type,
+            1,
+            "16.1",
+            None,
+        )
     }
 
+    /// `labels_lang` es la elección del usuario y sólo afecta a los textos
+    /// visibles (filtros y preferencias). `package_lang` fija la identidad del
+    /// paquete al actualizar; si es `None`, la decide el análisis del sitio.
     pub fn generate_with_version(
         analysis: &AnalysisResult,
         custom_name: Option<&str>,
-        target_lang: Option<&str>,
+        labels_lang: Option<&str>,
         custom_ext_type: Option<&str>,
         version_code: i32,
         version_name: &str,
+        package_lang: Option<&str>,
     ) -> ExtensionBundle {
         let raw_name = custom_name
             .map(|s| s.trim())
@@ -53,24 +65,27 @@ impl ExtensionGenerator {
             .unwrap_or(&analysis.name);
         let class_name = sanitize_class_name(raw_name);
         let pkg_slug = sanitize_pkg_slug(raw_name);
-        // El idioma lo elige el usuario en la UI (por defecto `es`). Los locales
-        // que declare el sitio son sólo la interfaz traducida: NO determinan el
-        // idioma del contenido. Servicios como Pluto entregan el catálogo según
-        // la región de la IP, así que deducir `all` de `site_locales.len() > 1`
-        // generaba una extensión sin contenido aunque la versión `es` funcione.
-        // La detección del sitio se usa únicamente si no hay elección explícita.
-        let lang = target_lang
-            .map(|s| s.trim())
+        // La identidad del paquete (`src/<lang>/<slug>`, package id) la decide
+        // el análisis del sitio. La elección del usuario NO la cambia: sólo se
+        // usa para los textos visibles de filtros y preferencias.
+        let lang = package_lang
+            .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(|s| s.to_lowercase())
-            .or_else(|| {
-                let detected = analysis.detected_language.trim().to_lowercase();
-                if detected.is_empty() { None } else { Some(detected) }
-            })
+            .map(str::to_lowercase)
             .unwrap_or_else(|| {
-                let fallback = analysis.lang.trim();
-                if fallback.is_empty() { "es".to_string() } else { fallback.to_lowercase() }
+                let detected = analysis.detected_language.trim().to_lowercase();
+                if !detected.is_empty() {
+                    detected
+                } else {
+                    let fallback = analysis.lang.trim().to_lowercase();
+                    if fallback.is_empty() { "all".to_string() } else { fallback }
+                }
             });
+        let labels_lang = labels_lang
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_lowercase)
+            .unwrap_or_else(|| lang.clone());
         let display_name = sanitize_display_name(raw_name);
 
         // El código de idioma visible puede ser "pt-br", pero un paquete Kotlin
@@ -116,7 +131,7 @@ impl ExtensionGenerator {
                     &display_name,
                     &class_name,
                     pkg_slug.as_str(),
-                    &lang,
+                    &labels_lang,
                     &pkg_lang,
                     pkg_prefix,
                 ),
@@ -129,14 +144,14 @@ impl ExtensionGenerator {
                     &display_name,
                     &class_name,
                     &pkg_slug,
-                    &lang,
+                    &labels_lang,
                     &pkg_lang,
                     pkg_prefix,
                 ),
                 generate_kotlin_filters(
                     &class_name,
                     &pkg_slug,
-                    &lang,
+                    &labels_lang,
                     &pkg_lang,
                     pkg_prefix,
                     analysis,

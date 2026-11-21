@@ -13,8 +13,8 @@ use crate::models::ExtensionItem;
 use crate::state::AppState;
 use std::fs;
 
-/// El idioma elegido en AEXT prevalece sobre el idioma persistido; si no se
-/// envió (o vino vacío), se mantiene el de la extensión existente.
+/// Idioma de los textos visibles: el elegido en AEXT prevalece; si no se envió
+/// (o vino vacío), se mantienen los textos del idioma de la extensión.
 pub(crate) fn resolve_update_lang<'a>(requested: Option<&'a str>, existing: &'a str) -> &'a str {
     requested
         .map(str::trim)
@@ -38,9 +38,11 @@ pub(crate) async fn update_extension_inner(
             .ok_or_else(|| format!("No se encontró la extensión {}", pkg_id))?
     };
 
-    if existing.repo_state.as_deref() == Some("missing") && !existing.repo_ignore_missing {
+    if existing.trashed
+        || (existing.repo_state.as_deref() == Some("missing") && !existing.repo_ignore_missing)
+    {
         return Err(
-            "Esta extensión figura como eliminada del repositorio. Restaura su ficha antes de actualizarla.".to_string(),
+            "Esta extensión está en «Eliminadas». Restaura su ficha antes de actualizarla.".to_string(),
         );
     }
 
@@ -67,18 +69,18 @@ pub(crate) async fn update_extension_inner(
     .await
     .unwrap_or_else(|_| (std::collections::HashMap::new(), String::new()));
 
-    // El idioma elegido en AEXT manda también en las actualizaciones: reutilizar
-    // `existing.lang` hacía que una extensión pedida en español se regenerara
-    // en `all` (inglés) cada vez que se actualizaba.
-    let lang = resolve_update_lang(requested_lang.as_deref(), existing.lang.as_str());
+    // El idioma elegido sólo traduce textos. La identidad del paquete se
+    // mantiene: una actualización nunca debe crear otro módulo con otro lang.
+    let labels_lang = resolve_update_lang(requested_lang.as_deref(), existing.lang.as_str());
 
     let mut bundle = ExtensionGenerator::generate_with_version(
         &analysis,
         Some(existing.name.as_str()),
-        Some(lang),
+        Some(labels_lang),
         Some(existing.ext_type.as_str()),
         next_code,
         &next_version,
+        Some(existing.lang.as_str()),
     );
 
     let mut updated = existing.clone();
@@ -258,7 +260,7 @@ mod tests {
     use super::resolve_update_lang;
 
     #[test]
-    fn chosen_language_wins_on_update() {
+    fn chosen_language_only_affects_labels_on_update() {
         assert_eq!(resolve_update_lang(Some("es"), "all"), "es");
         assert_eq!(resolve_update_lang(Some("  pt-br "), "es"), "pt-br");
         assert_eq!(resolve_update_lang(Some("   "), "es"), "es");

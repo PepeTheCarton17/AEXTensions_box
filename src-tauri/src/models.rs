@@ -69,6 +69,10 @@ pub struct ExtensionItem {
     /// repo. Se respeta hasta que el módulo vuelve a aparecer.
     #[serde(default)]
     pub repo_ignore_missing: bool,
+    /// Papelera de AEXT: la ficha permanece en «Eliminadas» hasta que se
+    /// elimina definitivamente desde esa misma sección.
+    #[serde(default)]
+    pub trashed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

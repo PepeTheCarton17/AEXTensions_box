@@ -42,6 +42,7 @@ pub async fn check_extensions_in_repo(
     let targets: Vec<(String, String, String)> = {
         let list = state.extensions.read().await;
         list.iter()
+            .filter(|ext| !ext.trashed)
             .filter_map(|ext| {
                 let repo_url = ext.github_repo_url.as_deref()?;
                 let module_path = extension_module_path(&ext.pkg_id)?;
@@ -168,6 +169,7 @@ pub async fn restore_extension_repo_state(
         ext.repo_deleted_at = None;
         ext.repo_checked_at = None;
         ext.repo_ignore_missing = true;
+        ext.trashed = false;
         true
     };
     if restored {

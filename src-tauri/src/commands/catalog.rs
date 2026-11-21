@@ -139,6 +139,9 @@ pub(crate) async fn sync_published_variants(state: &AppState) -> usize {
                 .iter_mut()
                 .find(|e| e.pkg_id == pkg_id || e.id == pkg_id)
             {
+                if existing.trashed {
+                    continue; // La papelera la controla el usuario, no el índice.
+                }
                 // Variantes ya adoptadas por versiones anteriores: completamos
                 // solo los datos que faltaban, sin sobrescribir nada del usuario.
                 let mut changed = false;
@@ -199,6 +202,7 @@ pub(crate) async fn sync_published_variants(state: &AppState) -> usize {
                 repo_checked_at: None,
                 repo_deleted_at: None,
                 repo_ignore_missing: false,
+                trashed: false,
             });
             adopted += 1;
         }

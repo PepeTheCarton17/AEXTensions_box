@@ -37,6 +37,7 @@ pub fn run() {
             commands::catalog_check::restore_extension_repo_state,
             commands::deletion::delete_extension,
             commands::deletion::delete_extension_github,
+            commands::deletion_permanent::delete_extension_permanently,
             commands::system::get_system_logs,
             commands::system::test_stream_extractor,
             commands::system::get_system_status,

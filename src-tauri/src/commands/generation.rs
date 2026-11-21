@@ -67,6 +67,7 @@ pub async fn generate_extensions(
             request.custom_name.as_deref(),
             request.lang.as_deref(),
             request.ext_type.as_deref(),
+            None,
         );
 
         // 3. Manejar según el modo (Local vs GitHub)
@@ -101,6 +102,7 @@ pub async fn generate_extensions(
             repo_checked_at: None,
             repo_deleted_at: None,
             repo_ignore_missing: false,
+            trashed: false,
         };
 
         // Datos del commit subido a GitHub, para verificar el run de Actions

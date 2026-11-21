@@ -224,6 +224,7 @@ fn write_project(
         Some(ext_type),
         1,
         "16.1",
+        Some(lang),
     );
 
     let mut files: HashMap<String, Vec<u8>> = bundle.files.clone();

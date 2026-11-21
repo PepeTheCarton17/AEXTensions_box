@@ -390,19 +390,27 @@ mod video_engine_tests {
     }
 
     #[test]
-    fn ui_selected_language_wins_and_site_locales_never_force_all() {
+    fn analysis_decides_package_language_and_selection_only_translates_texts() {
         use crate::engine::generator::ExtensionGenerator;
         let mut fixture = pluto_fixture();
         fixture.detected_language = "uz".to_string();
         fixture.site_locales = vec!["uz".to_string(), "ru".to_string(), "en".to_string()];
-        // El usuario eligió `es` en la UI: ni el idioma detectado ni los
-        // locales de interfaz del sitio pueden sustituir esa elección.
-        let bundle = ExtensionGenerator::generate(&fixture, None, Some("es"), Some("anime"));
-        assert_eq!(bundle.lang, "es");
-        assert!(bundle.pkg_id.contains(".es."));
 
-        // Sin elección explícita se usa el idioma detectado, pero los locales
-        // declarados por la web tampoco fuerzan `all`: no son contenido.
+        // La elección de la UI traduce filtros y preferencias, pero NO cambia
+        // la identidad del paquete: esa la decide el análisis del sitio.
+        let bundle = ExtensionGenerator::generate(&fixture, None, Some("es"), Some("anime"));
+        assert_eq!(bundle.lang, "uz");
+        assert!(bundle.pkg_id.contains(".uz."));
+
+        let es = generate_kotlin_filters(
+            "PlutoTv", "pluto", "es", "uz", "eu.kanade.tachiyomi.animeextension", &fixture,
+        );
+        assert!(es.contains("La búsqueda por texto ignora el filtro"));
+        let fallback = generate_kotlin_filters(
+            "PlutoTv", "pluto", "all", "uz", "eu.kanade.tachiyomi.animeextension", &fixture,
+        );
+        assert!(fallback.contains("Text search ignores the filter"));
+
         let bundle = ExtensionGenerator::generate(&fixture, None, None, Some("anime"));
         assert_eq!(bundle.lang, "uz");
         assert!(bundle.pkg_id.contains(".uz."));

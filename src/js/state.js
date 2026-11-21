@@ -223,7 +223,7 @@ function formatBytes(bytes) {
 }
 
 function isRepoMissing(ext) {
-  return ext.repo_state === 'missing' && !ext.repo_ignore_missing;
+  return Boolean(ext.trashed) || (ext.repo_state === 'missing' && !ext.repo_ignore_missing);
 }
 
 export {
