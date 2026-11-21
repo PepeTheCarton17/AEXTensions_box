@@ -10,10 +10,11 @@ use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 
 use super::app_version;
+use super::diagnostics::get_ai_diagnostics_handler;
 use super::extensions::download_extension_handler;
 use super::mcp::{mcp_jsonrpc_handler, mcp_manifest_handler};
 use super::models::AnalyzePayload;
-use super::patch::{apply_ai_patch_handler, get_ai_diagnostics_handler};
+use super::patch::apply_ai_patch_handler;
 
 pub async fn start_embedded_api_server(app_state: AppState, port: u16) {
     let cors = CorsLayer::new()

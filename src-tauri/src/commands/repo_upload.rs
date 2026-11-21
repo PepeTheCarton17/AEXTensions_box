@@ -107,7 +107,7 @@ pub(crate) async fn upload_bundle_to_github(
                     .iter()
                     .map(|(path, content)| (path.clone(), content.clone()))
                     .collect();
-                for (res_dir, icon_bytes) in &mipmaps {
+                for (res_dir, icon_bytes) in mipmaps {
                     all_files.push((
                         format!(
                             "{}/src/main/res/{}/ic_launcher.png",

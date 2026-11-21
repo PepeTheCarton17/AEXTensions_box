@@ -185,4 +185,5 @@ async fn write_local_bundle(
                         ),
                     )
                     .await;
+    Ok(())
 }
