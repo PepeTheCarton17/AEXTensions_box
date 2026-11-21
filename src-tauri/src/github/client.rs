@@ -485,7 +485,7 @@ impl GithubApiClient {
         for (path, content) in files {
             let url = format!("{}/git/blobs", api);
             let body = serde_json::json!({
-                "content": base64_encode(content),
+                "content": base64_encode(&content),
                 "encoding": "base64",
             });
             let resp = self.client.post(&url).json(&body).send().await
