@@ -209,7 +209,7 @@ impl SiteAnalyzer {
     }
 
     /// Un token sólo es un filtro de catálogo si su nombre es reconocible como
-    /// parámetro (year, genreIds, sortBy, isFrameDub...) y no es un dato interno.
+    /// parámetro (year, genreIds, sortBy, status...) y no es un dato interno.
     /// Evita que un array de configuración se convierta en campos raros como
     /// "Appdeeplinkscheme" o "Authenticationqrcooldown" en la extensión.
     pub(crate) fn is_filter_like_token(param: &str, search_param: Option<&str>) -> bool {

@@ -1,5 +1,5 @@
 use scraper::{Html, Selector};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use url::Url;
 
 use super::models::{SiteAnalyzer, SiteFilterParam};
@@ -41,8 +41,12 @@ pub(crate) const CANONICAL_FILTER_NAMES: &[(&str, &str)] = &[
     ("dub", "Dubbed"),
     ("dubbed", "Dubbed"),
     ("isdub", "Dubbed"),
+    ("sort", "Sort By"),
+    ("order", "Sort By"),
     ("sortby", "Sort By"),
     ("sort_by", "Sort By"),
+    ("sortorder", "Sort By"),
+    ("sort_order", "Sort By"),
     ("sorting", "Sort By"),
     ("status", "Status"),
     ("cues", "Subtitles"),
@@ -51,10 +55,39 @@ pub(crate) const CANONICAL_FILTER_NAMES: &[(&str, &str)] = &[
     ("sub_language", "Subtitles"),
     ("display", "Display"),
     ("view", "Display"),
+    ("type", "Type"),
+    ("types", "Type"),
+    ("language", "Language"),
+    ("languages", "Language"),
+    ("rating", "Rating"),
+    ("ratings", "Rating"),
     ("name", "Search"),
     ("q", "Search"),
     ("query", "Search"),
     ("search", "Search"),
+];
+
+/// Parámetros que son el cuadro de búsqueda, no filtros de catálogo. Los
+/// repositorios de referencia dejan la búsqueda a Nekoyomi: publicar `name`,
+/// `q` o `query` como `Search` duplicaba el selector y no hacía nada.
+const SEARCH_LIKE_PARAMS: &[&str] = &[
+    "name", "q", "query", "search", "keyword", "keywords", "term", "buscar",
+    "busqueda", "búsqueda", "s",
+];
+
+/// Un booleano de doblaje detectado en un bundle no es una pista verificada.
+/// SUB/DUB sólo se ofrece cuando AEXT leyó un máster real; estos parámetros
+/// generaban un `Dubbed` inútil y engañoso.
+const DUB_LIKE_PARAMS: &[&str] = &[
+    "dub", "dubbed", "isdub", "isframedub", "framedub", "doblado", "isdublado",
+];
+
+/// Etiquetas que sólo tienen sentido con valores enumerados del sitio. Un
+/// `TextFilter` de "Orden"/"Género" no produce una consulta válida.
+const ENUM_ONLY_LABELS: &[&str] = &[
+    "Sort By", "Genre", "Country", "Category", "Format", "Season", "Status",
+    "Quality", "Year", "Subtitles", "Audio Language", "Display", "Type",
+    "Language", "Rating",
 ];
 
 impl SiteAnalyzer {
@@ -167,10 +200,12 @@ impl SiteAnalyzer {
 
     pub(crate) fn ignored_filter_param(key: &str, search_param: Option<&str>) -> bool {
         let k = key.to_lowercase();
-        if k.starts_with("utm_")
+        if SEARCH_LIKE_PARAMS.contains(&k.as_str())
+            || DUB_LIKE_PARAMS.contains(&k.as_str())
+            || k.starts_with("utm_")
             || matches!(
                 k.as_str(),
-                "page" | "paged" | "p" | "fbclid" | "gclid" | "ref" | "sort" | "order" | "limit" | "offset"
+                "page" | "paged" | "p" | "fbclid" | "gclid" | "ref" | "limit" | "offset"
             )
             || search_param.map(|s| s == key).unwrap_or(false)
         {
@@ -247,6 +282,55 @@ impl SiteAnalyzer {
             })
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    /// Deja un único filtro por etiqueta canónica y descarta los parámetros que
+    /// no son filtros de catálogo (búsqueda, doblaje no verificado, textos de
+    /// listas enumeradas). `sort`/`order` se conservan si el sitio aporta
+    /// valores reales: es el `Sort order` de los repos de referencia.
+    pub(crate) fn normalize_filter_params(filters: &mut Vec<SiteFilterParam>) {
+        filters.retain(|f| {
+            !f.param.is_empty()
+                && !Self::ignored_filter_param(&f.param, None)
+                && !(f.kind == "text"
+                    && ENUM_ONLY_LABELS.contains(&Self::canonical_filter_name(&f.param).as_str()))
+        });
+
+        let mut seen = HashSet::new();
+        filters.retain(|f| {
+            seen.insert(format!("{}\u{1}{}\u{1}{}", f.param, f.value, f.kind))
+        });
+
+        let mut labels: Vec<String> = Vec::new();
+        for f in filters.iter() {
+            let label = Self::canonical_filter_name(&f.param);
+            if !labels.contains(&label) {
+                labels.push(label);
+            }
+        }
+
+        let mut chosen: HashMap<String, (String, usize)> = HashMap::new();
+        for label in &labels {
+            for (index, f) in filters.iter().enumerate() {
+                if Self::canonical_filter_name(&f.param) != *label {
+                    continue;
+                }
+                let score = if f.value.is_empty() { 0 } else { 1 };
+                let better = chosen
+                    .get(label)
+                    .map(|(_, best)| score > *best)
+                    .unwrap_or(true);
+                if better {
+                    chosen.insert(label.clone(), (f.param.clone(), score));
+                }
+            }
+        }
+        filters.retain(|f| {
+            chosen
+                .get(&Self::canonical_filter_name(&f.param))
+                .map(|(param, _)| param == &f.param)
+                .unwrap_or(false)
+        });
     }
 
     /// Parámetros de filtro realmente presentes en enlaces o formularios.

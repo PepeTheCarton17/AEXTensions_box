@@ -316,7 +316,7 @@ mod video_engine_tests {
         }
         for marker in [
             "class QueryPartFilter",
-            "QueryPartFilter(\"Género\", \"genreIds\", arrayOf(Pair(\"All\", \"\"), Pair(\"1\", \"1\"), Pair(\"2\", \"2\")))",
+            "QueryPartFilter(\"Género\", \"genreIds\", arrayOf(Pair(\"Todos\", \"\"), Pair(\"1\", \"1\"), Pair(\"2\", \"2\")))",
         ] {
             assert!(filters.contains(marker), "falta en los filtros generados: {marker}");
         }
@@ -325,8 +325,36 @@ mod video_engine_tests {
     }
 
     #[test]
+    fn spanish_extension_translates_filter_labels_values_and_headers() {
+        let mut fixture = pluto_fixture();
+        fixture.search_path = None;
+        fixture.search_param = None;
+        fixture.filter_params = vec![
+            SiteFilterParam { name: "Sort By".to_string(), param: "sortBy".to_string(), value: "publish_date".to_string(), kind: "select".to_string() },
+            SiteFilterParam { name: "Genre".to_string(), param: "genreIds".to_string(), value: "action".to_string(), kind: "check".to_string() },
+        ];
+
+        let filters = generate_kotlin_filters(
+            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
+        );
+        for marker in [
+            "Header(\"La búsqueda por texto ignora el filtro\")",
+            "QueryPartFilter(\"Orden\", \"sortBy\", arrayOf(Pair(\"Todos\", \"\"), Pair(\"Fecha de publicación\", \"publish_date\")))",
+            "CheckBoxFilterList(\"Género\", \"genreIds\", arrayOf(Pair(\"Acción\", \"action\")))",
+        ] {
+            assert!(filters.contains(marker), "falta en los filtros generados: {marker}\n{}", filters);
+        }
+        assert!(!filters.contains("Pair(\"All\", \"\")"), "All no debe aparecer en español");
+        assert!(!filters.contains("Publish Date"), "el valor humanizado debe traducirse");
+    }
+
+    #[test]
     fn all_language_uses_english_labels_and_text_filters_for_unknown_values() {
         let mut fixture = pluto_fixture();
+        // Este test comprueba el idioma: se declara un endpoint para que se
+        // use la cabecera normal y no el aviso de "sin búsqueda".
+        fixture.search_path = Some("/search".to_string());
+        fixture.search_param = Some("q".to_string());
         fixture.filter_params = vec![
             SiteFilterParam { name: "Sort By".to_string(), param: "sortBy".to_string(), value: "publish_date".to_string(), kind: "select".to_string() },
             SiteFilterParam { name: "Sort By".to_string(), param: "sortBy".to_string(), value: "imdb_rating".to_string(), kind: "select".to_string() },
@@ -432,9 +460,9 @@ mod video_engine_tests {
         let filters = generate_kotlin_filters(
             "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
         );
-        assert!(filters.contains("CheckBoxFilterList(\"Genre\", \"genreIds\", arrayOf(Pair(\"Comedy\", \"4\")"), "{}", filters);
-        assert!(filters.contains("ExcludeFilter(\"Genre: Comedy\", \"4\")"), "{}", filters);
-        assert!(filters.contains("ExcludeFilter(\"Category: Series\", \"3\")"), "{}", filters);
+        assert!(filters.contains("CheckBoxFilterList(\"Género\", \"genreIds\", arrayOf(Pair(\"Comedy\", \"4\")"), "{}", filters);
+        assert!(filters.contains("ExcludeFilter(\"Género: Comedy\", \"4\")"), "{}", filters);
+        assert!(filters.contains("ExcludeFilter(\"Categoría: Series\", \"3\")"), "{}", filters);
         assert!(!filters.contains("Ecchi"), "no se permiten géneros inventados");
 
         let kt = generate_kotlin_source(

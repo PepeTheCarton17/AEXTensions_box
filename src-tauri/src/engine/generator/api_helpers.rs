@@ -2,6 +2,7 @@ use crate::engine::analyzer::{AnalysisResult, ApiListResult, SiteCapabilities};
 use std::collections::HashMap;
 
 use super::filters::humanize_filter_value;
+use super::i18n::filter_label;
 
 /// Devuelve (mostrar_selector, sub_verificado, dub_verificado). Sin un máster
 /// HLS abierto por AEXT no se genera ningún control SUB/DUB: el DOM o un texto
@@ -64,10 +65,10 @@ pub(crate) fn api_exclusion_lists(analysis: &AnalysisResult) -> Vec<&ApiListResu
 /// Pares `(etiqueta, id)` reales que pueden excluirse, con la etiqueta
 /// calificada por su recurso (`Genre: Comedy`) para que ids repetidos en
 /// distintas listas no se mezclen.
-pub(crate) fn api_exclusion_pairs(analysis: &AnalysisResult) -> Vec<(String, String)> {
+pub(crate) fn api_exclusion_pairs(analysis: &AnalysisResult, lang: &str) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = Vec::new();
     for api in api_exclusion_lists(analysis) {
-        let resource = humanize_filter_value(&api_stem(&api.resource));
+        let resource = filter_label(lang, &humanize_filter_value(&api_stem(&api.resource)));
         for option in &api.options {
             let label = format!("{}: {}", resource, option.label);
             if !pairs.iter().any(|(l, v)| l == &label && v == &option.value) {

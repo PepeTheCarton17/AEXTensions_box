@@ -14,6 +14,10 @@ pub(crate) struct I18nData {
     pub(crate) pref_genre_blacklist_title: &'static str,
     pub(crate) pref_genre_blacklist_summary: &'static str,
     pub(crate) filter_header: &'static str,
+    /// Aviso mostrado cuando el sitio no declaró endpoint de búsqueda: el
+    /// cuadro de texto sólo filtra el catálogo ya cargado.
+    pub(crate) filter_header_no_search: &'static str,
+    pub(crate) filter_all: &'static str,
     pub(crate) filter_audio_title: &'static str,
     pub(crate) filter_audio_entries: &'static [&'static str],
     pub(crate) filter_genre_title: &'static str,
@@ -41,6 +45,8 @@ pub(crate) fn get_i18n(lang: &str) -> I18nData {
             pref_genre_blacklist_title: "Lista Negra de Géneros (# - Ocultar)",
             pref_genre_blacklist_summary: "Oculta permanentemente animes con estos géneros (#) en el catálogo",
             filter_header: "Filtros de búsqueda y catálogo",
+            filter_header_no_search: "La búsqueda por texto ignora el filtro",
+            filter_all: "Todos",
             filter_audio_title: "Audio / Doblaje",
             filter_audio_entries: &["Todos", "Subtitulado (SUB)", "Doblado (DUB)"],
             filter_genre_title: "Género (#)",
@@ -80,6 +86,8 @@ pub(crate) fn get_i18n(lang: &str) -> I18nData {
             pref_genre_blacklist_title: "Genre Blacklist (# - Hide)",
             pref_genre_blacklist_summary: "Permanently hide anime with these genres or tags (#) in catalog",
             filter_header: "Search & Catalog Filters",
+            filter_header_no_search: "Text search ignores the filter",
+            filter_all: "All",
             filter_audio_title: "Audio / Dubbing",
             filter_audio_entries: &["All", "Subtitled (SUB)", "Dubbed (DUB)"],
             filter_genre_title: "Genre (#)",
@@ -118,6 +126,8 @@ pub(crate) fn get_i18n(lang: &str) -> I18nData {
             pref_genre_blacklist_title: "Lista Negra de Gêneros (# - Ocultar)",
             pref_genre_blacklist_summary: "Oculta permanentemente animes com estes gêneros (#) no catálogo",
             filter_header: "Filtros de busca e catálogo",
+            filter_header_no_search: "A busca por texto ignora o filtro",
+            filter_all: "Todos",
             filter_audio_title: "Áudio / Dublagem",
             filter_audio_entries: &["Todos", "Legendado (LEG)", "Dublado (DUB)"],
             filter_genre_title: "Gênero (#)",
@@ -158,6 +168,8 @@ pub(crate) fn get_i18n(lang: &str) -> I18nData {
             pref_genre_blacklist_title: "Genre Blacklist (# - Hide)",
             pref_genre_blacklist_summary: "Permanently hide anime with these genres or tags (#) in catalog",
             filter_header: "Search & Catalog Filters",
+            filter_header_no_search: "Text search ignores the filter",
+            filter_all: "All",
             filter_audio_title: "Audio / Dubbing",
             filter_audio_entries: &["All", "Subtitled (SUB)", "Dubbed (DUB)"],
             filter_genre_title: "Genre (#)",
@@ -181,5 +193,77 @@ pub(crate) fn get_i18n(lang: &str) -> I18nData {
                 ("Horror", "horror"),
             ],
         },
+    }
+}
+
+/// Etiqueta canónica de filtro en el idioma elegido para la extensión. Las
+/// etiquetas del analizador siguen siendo canónicas en inglés para poder
+/// emparejarlas con los repos de referencia; aquí se traducen para la UI.
+pub(crate) fn filter_label(lang: &str, canonical: &str) -> String {
+    let key = canonical.trim().to_lowercase().replace([' ', '-'], "_");
+    let (es, pt) = match key.as_str() {
+        "year" | "years" => ("Año", "Ano"),
+        "country" => ("País", "País"),
+        "genre" => ("Género", "Gênero"),
+        "category" => ("Categoría", "Categoria"),
+        "audio_language" => ("Idioma de audio", "Idioma de áudio"),
+        "language" => ("Idioma", "Idioma"),
+        "quality" => ("Calidad", "Qualidade"),
+        "format" => ("Formato", "Formato"),
+        "season" => ("Temporada", "Temporada"),
+        "copyright_holder" => ("Titular de derechos", "Titular de direitos"),
+        "sort_by" | "sort_order" | "sort" | "order" => ("Orden", "Ordem"),
+        "status" => ("Estado", "Status"),
+        "subtitles" => ("Subtítulos", "Legendas"),
+        "display" => ("Visualización", "Exibição"),
+        "type" => ("Tipo", "Tipo"),
+        "rating" => ("Calificación", "Avaliação"),
+        "search" => ("Búsqueda", "Busca"),
+        "dubbed" => ("Doblado", "Dublado"),
+        _ => return canonical.to_string(),
+    };
+    match lang.to_lowercase().as_str() {
+        "es" | "es-es" | "es-419" => es.to_string(),
+        "pt" | "pt-br" => pt.to_string(),
+        _ => canonical.to_string(),
+    }
+}
+
+/// Traduce los valores humanizados que salen de parámetros crudos del sitio.
+/// Las etiquetas reales devueltas por la API del sitio se dejan intactas: son
+/// datos verificados, no texto generado por AEXT.
+pub(crate) fn filter_value(lang: &str, value: &str) -> String {
+    let key = value.trim().to_lowercase().replace([' ', '-'], "_");
+    let (es, pt) = match key.as_str() {
+        "none" => ("Ninguno", "Nenhum"),
+        "any" => ("Cualquiera", "Qualquer"),
+        "all" => ("Todos", "Todos"),
+        "default" => ("Predeterminado", "Padrão"),
+        "latest_updated" => ("Actualizados recientemente", "Atualizados recentemente"),
+        "latest_added" => ("Agregados recientemente", "Adicionados recentemente"),
+        "publish_date" | "release_date" => ("Fecha de publicación", "Data de publicação"),
+        "imdb_rating" | "kinopoisk_rating" => ("Calificación IMDb", "Avaliação IMDb"),
+        "rating" | "score" => ("Calificación", "Avaliação"),
+        "name_a_z" | "name_asc" => ("Nombre A-Z", "Nome A-Z"),
+        "most_viewed" => ("Más vistos", "Mais vistos"),
+        "release_year" => ("Año de estreno", "Ano de lançamento"),
+        "trending" => ("Tendencia", "Tendência"),
+        "asc" => ("Ascendente", "Crescente"),
+        "desc" => ("Descendente", "Decrescente"),
+        "yes" => ("Sí", "Sim"),
+        "no" => ("No", "Não"),
+        "sub" => ("Subtitulado", "Legendado"),
+        "dub" => ("Doblado", "Dublado"),
+        "action" => ("Acción", "Ação"),
+        "adventure" => ("Aventura", "Aventura"),
+        "comedy" => ("Comedia", "Comédia"),
+        "horror" => ("Terror", "Terror"),
+        "drama" => ("Drama", "Drama"),
+        _ => return value.to_string(),
+    };
+    match lang.to_lowercase().as_str() {
+        "es" | "es-es" | "es-419" => es.to_string(),
+        "pt" | "pt-br" => pt.to_string(),
+        _ => value.to_string(),
     }
 }

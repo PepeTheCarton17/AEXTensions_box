@@ -99,7 +99,7 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
     // La exclusión es un filtro real: sus valores vienen de las listas `{id,name}`
     // que el sitio publica en su API. Se guarda en preferencias para que also
     // afecte a popular/latest, que no reciben el AnimeFilterList.
-    let exclusion_pairs = api_exclusion_pairs(analysis);
+    let exclusion_pairs = api_exclusion_pairs(analysis, lang);
     let exclusion_capture = if exclusion_pairs.is_empty() {
         String::new()
     } else {

@@ -1,7 +1,7 @@
 use crate::engine::analyzer::AnalysisResult;
 
 use super::api_helpers::{api_exclusion_pairs, api_option_lists, verified_audio_selection};
-use super::i18n::get_i18n;
+use super::i18n::{filter_label, filter_value, get_i18n};
 use super::templates::filters::{audio_filter_class_kt_fmt, kotlin_filters_kt_fmt};
 
 /// Etiqueta legible derivada de un valor real del sitio. No traduce: sólo
@@ -39,7 +39,13 @@ pub(crate) fn generate_kotlin_filters(
     analysis: &AnalysisResult,
 ) -> String {
     let i18n = get_i18n(lang);
-    let filter_header = i18n.filter_header;
+    let has_search_endpoint = !analysis.search_path.as_deref().unwrap_or("").trim().is_empty()
+        && !analysis.search_param.as_deref().unwrap_or("").trim().is_empty();
+    let filter_header = if has_search_endpoint {
+        i18n.filter_header
+    } else {
+        i18n.filter_header_no_search
+    };
     let caps = &analysis.capabilities;
     let kt = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let (show_audio, sub_ok, dub_ok) = verified_audio_selection(caps);
@@ -80,6 +86,7 @@ pub(crate) fn generate_kotlin_filters(
     // la plantilla se eliminaron: nunca se podían traducir en una consulta.
     #[derive(Clone)]
     struct ParamGroup {
+        canonical: String,
         name: String,
         /// Pares `(etiqueta, valor)`; la etiqueta puede venir de la API real.
         values: Vec<(String, String)>,
@@ -89,13 +96,18 @@ pub(crate) fn generate_kotlin_filters(
         if f.param.is_empty() {
             continue;
         }
-        let index = match grouped.iter().position(|(param, _)| param == &f.param) {
+        let canonical = f.name.trim();
+        let index = match grouped
+            .iter()
+            .position(|(_, group)| group.canonical == canonical)
+        {
             Some(index) => index,
             None => {
                 grouped.push((
                     f.param.clone(),
                     ParamGroup {
-                        name: f.name.clone(),
+                        canonical: canonical.to_string(),
+                        name: filter_label(lang, canonical),
                         values: Vec::new(),
                     },
                 ));
@@ -109,7 +121,10 @@ pub(crate) fn generate_kotlin_filters(
             && !f.value.is_empty()
             && !entry.values.iter().any(|(_, value)| value == &f.value)
         {
-            entry.values.push((humanize_filter_value(&f.value), f.value.clone()));
+            entry.values.push((
+                filter_value(lang, &humanize_filter_value(&f.value)),
+                f.value.clone(),
+            ));
         }
     }
     // Un parámetro del sitio sin valores enumerados se completa con las listas
@@ -128,7 +143,7 @@ pub(crate) fn generate_kotlin_filters(
     }
     // Exclusión con evidencia: los valores son los ids/nombres reales de las
     // listas verificadas. Si el sitio no publica esas listas, no hay filtro.
-    let exclusion_pairs = api_exclusion_pairs(analysis);
+    let exclusion_pairs = api_exclusion_pairs(analysis, lang);
     let (exclude_class, exclude_items) = if exclusion_pairs.is_empty() {
         (String::new(), String::new())
     } else {
@@ -190,7 +205,7 @@ pub(crate) fn generate_kotlin_filters(
                 .iter()
                 .map(|(label, value)| format!("Pair(\"{}\", \"{}\")", kt(label), kt(value)))
                 .collect::<Vec<_>>();
-            if !group.values.is_empty() && MULTISELECT_LABELS.contains(&group.name.as_str()) {
+            if !group.values.is_empty() && MULTISELECT_LABELS.contains(&group.canonical.as_str()) {
                 format!(
                     "        CheckBoxFilterList(\"{}\", \"{}\", arrayOf({})),\n",
                     kt(&group.name),
@@ -198,7 +213,8 @@ pub(crate) fn generate_kotlin_filters(
                     pairs.join(", ")
                 )
             } else if !pairs.is_empty() {
-                let opts = std::iter::once("Pair(\"All\", \"\")".to_string())
+                let all_label = format!("Pair(\"{}\", \"\")", kt(i18n.filter_all));
+                let opts = std::iter::once(all_label)
                     .chain(pairs)
                     .collect::<Vec<_>>()
                     .join(", ");

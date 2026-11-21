@@ -56,6 +56,14 @@ impl SiteAnalyzer {
         Some((format!("a[href*='{}']", hint), count))
     }
 
+    /// Coincidencia por token de clase, no por substring. `stickyFooterLayout`
+    /// es el contenedor principal de Pluto TV: buscar `footer` dentro del texto
+    /// hacía que TODAS sus tarjetas se descartaran como navegación.
+    fn matches_nav_class_token(hay: &str, tokens: &[&str]) -> bool {
+        hay.split(|c: char| !c.is_alphanumeric())
+            .any(|token| !token.is_empty() && tokens.iter().any(|t| token.eq_ignore_ascii_case(t)))
+    }
+
     /// Descarta menús, cabeceras, pies, migas de pan, banners y paginación.
     /// Estos bloques usan las mismas clases (`item`, `card`, `link`) que las
     /// tarjetas reales y son la causa más frecuente de catálogos basura.
@@ -78,7 +86,7 @@ impl SiteAnalyzer {
             el.value().attr("id").unwrap_or("")
         )
         .to_lowercase();
-        if Self::matches_any(&own, NAV_TOKENS) {
+        if Self::matches_nav_class_token(&own, NAV_TOKENS) {
             return true;
         }
         let mut current = el.parent();
@@ -93,7 +101,7 @@ impl SiteAnalyzer {
                     parent_el.attr("id").unwrap_or("")
                 )
                 .to_lowercase();
-                if Self::matches_any(&hay, ANCESTOR_NAV_TOKENS) {
+                if Self::matches_nav_class_token(&hay, ANCESTOR_NAV_TOKENS) {
                     return true;
                 }
             }

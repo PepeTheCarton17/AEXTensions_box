@@ -118,6 +118,34 @@
     }
 
     #[test]
+    fn sticky_footer_layout_does_not_hide_pluto_cards() {
+        // Clases reales de pluto.tv: el contenedor principal se llama
+        // `stickyFooterLayout`. Buscar `footer` como substring descartaba todo.
+        let analyzer = SiteAnalyzer::new();
+        let doc = Html::parse_document(
+            r#"<!doctype html><html><body>
+<main class="PageLayout_stickyFooterLayout__Ki1Wi">
+  <div class="PageLayout_stickyFooterContentWrapper__ZMFxL">
+    <div class="vds-carousel__container vds-carousel__container--nav-ready">
+      <a class="TileLink_tileLink__pIMWG" href="/latam/shows/one/"><img alt="One" src="/a.jpg"></a>
+      <a class="TileLink_tileLink__pIMWG" href="/latam/shows/two/"><img alt="Two" src="/b.jpg"></a>
+      <a class="TileLink_tileLink__pIMWG" href="/latam/shows/three/"><img alt="Three" src="/c.jpg"></a>
+      <a class="TileLink_tileLink__pIMWG" href="/latam/shows/four/"><img alt="Four" src="/d.jpg"></a>
+      <a class="TileLink_tileLink__pIMWG" href="/latam/shows/five/"><img alt="Five" src="/e.jpg"></a>
+      <a class="TileLink_tileLink__pIMWG" href="/latam/shows/six/"><img alt="Six" src="/f.jpg"></a>
+    </div>
+  </div>
+</main>
+</body></html>"#,
+        );
+
+        let catalog = analyzer.detect_catalog(&doc, "https://pluto.tv", "pluto.tv");
+        assert_eq!(catalog.count, 6, "las tarjetas bajo stickyFooter deben contarse");
+        assert_eq!(catalog.card_selector, "a.TileLink_tileLink__pIMWG");
+        assert!(catalog.samples.contains(&"One".to_string()));
+    }
+
+    #[test]
     fn detects_episode_selector_ignoring_live_tv_menu() {
         let html = r#"<!doctype html><html><body>
 <nav><a href="/latam/watch/live-tv/">TV en directo</a></nav>
@@ -393,10 +421,11 @@ render(nf,{instanceId:"catalog-sort",options:H,placeholder:S("filter.sort")});
 render(nf,{instanceId:"catalog-status",options:$,placeholder:S("filter.status")});"#;
         let filters = SiteAnalyzer::detect_filters_from_js(js, Some("name"));
         let params: Vec<&str> = filters.iter().map(|f| f.param.as_str()).collect();
-        for expected in ["year", "countryIds", "genreIds", "audioLanguageIds", "quality", "categoryIds", "CopyrightHolderIds", "isFrameDub", "sortBy", "status"] {
+        for expected in ["year", "countryIds", "genreIds", "audioLanguageIds", "quality", "categoryIds", "CopyrightHolderIds", "sortBy", "status"] {
             assert!(params.contains(&expected), "falta {expected} en {:?}", params);
         }
         assert!(!params.contains(&"name"), "el parámetro de búsqueda no es un filtro");
+        assert!(!params.contains(&"isFrameDub"), "el doblaje no verificado no es un filtro");
         assert!(!params.contains(&"publish_date"), "los valores no son parámetros");
         assert!(filters.iter().any(|f| f.param == "sortBy" && f.value == "imdb_rating"));
         assert!(filters.iter().any(|f| f.param == "status" && f.value == "announcement"));
@@ -431,7 +460,7 @@ render(nf,{options:opts,instanceId:"catalog"});"#;
 render(nf,{instanceId:"catalog",options:nh});"#;
         let filters = SiteAnalyzer::detect_filters_from_js(js, Some("name"));
         let params: Vec<&str> = filters.iter().map(|f| f.param.as_str()).collect();
-        for expected in ["year", "countryIds", "genreIds", "audioLanguageIds", "quality", "categoryIds", "CopyrightHolderIds", "isFrameDub", "sortBy", "status"] {
+        for expected in ["year", "countryIds", "genreIds", "audioLanguageIds", "quality", "categoryIds", "CopyrightHolderIds", "sortBy", "status"] {
             assert!(params.contains(&expected), "falta el filtro real {expected} en {:?}", params);
         }
         for bogus in [
@@ -442,7 +471,7 @@ render(nf,{instanceId:"catalog",options:nh});"#;
         ] {
             assert!(!params.contains(&bogus), "clave de configuración expuesta como filtro: {bogus}");
         }
-        assert!(filters.iter().any(|f| f.name == "Dubbed" && f.param == "isFrameDub"));
+        assert!(!filters.iter().any(|f| f.param == "isFrameDub"), "Dubbed no es una pista verificada");
         assert!(filters.iter().all(|f| f.name.chars().all(|c| c.is_ascii())));
     }
 
@@ -458,6 +487,24 @@ render(nf,{instanceId:"catalog",options:all});"#;
         for bogus in ["clickMerchantId", "paymeMerchantId", "appDeeplinkScheme", "renderCardError"] {
             assert!(!params.contains(&bogus), "clave de configuración expuesta como filtro: {bogus}");
         }
+    }
+
+    #[test]
+    fn normalize_filters_drops_search_dub_and_duplicate_labels() {
+        let mut filters = vec![
+            SiteFilterParam { name: "Search".to_string(), param: "name".to_string(), value: String::new(), kind: "text".to_string() },
+            SiteFilterParam { name: "Search".to_string(), param: "q".to_string(), value: String::new(), kind: "text".to_string() },
+            SiteFilterParam { name: "Dubbed".to_string(), param: "isFrameDub".to_string(), value: String::new(), kind: "check".to_string() },
+            SiteFilterParam { name: "Sort By".to_string(), param: "sort".to_string(), value: String::new(), kind: "text".to_string() },
+            SiteFilterParam { name: "Sort By".to_string(), param: "sortBy".to_string(), value: "publish_date".to_string(), kind: "select".to_string() },
+            SiteFilterParam { name: "Sort By".to_string(), param: "sortBy".to_string(), value: "imdb_rating".to_string(), kind: "select".to_string() },
+            SiteFilterParam { name: "Sort By".to_string(), param: "sortBy".to_string(), value: "imdb_rating".to_string(), kind: "select".to_string() },
+        ];
+
+        SiteAnalyzer::normalize_filter_params(&mut filters);
+        let params: Vec<&str> = filters.iter().map(|f| f.param.as_str()).collect();
+        assert_eq!(params, vec!["sortBy", "sortBy"], "sólo el orden con valores reales: {:?}", filters);
+        assert!(filters.iter().all(|f| !f.value.is_empty()));
     }
 
     #[test]

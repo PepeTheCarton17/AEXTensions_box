@@ -71,10 +71,11 @@ impl SiteAnalyzer {
             }
             if !added.is_empty() {
                 result.warnings.push(format!(
-                    "Filtros encontrados en los bundles JS del sitio: {}. Sus nombres se han normalizado al inglés; los valores no enumerados se ofrecen como texto libre.",
+                    "Filtros encontrados en los bundles JS del sitio: {}. Sus etiquetas se muestran en el idioma de la extensión; los valores no enumerados se ofrecen como texto libre.",
                     added.join(", ")
                 ));
             }
+            Self::normalize_filter_params(&mut result.filter_params);
         }
 
         // Sondeo genérico de APIs REST: los bundles declaran la base y las rutas,
@@ -351,6 +352,7 @@ impl SiteAnalyzer {
                 filter_params.retain(|f| f.param != *param);
             }
         }
+        Self::normalize_filter_params(&mut filter_params);
 
         // 6. Servidores de video y SUB/DUB (síncrona)
         let (detected_hosts, has_sub_dub) = self.detect_servers_and_dub(&body, &origin);
