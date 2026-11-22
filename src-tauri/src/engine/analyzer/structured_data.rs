@@ -52,10 +52,10 @@ impl SiteAnalyzer {
 
     fn collect_locale_links(doc: &Html, out: &mut Vec<String>) {
         let Ok(param) = Regex::new(
-            r"(?:[?&;])(?:[A-Za-z_][\w.-]*\.)?(?:lang|language|locale|hl|ui|mui|l)[=:]([A-Za-z]{2,3}(?:[-_][A-Za-z]{2,4})?)"
+            r"(?:[?&;])(?:[A-Za-z_][\w.-]*\.)?(?:lang|language|locale|hl|ui|mui|l)[=:]([A-Za-z][A-Za-z_-]{1,15})"
         ) else { return };
         let Ok(path) = Regex::new(
-            r#"/(?:lang|locale|language)/([A-Za-z]{2,3}(?:[-_][A-Za-z]{2,4})?)(?:[/"'?#]|$)"#
+            r#"/(?:lang|locale|language)/([A-Za-z][A-Za-z_-]{1,15})(?:[/"'?#]|$)"#
         ) else { return };
         let Ok(sel) = Selector::parse("[href], [data-url], [hreflang], [data-lang]") else { return };
 
