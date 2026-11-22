@@ -25,11 +25,23 @@ impl GithubApiClient {
         };
         // Un repo puede tener otros workflows (p. ej. un health check
         // programado) disparados para el mismo SHA. El run que nos interesa es
-        // el provocado por nuestro push, no el de un cron.
-        let Some(chosen) = runs
+        // el provocado por nuestro push, no el de un cron. Si GitHub devolvió
+        // un run cancelado (supersedido), se ignoran los cancelados: son ruido
+        // de pushes anteriores, no el resultado de esta subida.
+        let push_runs: Vec<&serde_json::Value> = runs
             .iter()
-            .find(|r| r.get("event").and_then(|v| v.as_str()) == Some("push"))
-            .or_else(|| runs.first())
+            .filter(|r| r.get("event").and_then(|v| v.as_str()) == Some("push"))
+            .collect();
+        let pool: Vec<&serde_json::Value> = if push_runs.is_empty() {
+            runs.iter().collect()
+        } else {
+            push_runs
+        };
+        let Some(chosen) = pool
+            .iter()
+            .copied()
+            .find(|r| r.get("conclusion").and_then(|v| v.as_str()) != Some("cancelled"))
+            .or_else(|| pool.first().copied())
         else {
             return Ok(None);
         };

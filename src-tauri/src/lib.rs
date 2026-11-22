@@ -32,6 +32,7 @@ pub fn run() {
             commands::catalog::get_created_extensions,
             commands::updates::update_extension,
             commands::updates::update_all_extensions,
+            commands::updates::update_extensions_batch,
             commands::catalog::sync_extension_catalog,
             commands::catalog_check::check_extensions_in_repo,
             commands::catalog_check::restore_extension_repo_state,

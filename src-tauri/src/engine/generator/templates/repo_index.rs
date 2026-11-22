@@ -2,6 +2,7 @@
 
 macro_rules! repo_index_py_fmt {
     () => { r#"#!/usr/bin/env python3
+# aext-managed-index
 """Genera el repositorio de extensiones para Nekoyomi / Aniyomi.
 
 Lee los APK compilados por Gradle y produce:
@@ -21,7 +22,7 @@ import os
 import re
 import shutil
 import subprocess
-import zipfile
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -169,7 +170,7 @@ def main() -> None:
     # Se busca desde la raíz del repositorio, no desde el directorio actual: así
     # el script funciona tanto en Actions como ejecutado a mano desde cualquier carpeta.
     apk_files = sorted((ROOT / "src").rglob("build/outputs/apk/release/*.apk"))
-    print(f"[*] APKs encontrados: {len(apk_files)}")
+    print(f"[AEXT][*] APKs encontrados: {len(apk_files)}")
 
     extensions = []
     fingerprint = DEFAULT_FINGERPRINT
@@ -178,6 +179,8 @@ def main() -> None:
     for apk in apk_files:
         meta = read_module_meta(apk)
         filename = apk.name
+        if not meta["pkg"] or meta["version"] == "16.1":
+            print(f"[AEXT][!] Metadatos incompletos en {apk}; revisa build.gradle.kts del módulo")
 
         shutil.copy2(apk, output_dir / filename)
         shutil.copy2(apk, output_dir / "apk" / filename)
@@ -214,7 +217,7 @@ def main() -> None:
                 ],
             }
         )
-        print(f"  [+] {display_name} v{meta['version']} ({meta['lang']}) -> {filename}")
+        print(f"[AEXT][EXT] {display_name} v{meta['version']} ({meta['lang']}) code={meta['code']} -> {filename}")
 
     index_json = output_dir / "index.json"
     index_min = output_dir / "index.min.json"
@@ -247,9 +250,13 @@ def main() -> None:
     with open(output_dir / "repo.json", "w", encoding="utf-8") as handle:
         json.dump(repo_meta, handle, indent=2, ensure_ascii=False)
 
-    print(f"[+] Índice generado en {output_dir} (fingerprint {fingerprint})")
     if not extensions:
-        print("[!] No se generó ningún APK. Revisa el paso 'Build Extension APK'.")
+        # Publicar un índice vacío borraría del repo todas las extensiones en
+        # los clientes. Es mejor fallar el job y conservar el índice anterior.
+        print("[AEXT][!] No se generó ningún APK. No se publicará un índice vacío.", file=sys.stderr)
+        raise SystemExit(1)
+
+    print(f"[AEXT][+] Índice generado en {output_dir} (fingerprint {fingerprint})")
 
 
 if __name__ == "__main__":

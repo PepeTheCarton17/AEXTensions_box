@@ -4,6 +4,8 @@ import { invokeBackend } from '../services/tauri.js';
 import { t } from '../i18n/index.js';
 import { refreshRepoFilters, loadExtensions } from './catalog.js';
 import { refreshBackupExtensions } from './shared.js';
+import { setBulkBusy } from '../services/updateBusy.js';
+import { logUpdateResults, hasQueuedUpdates } from '../services/updateBatcher.js';
 
 function extensionsForRepo(repoUrl) {
   // El backend excluye las fichas marcadas como eliminadas. El conteo de la UI
@@ -16,20 +18,8 @@ function extensionsForRepo(repoUrl) {
   );
 }
 
-function setBulkBusy(busy) {
-  for (const btn of [
-    elements.btnSyncExtensions,
-    elements.btnUpdateAll,
-    elements.btnUpdateRepo,
-    elements.btnUpdatePromptAll,
-    elements.btnUpdatePromptRepo,
-  ]) {
-    if (!btn) continue;
-    btn.disabled = busy;
-    btn.classList.toggle('opacity-60', busy);
-    btn.classList.toggle('cursor-wait', busy);
-  }
-}
+// Re-exportado: todos los módulos comparten el mismo bloqueo global.
+export { setBulkBusy };
 
 function closeUpdatePrompt(markSeen = true) {
   if (!elements.updatePromptModal) return;
@@ -71,6 +61,9 @@ function openUpdatePrompt() {
 }
 
 async function runBulkUpdate(repoUrl = '') {
+  // Si hay una ventana de actualizaciones manuales abierta, debe terminar
+  // primero: backend ya serializa, pero la UI no debe abrir dos flujos.
+  if (state.updatesBusy || hasQueuedUpdates()) return;
   const targets = extensionsForRepo(repoUrl);
   if (targets.length === 0) {
     alert(t('ext.select_repo'));
@@ -82,25 +75,42 @@ async function runBulkUpdate(repoUrl = '') {
         (ext) => (ext.github_repo_url || '').replace(/\/$/, '') === selected
       )
     : state.extensions;
+  const skipped = detected.filter((ext) => !targets.includes(ext));
+
   setBulkBusy(true);
+  const startedAt = Date.now();
+  appendTerminalLog('INFO', t('logs.update_batch_start', { count: targets.length }));
   appendTerminalLog('INFO', t('ext.bulk_detected', { count: detected.length }));
   appendTerminalLog('INFO', t('ext.bulk_updating', { count: targets.length }));
-  const skipped = detected.length - targets.length;
-  if (skipped > 0) {
-    appendTerminalLog('WARN', t('ext.bulk_skipped', { count: skipped }));
+  for (const ext of skipped) {
+    appendTerminalLog(
+      'WARN',
+      t('logs.update_skipped', {
+        pkg: ext.pkg_id,
+        reason: ext.trashed ? t('ext.delete') : t('ext.repo_missing'),
+      })
+    );
+  }
+  if (skipped.length > 0) {
+    appendTerminalLog('WARN', t('ext.bulk_skipped', { count: skipped.length }));
   }
   try {
     const updated = await invokeBackend('update_all_extensions', {
       repoUrl: repoUrl ? repoUrl.replace(/\/$/, '') : null,
       lang: localStorage.getItem('aext_lang') || 'es',
     });
+    logUpdateResults(updated, startedAt);
     appendTerminalLog('SUCCESS', t('ext.bulk_ok', { count: updated ? updated.length : 0 }));
+    appendTerminalLog('SUCCESS', t('logs.verify_elapsed', {
+      pkg: targets.length === 1 ? targets[0].pkg_id : t('ext.update_all'),
+      seconds: ((Date.now() - startedAt) / 1000).toFixed(1),
+    }));
     closeUpdatePrompt();
     await loadExtensions();
     refreshBackupExtensions();
   } catch (err) {
-    const detail = String(err);
-    appendTerminalLog('ERROR', detail);
+    const detail = String(err?.message || err);
+    appendTerminalLog('ERROR', t('logs.update_batch_error', { error: detail }));
     alert(detail);
   } finally {
     setBulkBusy(false);
@@ -125,11 +135,9 @@ function maybeShowUpdatePrompt() {
 
 export {
   extensionsForRepo,
-  setBulkBusy,
   closeUpdatePrompt,
   refreshUpdatePromptCount,
   openUpdatePrompt,
   runBulkUpdate,
   maybeShowUpdatePrompt,
 };
-

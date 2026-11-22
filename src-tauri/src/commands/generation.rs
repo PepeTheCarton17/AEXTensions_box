@@ -146,13 +146,14 @@ pub async fn generate_extensions(
         // reflejar su conclusión. AEXT ya no dice "funcionó" solo por subir el
         // código; si Actions falla, se muestra el error y el enlace al run.
         if let Some(info) = upload.take() {
+            let pkg_ids = [ext_item.pkg_id.clone()];
             verify_github_actions(
                 &state,
                 &info.client,
                 &info.owner,
                 &info.repo,
                 &info.sha,
-                &ext_item.pkg_id,
+                &pkg_ids,
             )
             .await;
             if let Some(updated) = state

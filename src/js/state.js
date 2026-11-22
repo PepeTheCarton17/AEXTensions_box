@@ -14,6 +14,7 @@ const state = {
   analyzedSites: [],
   extensions: [],
   logs: [],
+  updatesBusy: false,
   pendingGenerationMode: 'local',
   githubRepos: [],
   appVersion: '',
@@ -147,6 +148,8 @@ const elements = {
 // ==================== LOGGING UTILITIES ====================
 function appendTerminalLog(level, message) {
   const time = new Date().toLocaleTimeString();
+  state.logs.push({ at: new Date().toISOString(), level, message: String(message) });
+  if (state.logs.length > 500) state.logs.shift();
   const line = document.createElement('div');
   line.className = 'flex items-start gap-2 text-[11px] leading-relaxed';
 

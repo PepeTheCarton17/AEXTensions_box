@@ -93,6 +93,7 @@ async function invokeBackend(command, args = {}) {
     }
     case 'update_extension':
     case 'update_all_extensions':
+    case 'update_extensions_batch':
     case 'sync_extension_catalog':
     case 'check_extensions_in_repo':
     case 'restore_extension_repo_state':

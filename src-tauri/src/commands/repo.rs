@@ -1,4 +1,5 @@
 use crate::github::{GithubApiClient, RepoInfo};
+use std::collections::HashMap;
 
 /// Archivos que AEXT genera a nivel de repositorio. Se comprueba su
 /// existencia remota uno por uno: si están, son del usuario; si faltan, se
@@ -149,6 +150,127 @@ fn is_repo_scaffold(path: &str) -> bool {
         || lower.starts_with("signingkey")
         || lower.ends_with(".jks")
         || lower.ends_with(".keystore")
+}
+
+/// Marcadores del scaffold gestionado por AEXT. Un repo existente sólo recibe
+/// la versión nueva del workflow/script cuando el contenido anterior lleva una
+/// firma reconocida de AEXT: los archivos escritos a mano nunca se tocan.
+const MANAGED_WORKFLOW_MARKER: &str = "# aext-managed-workflow";
+const LEGACY_WORKFLOW_MARKER: &str = "# No cancelar runs: cada commit de AEXT debe compilarse";
+const MANAGED_INDEX_MARKER: &str = "# aext-managed-index";
+const LEGACY_INDEX_MARKER: &str = "DEFAULT_FINGERPRINT = ";
+
+fn should_replace_managed_file(path: &str, existing: &str) -> bool {
+    match path {
+        ".github/workflows/build_push.yml" => {
+            existing.contains(MANAGED_WORKFLOW_MARKER) || existing.contains(LEGACY_WORKFLOW_MARKER)
+        }
+        ".github/scripts/generate-repo-index.py" => {
+            existing.contains(MANAGED_INDEX_MARKER)
+                || (existing.contains("generate-repo-index") && existing.contains(LEGACY_INDEX_MARKER))
+        }
+        _ => false,
+    }
+}
+
+/// Reconcilia el scaffold una sola vez por repo, con todos los archivos del
+/// lote ya agregados. `settings.gradle.kts` se resuelve aparte porque debe
+/// conservar los `include()` de TODAS las extensiones del grupo.
+pub(crate) async fn reconcile_batch_scaffold(
+    client: &GithubApiClient,
+    repo: &RepoInfo,
+    files: &mut HashMap<String, Vec<u8>>,
+) -> Result<(), String> {
+    for path in REPO_SCAFFOLD_FILES {
+        let Some(new_bytes) = files.get(*path).cloned() else {
+            continue;
+        };
+        if !client
+            .file_exists(&repo.owner, &repo.name, path, &repo.default_branch)
+            .await?
+        {
+            continue;
+        }
+
+        match *path {
+            "settings.gradle.kts" => {
+                files.remove(*path);
+            }
+            "README.md" => {
+                let existing = client
+                    .get_file_content(&repo.owner, &repo.name, path, &repo.default_branch)
+                    .await?;
+                if !existing
+                    .as_deref()
+                    .map(|content| is_auto_init_readme(content, &repo.name))
+                    .unwrap_or(false)
+                {
+                    files.remove(*path);
+                }
+            }
+            ".github/workflows/build_push.yml" | ".github/scripts/generate-repo-index.py" => {
+                let existing = client
+                    .get_file_content(&repo.owner, &repo.name, path, &repo.default_branch)
+                    .await?
+                    .unwrap_or_default();
+                if existing.as_bytes() == new_bytes.as_slice()
+                    || !should_replace_managed_file(path, &existing)
+                {
+                    files.remove(*path);
+                }
+            }
+            _ => {
+                files.remove(*path);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Construye un `settings.gradle.kts` con un `include()` por cada módulo del
+/// lote. Se usa el contenido remoto como base; si el repo no lo tiene, se parte
+/// del generado por AEXT (o de un esqueleto mínimo).
+pub(crate) async fn settings_for_modules(
+    client: &GithubApiClient,
+    repo: &RepoInfo,
+    module_paths: &[String],
+    generated: Option<Vec<u8>>,
+) -> Result<Option<Vec<u8>>, String> {
+    let path = "settings.gradle.kts";
+    let exists = client
+        .file_exists(&repo.owner, &repo.name, path, &repo.default_branch)
+        .await?;
+    let base = if exists {
+        client
+            .get_file_content(&repo.owner, &repo.name, path, &repo.default_branch)
+            .await?
+            .map(String::into_bytes)
+    } else {
+        None
+    };
+    let original = base.or(generated);
+    let mut settings = match original {
+        Some(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        None => "rootProject.name = \"nekoyomi_extensions\"\n".to_string(),
+    };
+    let before = settings.clone();
+
+    for module in module_paths {
+        let include = format!("include(\":{}\")", module.replace('/', ":"));
+        if settings.contains(&include) {
+            continue;
+        }
+        if !settings.ends_with('\n') {
+            settings.push('\n');
+        }
+        settings.push_str(&include);
+        settings.push('\n');
+    }
+
+    if exists && settings == before {
+        return Ok(None);
+    }
+    Ok(Some(settings.into_bytes()))
 }
 
 #[cfg(test)]

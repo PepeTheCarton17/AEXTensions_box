@@ -19,6 +19,9 @@ pub mod site_duplicates;
 pub mod system;
 pub mod toolchain;
 pub mod update_one;
+pub mod update_prepare;
+pub mod update_publish;
+pub mod update_types;
 pub mod updates;
 
 pub use actions::refresh_github_actions;
@@ -40,4 +43,4 @@ pub use generation::generate_extensions;
 pub use parsers::{parse_github_url, parse_repo_target};
 pub use system::{get_system_logs, get_system_status, open_url, test_stream_extractor};
 pub use toolchain::{check_build_toolchain, BuildToolchain};
-pub use updates::{update_all_extensions, update_extension};
+pub use updates::{update_all_extensions, update_extension, update_extensions_batch};

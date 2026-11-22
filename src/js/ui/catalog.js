@@ -4,6 +4,8 @@ import { invokeBackend, saveLocalZip } from '../services/tauri.js';
 import { t } from '../i18n/index.js';
 import { normalizeSearchText, filteredExtensions } from '../services/search.js';
 import { openExtensionFolder, refreshBackupExtensions } from './shared.js';
+import { setBulkBusy } from '../services/updateBusy.js';
+import { queueManualUpdate, logUpdateResult } from '../services/updateBatcher.js';
 
 function refreshRepoFilters() {
   const repos = [...new Set(state.extensions.filter((e) => !isRepoMissing(e)).map((e) => e.github_repo_url).filter(Boolean))]
@@ -143,13 +145,13 @@ function renderExtensionsGrid(list = state.extensions) {
           </a>
         ` : ''}
 
-        <button data-update-pkg="${escapeHtml(ext.pkg_id)}" class="btn-update-ext py-2 px-3 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 flex items-center gap-1.5 transition-all" title="${escapeHtml(t('ext.update'))}">
+        <button data-update-pkg="${escapeHtml(ext.pkg_id)}" class="btn-update-ext py-2 px-3 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 flex items-center gap-1.5 transition-all ${state.updatesBusy ? 'disabled opacity-60 cursor-wait' : ''}" title="${escapeHtml(t('ext.update'))}">
           <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
           <span>${escapeHtml(t('ext.update'))}</span>
         </button>
 
         ${hasGithub && ext.actions_commit_sha ? `
-          <button data-verify-actions-pkg="${escapeHtml(ext.pkg_id)}" class="btn-verify-actions py-2 px-3 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 flex items-center gap-1.5 transition-all" title="${escapeHtml(t('ext.verify_actions'))}">
+          <button data-verify-actions-pkg="${escapeHtml(ext.pkg_id)}" class="btn-verify-actions py-2 px-3 rounded-xl text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 flex items-center gap-1.5 transition-all ${state.updatesBusy ? 'disabled opacity-60 cursor-wait' : ''}" title="${escapeHtml(t('ext.verify_actions'))}">
             <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
             <span>${escapeHtml(t('ext.verify_actions'))}</span>
           </button>
@@ -241,41 +243,26 @@ function renderExtensionsGrid(list = state.extensions) {
     });
   });
 
-  // Hook update buttons
+  // Hook update buttons: se encolan en una ventana de 10 s para agrupar
+  // varias pulsaciones en un único commit por repositorio.
   document.querySelectorAll('.btn-update-ext').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
+    btn.addEventListener('click', (e) => {
+      if (state.updatesBusy) return;
       const button = e.currentTarget;
       const pkgId = button.getAttribute('data-update-pkg');
       if (!pkgId) return;
+      queueManualUpdate(pkgId);
       const label = button.querySelector('span');
-      const original = label ? label.textContent : '';
+      if (label) label.textContent = t('ext.queued');
       button.disabled = true;
       button.classList.add('opacity-60', 'cursor-wait');
-      if (label) label.textContent = t('ext.updating');
-      appendTerminalLog('INFO', `↻ ${pkgId}…`);
-      try {
-        // El idioma elegido en ajustes se aplica también al regenerar.
-        const lang = localStorage.getItem('aext_lang') || 'es';
-        const updated = await invokeBackend('update_extension', { pkgId, lang });
-        appendTerminalLog('SUCCESS', t('logs.updated', {
-          name: updated ? updated.name : pkgId,
-          version: updated ? updated.version : '?',
-        }));
-        await loadExtensions();
-        refreshBackupExtensions();
-      } catch (err) {
-        appendTerminalLog('ERROR', t('logs.update_error', { pkg: pkgId, error: err }));
-        alert(t('logs.update_error', { pkg: pkgId, error: err }));
-        button.disabled = false;
-        button.classList.remove('opacity-60', 'cursor-wait');
-        if (label) label.textContent = original || t('ext.update');
-      }
     });
   });
 
   // Hook verify-Actions buttons: consulta el run real y actualiza el badge.
   document.querySelectorAll('.btn-verify-actions').forEach(btn => {
     btn.addEventListener('click', async (e) => {
+      if (state.updatesBusy) return;
       const button = e.currentTarget;
       const pkgId = button.getAttribute('data-verify-actions-pkg');
       if (!pkgId) return;
@@ -286,7 +273,13 @@ function renderExtensionsGrid(list = state.extensions) {
       if (label) label.textContent = t('ext.verifying');
       appendTerminalLog('INFO', `↻ ${t('ext.verify_actions')}: ${pkgId}…`);
       try {
-        await invokeBackend('refresh_github_actions', { pkgId });
+        const startedAt = Date.now();
+        const verified = await invokeBackend('refresh_github_actions', { pkgId });
+        logUpdateResult(verified, startedAt);
+        appendTerminalLog('INFO', t('logs.verify_elapsed', {
+          pkg: pkgId,
+          seconds: ((Date.now() - startedAt) / 1000).toFixed(1),
+        }));
         await loadExtensions();
       } catch (err) {
         appendTerminalLog('ERROR', String(err));
@@ -338,6 +331,8 @@ function renderExtensionsGrid(list = state.extensions) {
     });
   });
 
+  // El grid se reconstruye en cada render: reaplica el bloqueo global.
+  setBulkBusy(state.updatesBusy);
 }
 
 function renderDeletedExtensionsGrid(list = state.extensions) {
