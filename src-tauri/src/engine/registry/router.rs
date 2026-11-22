@@ -53,12 +53,12 @@ pub fn select(
         if !catalog_missing && engine.kind == EngineKind::Playback {
             score += 1;
         }
-        // A igualdad de capacidades, primero lo que el usuario instaló: el
-        // motor común es un punto de partida, no una respuesta definitiva.
-        if engine.source == EngineSource::Repo {
-            score += 1;
-        }
         if score > 0 {
+            // Sólo se desempata entre motores que ya encajan. Un motor sin
+            // ninguna capacidad coincidente no se fuerza por ser instalado.
+            if engine.source == EngineSource::Repo {
+                score += 1;
+            }
             scored.push((score, index, engine.clone()));
         }
     }
