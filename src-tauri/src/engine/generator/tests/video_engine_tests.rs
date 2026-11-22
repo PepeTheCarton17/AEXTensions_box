@@ -620,4 +620,57 @@ mod video_engine_tests {
         assert!(kt.contains("is FrameFilters.QueryPartFilter"), "{}", kt);
         assert!(kt.contains("excluded_api_values"), "{}", kt);
     }
+
+    #[test]
+    fn blacklist_is_a_generic_inverted_filter_input() {
+        let mut fixture = pluto_fixture();
+        // Sin listas verificadas ni parámetros: el input de lista negra debe
+        // existir igualmente, porque el ajuste de lista negra siempre existe.
+        fixture.api_lists = Vec::new();
+        fixture.filter_params = Vec::new();
+
+        let filters_es = generate_kotlin_filters(
+            "Demo", "demo", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
+        );
+        assert!(
+            filters_es.contains("class BlacklistInputFilter(name: String, initial: String) : AnimeFilter.Text(name)"),
+            "{}",
+            filters_es
+        );
+        assert!(filters_es.contains("init { state = initial }"), "{}", filters_es);
+        assert!(
+            filters_es.contains("BlacklistInputFilter(\"Lista Negra - excluir (separar con , o ;)\", initialBlacklist)"),
+            "{}",
+            filters_es
+        );
+
+        let filters_en = generate_kotlin_filters(
+            "Demo", "demo", "en", "en", "eu.kanade.tachiyomi.animeextension", &fixture,
+        );
+        assert!(
+            filters_en.contains("BlacklistInputFilter(\"Blacklist - exclude (separate with , or ;)\", initialBlacklist)"),
+            "{}",
+            filters_en
+        );
+
+        let kt = generate_kotlin_source(
+            &fixture, "Demo", "Demo", "demo", "es", "es",
+            "eu.kanade.tachiyomi.animeextension",
+        );
+        // El valor se guarda en la misma clave del ajuste y se invierte para
+        // ocultar resultados en popular/latest/search.
+        assert!(kt.contains("Filters.BlacklistInputFilter"), "{}", kt);
+        assert!(
+            kt.contains("putString(\"genre_blacklist_text\", blacklistInput)"),
+            "{}",
+            kt
+        );
+        assert!(
+            kt.contains("getFilterList(preferences.getString(\"genre_blacklist_text\", \"\") ?: \"\")"),
+            "{}",
+            kt
+        );
+        assert!(kt.contains(".split(\",\", \";\", \"|\")"), "{}", kt);
+        assert!(kt.contains("filterNot { anime ->"), "{}", kt);
+    }
 }

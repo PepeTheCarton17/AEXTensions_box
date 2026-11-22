@@ -22,6 +22,9 @@ pub(crate) struct I18nData {
     pub(crate) filter_audio_entries: &'static [&'static str],
     pub(crate) filter_genre_title: &'static str,
     pub(crate) filter_genre_blacklist_title: &'static str,
+    /// Etiqueta del input del panel de filtros que excluye (invierte) términos
+    /// separados por comas/punto y coma en vez de buscarlos en el sitio.
+    pub(crate) filter_blacklist_input_title: &'static str,
     pub(crate) genres: &'static [(&'static str, &'static str)],
 }
 
@@ -51,6 +54,7 @@ pub(crate) fn get_i18n(lang: &str) -> I18nData {
             filter_audio_entries: &["Todos", "Subtitulado (SUB)", "Doblado (DUB)"],
             filter_genre_title: "Género (#)",
             filter_genre_blacklist_title: "Lista Negra de Géneros (# - Excluir)",
+            filter_blacklist_input_title: "Lista Negra - excluir (separar con , o ;)",
             genres: &[
                 ("Acción", "accion"),
                 ("Aventura", "aventura"),
@@ -92,6 +96,7 @@ pub(crate) fn get_i18n(lang: &str) -> I18nData {
             filter_audio_entries: &["All", "Subtitled (SUB)", "Dubbed (DUB)"],
             filter_genre_title: "Genre (#)",
             filter_genre_blacklist_title: "Genre Blacklist (# - Exclude)",
+            filter_blacklist_input_title: "Blacklist - exclude (separate with , or ;)",
             genres: &[
                 ("Action", "action"),
                 ("Adventure", "adventure"),
@@ -132,6 +137,7 @@ pub(crate) fn get_i18n(lang: &str) -> I18nData {
             filter_audio_entries: &["Todos", "Legendado (LEG)", "Dublado (DUB)"],
             filter_genre_title: "Gênero (#)",
             filter_genre_blacklist_title: "Lista Negra de Gêneros (# - Excluir)",
+            filter_blacklist_input_title: "Lista Negra - excluir (separar com , ou ;)",
             genres: &[
                 ("Ação", "acao"),
                 ("Aventura", "aventura"),
@@ -174,6 +180,7 @@ pub(crate) fn get_i18n(lang: &str) -> I18nData {
             filter_audio_entries: &["All", "Subtitled (SUB)", "Dubbed (DUB)"],
             filter_genre_title: "Genre (#)",
             filter_genre_blacklist_title: "Genre Blacklist (# - Exclude)",
+            filter_blacklist_input_title: "Blacklist - exclude (separate with , or ;)",
             genres: &[
                 ("Action", "action"),
                 ("Adventure", "adventure"),

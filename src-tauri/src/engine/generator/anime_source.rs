@@ -7,7 +7,8 @@ use super::api_helpers::{
 use super::i18n::get_i18n;
 use super::naming::kt_path_literal;
 use super::templates::anime_blocks::{
-    exclusion_capture_kt_fmt, filter_block_kt_fmt, search_audio_block_kt_fmt,
+    blacklist_capture_kt_fmt, exclusion_capture_kt_fmt, filter_block_kt_fmt,
+    search_audio_block_kt_fmt,
 };
 use super::templates::anime_source::anime_source_kt_fmt;
 use super::templates::video_engine::VIDEO_ENGINE_KT;
@@ -108,6 +109,9 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
     } else {
         format!(concat!(exclusion_capture_kt_fmt!()), class_name = class_name)
     };
+    // El input de lista negra está siempre en el panel (el ajuste también está
+    // siempre en preferencias), así que su captura se genera sin condición.
+    let blacklist_capture = format!(concat!(blacklist_capture_kt_fmt!()), class_name = class_name);
     let filter_block = if has_site_filters {
         format!(concat!(filter_block_kt_fmt!()), class_name = class_name)
     } else {
@@ -178,6 +182,7 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
         ld_records_block = ld_records_block,
         filter_block = filter_block,
         exclusion_capture = exclusion_capture,
+        blacklist_capture = blacklist_capture,
         search_audio_block = search_audio_block,
         audio_pref_block = audio_pref_block,
         pref_api_title = pref_api_title,

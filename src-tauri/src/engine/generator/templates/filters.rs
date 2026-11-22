@@ -9,9 +9,15 @@ import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 object {class_name}Filters {{
     class Header(name: String) : AnimeFilter.Header(name)
 
-{param_classes}{audio_filter_class}    fun getFilterList(): AnimeFilterList = AnimeFilterList(
+    // La lista negra del panel invierte el término: no lo busca, lo excluye.
+    // Se inicializa con el valor del ajuste para que ambos sean un mismo espejo.
+    class BlacklistInputFilter(name: String, initial: String) : AnimeFilter.Text(name) {{
+        init {{ state = initial }}
+    }}
+
+{param_classes}{audio_filter_class}    fun getFilterList(initialBlacklist: String = ""): AnimeFilterList = AnimeFilterList(
         Header("{filter_header}"),
-{param_items}{exclude_items}{audio_filter_item}    )
+{blacklist_filter_item}{param_items}{exclude_items}{audio_filter_item}    )
 }}
 "# };
 }

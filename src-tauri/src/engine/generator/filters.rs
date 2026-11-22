@@ -180,6 +180,14 @@ pub(crate) fn generate_kotlin_filters(
             format!("        Header(\"{}\"),\n{}", kt(i18n.filter_genre_blacklist_title), items),
         )
     };
+    // Input genérico de lista negra: siempre disponible porque el ajuste de
+    // lista negra también está siempre en preferencias. No añade query params;
+    // sus términos se guardan en `genre_blacklist_text` y se INVIERTEN para
+    // ocultar animes en popular/latest/search desde `filterBlacklistedAnimes`.
+    let blacklist_filter_item = format!(
+        "        BlacklistInputFilter(\"{}\", initialBlacklist),\n",
+        kt(i18n.filter_blacklist_input_title)
+    );
     // Se usan las mismas clases que las extensiones de la comunidad
     // (QueryPartFilter, CheckBoxFilterList/CheckBoxVal, TextFilter, SortFilter):
     // nombres y formas estándar en lugar de ParamSelectFilter/ParamCheckFilter.
@@ -282,6 +290,7 @@ pub(crate) fn generate_kotlin_filters(
     format!(
         concat!(kotlin_filters_kt_fmt!()),
         filter_header = kt(filter_header),
+        blacklist_filter_item = blacklist_filter_item,
         param_classes = param_classes,
         audio_filter_class = audio_filter_class,
         param_items = param_items,

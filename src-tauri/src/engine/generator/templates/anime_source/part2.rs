@@ -72,7 +72,7 @@ macro_rules! anime_source_kt_part2 {
     // ============================== SEARCH ANIME ==============================
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {{
         val cleanQuery = query.trim()
-{exclusion_capture}{search_audio_block}
+{exclusion_capture}{blacklist_capture}{search_audio_block}
         val url = if (finalQuery.isNotBlank()) {{
             searchUrl(finalQuery, page)
         }} else {{
@@ -99,8 +99,10 @@ macro_rules! anime_source_kt_part2 {
 
     private fun filterBlacklistedAnimes(page: AnimesPage): AnimesPage {{
         val rawBlacklist = preferences.getString("genre_blacklist_text", "") ?: ""
+        // El input del panel y el ajuste comparten clave: ambos admiten
+        // términos separados por coma, punto y coma o barra vertical.
         val blacklistWords = rawBlacklist
-            .split(",")
+            .split(",", ";", "|")
             .map {{ it.trim().lowercase() }}
             .filter {{ it.isNotEmpty() }}
         // Valores elegidos en el filtro de exclusión: ids/nombres reales de las
@@ -127,7 +129,8 @@ macro_rules! anime_source_kt_part2 {
         return AnimesPage(filtered, page.hasNextPage)
     }}
 
-    override fun getFilterList(): AnimeFilterList = {class_name}Filters.getFilterList()
+    override fun getFilterList(): AnimeFilterList =
+        {class_name}Filters.getFilterList(preferences.getString("genre_blacklist_text", "") ?: "")
 "# };
 }
 pub(crate) use anime_source_kt_part2;

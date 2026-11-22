@@ -10,6 +10,20 @@ macro_rules! exclusion_capture_kt_fmt {
 pub(crate) use exclusion_capture_kt_fmt;
 pub const EXCLUSION_CAPTURE_KT: &str = exclusion_capture_kt_fmt!();
 
+/// Bloque Kotlin que guarda el término escrito en el input de lista negra del
+/// panel de filtros en la MISMA preferencia que el ajuste de lista negra. Así
+/// la exclusión afecta también a popular/latest, que no reciben el
+/// AnimeFilterList. El input se inicializa con el ajuste, así que escribirlo de
+/// nuevo lo mantiene sincronizado y permite borrarlo vaciando el input.
+macro_rules! blacklist_capture_kt_fmt {
+    () => { r#"        val blacklistInput = filters.filterIsInstance<{class_name}Filters.BlacklistInputFilter>()
+            .firstOrNull()?.state.orEmpty()
+        preferences.edit().putString("genre_blacklist_text", blacklistInput).apply()
+"# };
+}
+pub(crate) use blacklist_capture_kt_fmt;
+pub const BLACKLIST_CAPTURE_KT: &str = blacklist_capture_kt_fmt!();
+
 /// Bloque Kotlin que aplica los filtros detectados a la URL.
 macro_rules! filter_block_kt_fmt {
     () => { r#"        // Un filtro de ruta sustituye el path del catálogo; los query params
