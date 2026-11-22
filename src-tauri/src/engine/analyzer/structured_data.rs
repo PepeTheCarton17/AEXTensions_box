@@ -55,7 +55,7 @@ impl SiteAnalyzer {
             r"(?:[?&;])(?:[A-Za-z_][\w.-]*\.)?(?:lang|language|locale|hl|ui|mui|l)[=:]([A-Za-z]{2,3}(?:[-_][A-Za-z]{2,4})?)"
         ) else { return };
         let Ok(path) = Regex::new(
-            r"/(?:lang|locale|language)/([A-Za-z]{2,3}(?:[-_][A-Za-z]{2,4})?)(?:[/\"'?#]|$)"
+            r#"/(?:lang|locale|language)/([A-Za-z]{2,3}(?:[-_][A-Za-z]{2,4})?)(?:[/"'?#]|$)"#
         ) else { return };
         let Ok(sel) = Selector::parse("[href], [data-url], [hreflang], [data-lang]") else { return };
 
