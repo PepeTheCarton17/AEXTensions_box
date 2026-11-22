@@ -73,6 +73,12 @@ impl ExtensionGenerator {
             .filter(|s| !s.is_empty())
             .map(str::to_lowercase)
             .unwrap_or_else(|| {
+                // Un sitio que declara varios idiomas no pertenece a una sola
+                // extensión: se publica como "all". Sólo se fija un idioma
+                // cuando el propio sitio declara uno inequívocamente.
+                if analysis.site_locales.len() > 1 {
+                    return "all".to_string();
+                }
                 let detected = analysis.detected_language.trim().to_lowercase();
                 if !detected.is_empty() {
                     detected

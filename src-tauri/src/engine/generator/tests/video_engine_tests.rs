@@ -383,29 +383,28 @@ mod video_engine_tests {
     }
 
     #[test]
-    fn analysis_decides_package_language_and_selection_only_translates_texts() {
+    fn multilingual_sites_use_all_and_selection_only_translates_texts() {
         use crate::engine::generator::ExtensionGenerator;
         let mut fixture = generic_fixture();
         fixture.detected_language = "uz".to_string();
         fixture.site_locales = vec!["uz".to_string(), "ru".to_string(), "en".to_string()];
 
-        // La elección de la UI traduce filtros y preferencias, pero NO cambia
-        // la identidad del paquete: esa la decide el análisis del sitio.
+        // Varios idiomas declarados: la extensión no pertenece a uno solo.
+        // La elección de la UI traduce textos, pero no cambia la identidad.
         let bundle = ExtensionGenerator::generate(&fixture, None, Some("es"), Some("anime"));
-        assert_eq!(bundle.lang, "uz");
-        assert!(bundle.pkg_id.contains(".uz."));
+        assert_eq!(bundle.lang, "all");
+        assert!(bundle.pkg_id.contains(".all."));
 
-        // El idioma declarado dentro del Kotlin debe coincidir con el paquete,
-        // aunque el usuario eligiera español para los textos visibles. De lo
-        // contrario Nekoyomi instala la extensión en "en" y la mueve a "es".
         let source = bundle
             .files
             .iter()
             .find(|(path, _)| path.ends_with("/Demo.kt"))
             .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
             .expect("falta la fuente Kotlin generada");
-        assert!(source.contains("override val lang = \"uz\""), "{source}");
+        assert!(source.contains("override val lang = \"all\""), "{source}");
         assert!(!source.contains("override val lang = \"es\""), "{source}");
+        // El idioma principal sigue sirviendo para elegir títulos, aunque el
+        // paquete sea multilenguaje.
         assert!(source.contains("data-title-uz"), "{source}");
 
         let filters = bundle
@@ -417,17 +416,38 @@ mod video_engine_tests {
         assert!(filters.contains("La búsqueda por texto ignora el filtro"), "{filters}");
 
         let es = generate_kotlin_filters(
-            "Demo", "demo", "es", "uz", "eu.kanade.tachiyomi.animeextension", &fixture,
+            "Demo", "demo", "es", "all", "eu.kanade.tachiyomi.animeextension", &fixture,
         );
         assert!(es.contains("La búsqueda por texto ignora el filtro"));
         let fallback = generate_kotlin_filters(
-            "Demo", "demo", "all", "uz", "eu.kanade.tachiyomi.animeextension", &fixture,
+            "Demo", "demo", "all", "all", "eu.kanade.tachiyomi.animeextension", &fixture,
         );
         assert!(fallback.contains("Text search ignores the filter"));
 
         let bundle = ExtensionGenerator::generate(&fixture, None, None, Some("anime"));
+        assert_eq!(bundle.lang, "all");
+        assert!(bundle.pkg_id.contains(".all."));
+    }
+
+    #[test]
+    fn single_language_site_keeps_its_detected_language() {
+        use crate::engine::generator::ExtensionGenerator;
+        let mut fixture = generic_fixture();
+        fixture.detected_language = "uz".to_string();
+        fixture.site_locales = vec!["uz".to_string()];
+
+        let bundle = ExtensionGenerator::generate(&fixture, None, Some("es"), Some("anime"));
         assert_eq!(bundle.lang, "uz");
         assert!(bundle.pkg_id.contains(".uz."));
+
+        let source = bundle
+            .files
+            .iter()
+            .find(|(path, _)| path.ends_with("/Demo.kt"))
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .expect("falta la fuente Kotlin generada");
+        assert!(source.contains("override val lang = \"uz\""), "{source}");
+        assert!(!source.contains("override val lang = \"es\""), "{source}");
     }
 
     #[test]
