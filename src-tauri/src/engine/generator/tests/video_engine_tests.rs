@@ -255,7 +255,8 @@ mod video_engine_tests {
             "is DemoFilters.QueryPartFilter",
             "else -> Unit",
             "pickTitle(element, \"h2\")",
-            "data-title-es",
+            // El atributo de título sigue al idioma declarado por la página,
+            // no a la identidad del paquete (aquí se fuerzan a distintos).
             "data-title-en",
             "private val pageLanguage = \"en\"",
         ] {

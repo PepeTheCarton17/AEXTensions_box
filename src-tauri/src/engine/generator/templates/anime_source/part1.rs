@@ -89,7 +89,7 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         val attrs = if (lang == "en") {{
             listOf("data-title-en", "title")
         }} else {{
-            listOf("data-title-{pkg_lang}", "data-title-en", "title")
+            listOf("data-title-{detected_language}", "data-title-en", "title")
         }}
         if (pageLanguage == lang && text.isNotBlank()) return text
         for (name in attrs) {{
