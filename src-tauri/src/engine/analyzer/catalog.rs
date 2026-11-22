@@ -26,8 +26,8 @@ impl SiteAnalyzer {
     }
 
     /// Deduce un selector de episodios a partir de una ficha. Se agrupa por el
-    /// segmento de ruta que delata un episodio; `watch` se queda fuera a
-    /// propósito porque en Pluto TV es el menú de TV en directo.
+    /// segmento de ruta que delata un episodio; `watch` se queda fuera porque
+    /// suele ser un menú, no una lista de episodios.
     pub(crate) fn detect_episode_selector(body: &str) -> Option<(String, usize)> {
         let doc = Html::parse_document(body);
         let sel = Selector::parse("a[href]").ok()?;
@@ -56,9 +56,9 @@ impl SiteAnalyzer {
         Some((format!("a[href*='{}']", hint), count))
     }
 
-    /// Coincidencia por token de clase, no por substring. `stickyFooterLayout`
-    /// es el contenedor principal de Pluto TV: buscar `footer` dentro del texto
-    /// hacía que TODAS sus tarjetas se descartaran como navegación.
+    /// Coincidencia por token de clase, no por substring. Un contenedor como
+    /// `stickyFooterLayout` incluye `footer` en el texto: buscar por substring
+    /// descartaría todas sus tarjetas como navegación.
     fn matches_nav_class_token(hay: &str, tokens: &[&str]) -> bool {
         hay.split(|c: char| !c.is_alphanumeric())
             .any(|token| !token.is_empty() && tokens.iter().any(|t| token.eq_ignore_ascii_case(t)))

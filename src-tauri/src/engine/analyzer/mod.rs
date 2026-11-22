@@ -142,8 +142,8 @@ impl SiteAnalyzer {
             if !probe.html.is_empty() {
                 let detail_caps = Self::detect_capabilities(&probe.html);
                 Self::merge_capabilities(&mut result.capabilities, &detail_caps);
-                if let Some(hint) = Self::content_id_from_hint(&probe.html) {
-                    sample_hints.push(hint.1);
+                if let Some(url) = Self::direct_master_url(&probe.html) {
+                    sample_hints.push(url);
                 }
             }
             if !probe.fetched {
@@ -218,7 +218,12 @@ impl SiteAnalyzer {
         }
         if result.capabilities.player_cases.iter().any(|c| c == "cipher-signature") {
             result.warnings.push(
-                "Se detectó cifrado/ofuscación de URLs de reproducción (firmas tipo Innertube / n-parameter). AEXT no resuelve esos esquemas: solo usa HLS/MP4/iframe detectados directamente; este sitio puede no reproducir.".to_string(),
+                "Se detectó cifrado/ofuscación de URLs de reproducción (firmas de cliente / n-parameter). AEXT no genera ese esquema por sí solo: hace falta un motor instalable que lo implemente.".to_string(),
+            );
+        }
+        if result.catalog_source == "none" || !result.catalog_detected {
+            result.warnings.push(
+                "Sin catálogo HTML verificado: AEXT no inventa rutas ni tarjetas. El sitio necesita un motor que devuelva contenido real; la extensión generada no se considera funcional hasta que un motor produzca resultados.".to_string(),
             );
         }
         if result.capabilities.player_cases.iter().any(|c| c == "extension-proxy") {
@@ -240,7 +245,7 @@ impl SiteAnalyzer {
 
         // El `baseUrl` generado debe ser SIEMPRE el origen. Usar una ruta de la
         // portada (o inventar `/animes`, `/recientes`) provoca redirecciones a
-        // páginas que no son catálogo, como ocurre con pluto.tv.
+        // páginas que no son catálogo, como una SPA sin tarjetas.
         let origin = parsed.origin().ascii_serialization();
         if origin == "null" || origin.is_empty() {
             return Err(format!("No se pudo determinar el origen de {}", url));

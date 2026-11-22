@@ -110,7 +110,7 @@ impl SiteAnalyzer {
             push_unique(&mut cases, "extension-proxy".to_string());
         }
         if lower.contains("_ad/") || lower.contains("_ad%2f")
-            || lower.contains("plutotv_filler") || lower.contains("dai.google.com")
+            || lower.contains("dai.google.com")
         {
             push_unique(&mut cases, "ads-hls".to_string());
         }
@@ -192,10 +192,9 @@ impl SiteAnalyzer {
         }
 
         // Los estados hidratados (Next.js/React Query) guardan la región real
-        // resuelta por IP. Pluto la expone como
-        // `"region":{"locale":"es-419","region":"MX"}`, a veces con comillas
-        // escapadas dentro de un bloque RSC. Normalizamos esas comillas antes
-        // de leerla para no depender del formato de serialización.
+        // resuelta por IP, a veces con comillas escapadas dentro de un bloque
+        // RSC. Normalizamos esas comillas antes de leerla para no depender del
+        // formato de serialización.
         let flat = body.replace("\\\"", "\"");
         if let Ok(re) = Regex::new(
             r#""region"\s*:\s*\{[^}]*?"locale"\s*:\s*"([^"]+)"[^}]*?"region"\s*:\s*"([^"]+)""#,

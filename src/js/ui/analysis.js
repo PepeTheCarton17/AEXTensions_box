@@ -126,6 +126,12 @@ function renderAnalysisCard(site) {
     <div class="space-y-1 pt-2 border-t border-surface-800">
       <span class="text-slate-500 block text-[10px]">${escapeHtml(t('analysis.catalog_source'))}</span>
       <div><span class="px-1.5 py-0.5 rounded text-[10px] ${catalogSourceClass}">${escapeHtml(t(catalogSourceLabel))}</span></div>
+      ${
+        site.catalog_source === 'none' || !site.catalog_detected
+          ? `<div><span class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/20">${escapeHtml(t('analysis.engines_pending'))}</span></div>
+             <div><span class="text-[10px] text-amber-200/80">${escapeHtml(t('analysis.engines_note'))}</span></div>`
+          : ''
+      }
       <div><span class="text-[10px] text-slate-400">${escapeHtml(t('analysis.page_language'))}:</span> ${
         site.detected_language
           ? escapeHtml(site.detected_language)

@@ -87,7 +87,7 @@
 </body></html>"#,
         );
 
-        let catalog = analyzer.detect_catalog(&doc, "https://pluto.tv", "pluto.tv");
+        let catalog = analyzer.detect_catalog(&doc, "https://catalog.example", "catalog.example");
         assert_eq!(catalog.count, 6);
         assert_eq!(catalog.card_selector, "a.TileLink_tileLink__pIMWG");
         assert_eq!(catalog.title_selector, "img");
@@ -118,8 +118,8 @@
     }
 
     #[test]
-    fn sticky_footer_layout_does_not_hide_pluto_cards() {
-        // Clases reales de pluto.tv: el contenedor principal se llama
+    fn sticky_footer_layout_does_not_hide_cards() {
+        // Un contenedor principal puede llamarse
         // `stickyFooterLayout`. Buscar `footer` como substring descartaba todo.
         let analyzer = SiteAnalyzer::new();
         let doc = Html::parse_document(
@@ -139,7 +139,7 @@
 </body></html>"#,
         );
 
-        let catalog = analyzer.detect_catalog(&doc, "https://pluto.tv", "pluto.tv");
+        let catalog = analyzer.detect_catalog(&doc, "https://catalog.example", "catalog.example");
         assert_eq!(catalog.count, 6, "las tarjetas bajo stickyFooter deben contarse");
         assert_eq!(catalog.card_selector, "a.TileLink_tileLink__pIMWG");
         assert!(catalog.samples.contains(&"One".to_string()));
@@ -232,17 +232,17 @@
     }
 
     #[test]
-    fn content_id_and_playback_methods_are_concrete() {
-        let (kind, id) = SiteAnalyzer::content_id_from_hint("/latam/movies/693ace640c94b06078d2a33f/")
-            .expect("contentId de ejemplo");
-        assert_eq!(kind, "movie");
-        assert_eq!(id, "693ace640c94b06078d2a33f");
+    fn direct_master_urls_and_playback_methods_are_concrete() {
+        let url = SiteAnalyzer::direct_master_url(
+            r#"{"stream":"https://cdn.example.com/hls/master.m3u8?token=abc"}"#,
+        ).expect("máster HLS citado por el sitio");
+        assert_eq!(url, "https://cdn.example.com/hls/master.m3u8?token=abc");
+        assert!(SiteAnalyzer::direct_master_url("/shows/693ace640c94b06078d2a33f/").is_none());
         let caps = SiteCapabilities {
-            player_cases: vec!["session-bootstrap".to_string(), "hls-master".to_string()],
+            player_cases: vec!["hls-master".to_string()],
             ..Default::default()
         };
-        let methods = SiteAnalyzer::playback_methods(&caps);
-        assert_eq!(methods, vec!["Sesión web".to_string(), "HLS".to_string()]);
+        assert_eq!(SiteAnalyzer::playback_methods(&caps), vec!["HLS".to_string()]);
         assert_eq!(SiteAnalyzer::playback_methods(&SiteCapabilities::default()), vec!["Sin método confirmado".to_string()]);
     }
 
@@ -269,8 +269,8 @@
         let html = r#"<html><head>
           <meta name="globalAppVersion" content="10.12.1096">
         </head><body><script>
-          const boot = "https://boot.pluto.tv/v4/start";
-          const stitcher = "https://cfd-v4-service-channel-stitcher.prd.pluto.tv/v2/stitch/hls/x/master.m3u8";
+          const boot = "https://player.example.com/v4/start";
+          const stitcher = "https://cdn.example.com/v2/stitch/hls/x/master.m3u8";
         </script></body></html>"#;
 
         let caps = SiteAnalyzer::detect_capabilities(html);
@@ -287,7 +287,7 @@
           const ext = {"tnPersistedDocumentHash":"abc"};
           fetch("https://site.example/api/tn/app-shell/graphql/");
           const license = "com.widevine.alpha";
-          const filler = "plutotv_filler";
+          const filler = "ad_filler";
           const mpd = "https://cdn.example.com/stream.mpd";
         </script></body></html>"#;
 
@@ -636,7 +636,7 @@ render(nf,{href:"/catalog?genreIds=1"});"#;
     #[test]
     fn api_probes_stay_on_the_sites_host_family() {
         assert!(SiteAnalyzer::host_related_to("https://api.frame.uz/user/api/v1/genres", "frame.uz"));
-        assert!(SiteAnalyzer::host_related_to("https://pluto.tv/api/list", "www.pluto.tv"));
+        assert!(SiteAnalyzer::host_related_to("https://api.catalog.example/list", "www.catalog.example"));
         assert!(!SiteAnalyzer::host_related_to("https://third-party.example/genres", "frame.uz"));
     }
 

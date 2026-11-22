@@ -1,8 +1,8 @@
 pub(crate) const LOCAL_API_BASE: &str = "http://localhost:45731";
 
 // Mensajes de commit genéricos: nunca incluir el package ni el nombre de la
-// extensión (p. ej. eu.kanade.tachiyomi.animeextension.es.pluto3). El historial
-// del repo destino debe hablar de AEXT, no del contenido generado.
+// extensión. El historial del repo destino debe hablar de AEXT, no del
+// contenido generado.
 pub(crate) const COMMIT_MSG_GENERATE: &str = "AEXT: add generated extension";
 pub(crate) const COMMIT_MSG_UPDATE: &str = "AEXT: update generated extension";
 pub(crate) const COMMIT_MSG_DELETE: &str = "AEXT: remove generated extension";
@@ -23,8 +23,8 @@ mod tests {
                 msg
             );
             assert!(
-                !lower.contains("pluto"),
-                "el mensaje incluye un nombre de extensión: {}",
+                !lower.contains("animeextension"),
+                "el mensaje incluye un package de extensión: {}",
                 msg
             );
             assert!(

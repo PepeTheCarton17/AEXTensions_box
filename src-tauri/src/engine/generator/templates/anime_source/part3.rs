@@ -26,8 +26,8 @@ macro_rules! anime_source_kt_part3 {
         val link = if (element.tagName() == "a") element else element.selectFirst("a")
         setUrlWithoutDomain(link?.attr("href") ?: "")
         // Nombre: un título explícito o los dos primeros textos cortos. En
-        // tarjetas como las de Pluto TV el primero es "T1 E1" y el segundo el
-        // título del episodio; así no se cuela la sinopsis completa.
+        // tarjetas con números de temporada el primero es "T1 E1" y el segundo
+        // el título del episodio; así no se cuela la sinopsis completa.
         val explicitTitle = element.selectFirst(".title, [class*=episodeTitle], h3, h4")
             ?.text()?.trim()?.takeIf {{ it.isNotEmpty() }}
         val shortTexts = element.select("span")
@@ -52,26 +52,12 @@ macro_rules! anime_source_kt_part3 {
     // Capacidades detectadas por AEXT en el análisis del sitio. No sustituyen
     // a la verificación real: sólo ordenan los candidatos a probar.
     private val siteStreamFormats = setOf<String>({site_cap_formats})
-    private val siteAppVersion = "{site_app_version}"
-    private val sitePlayerCases = setOf<String>({site_player_cases})
-    private val siteRegion = "{site_region}"
-    private val siteLocale = "{site_locale}"
 
 {video_engine}
 
     // ============================== PREFERENCES ==============================
     override fun setupPreferenceScreen(screen: PreferenceScreen) {{
-{audio_pref_block}        val apiPref = ListPreference(screen.context).apply {{
-            key = "api_mode"
-            title = "{pref_api_title}"
-            entries = arrayOf({pref_api_entries})
-            entryValues = arrayOf("auto", "session", "graphql", "html")
-            setDefaultValue("auto")
-            summary = "%s"
-        }}
-        screen.addPreference(apiPref)
-
-        val methodsPref = ListPreference(screen.context).apply {{
+{audio_pref_block}        val methodsPref = ListPreference(screen.context).apply {{
             key = "aext_methods_found"
             title = "{methods_title}"
             entries = arrayOf({methods_entries})

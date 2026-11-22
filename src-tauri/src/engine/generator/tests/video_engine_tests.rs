@@ -3,16 +3,16 @@ mod video_engine_tests {
     use crate::engine::generator::{generate_kotlin_filters, generate_kotlin_source, VIDEO_ENGINE_KT};
     use crate::engine::analyzer::{AnalysisResult, ApiOption, CatalogRecord, SiteCapabilities, SiteFilterParam, SitePathFilter, SiteSearchAction};
 
-    fn pluto_fixture() -> AnalysisResult {
+    fn generic_fixture() -> AnalysisResult {
         AnalysisResult {
-            url: "https://pluto.tv".to_string(),
-            entry_url: "https://pluto.tv/latam/movies/693ace640c94b06078d2a33f/".to_string(),
-            name: "Pluto TV".to_string(),
+            url: "https://catalog.example".to_string(),
+            entry_url: "https://catalog.example/show/one".to_string(),
+            name: "Demo".to_string(),
             lang: "es".to_string(),
             ext_type: "anime".to_string(),
             cms: "generic".to_string(),
             favicon_url: None,
-            detected_hosts: vec!["pluto.tv".to_string()],
+            detected_hosts: vec!["catalog.example".to_string()],
             has_sub_dub: false,
             protections: Vec::new(),
             card_selector: "article".to_string(),
@@ -28,10 +28,7 @@ mod video_engine_tests {
             sample_items: Vec::new(),
             warnings: Vec::new(),
             capabilities: SiteCapabilities {
-                app_version: Some("10.12.1096".to_string()),
-                region: Some("MX".to_string()),
-                locale: Some("es-419".to_string()),
-                player_cases: vec!["session-bootstrap".to_string()],
+                player_cases: vec!["hls-master".to_string()],
                 ..Default::default()
             },
             ..Default::default()
@@ -39,31 +36,27 @@ mod video_engine_tests {
     }
 
     #[test]
-    fn ptv_start_is_resilient_to_bot_block_and_missing_cookie() {
-        // El UA de okhttp provoca BOT_SESSION_BLOCKED y algunos CDN omiten
-        // x-external-set-cookie; el generador debe contemplar ambos casos.
+    fn video_engine_has_no_vendor_specific_api_or_host() {
+        // El motor común no debe contener URLs, hashes ni nombres de un
+        // proveedor concreto. Los motores especializados se instalan aparte.
         for marker in [
-            "plutoBrowserUa",
+            "pluto",
+            "boot.pluto.tv",
+            "PtvStart",
+            "CBS_COM",
             "BOT_SESSION_BLOCKED",
-            "plutoCbsCookie",
-            "resp.headers(\"Set-Cookie\")",
-            "plutoCbsFromHome",
-            "plutoPtvStart()",
-            "cacheBust",
-            "plutoFreshClient",
+            "tnPersistedDocumentHash",
+            "stitcherParams",
+            "api-session",
+            "api-graphql",
             "CookieJar.NO_COOKIES",
-            "resp.request.header(\"Cookie\")",
-            "sin CBS_COM tras reintento",
-            "masterVideoUrl = \"$masterUrl?jwt=${Uri.encode(jwt)}\"",
         ] {
             assert!(
-                VIDEO_ENGINE_KT.contains(marker),
-                "falta el marcador de resiliencia en VIDEO_ENGINE_KT: {}",
+                !VIDEO_ENGINE_KT.to_lowercase().contains(marker.to_lowercase().as_str()),
+                "el motor común no debe incluir código específico de un proveedor: {}",
                 marker
             );
         }
-        assert!(VIDEO_ENGINE_KT.contains("val (jwt, cbsCookie) = plutoPtvStart()"),
-            "la estrategia GraphQL debe usar el helper resistente, no una llamada directa");
     }
 
     #[test]
@@ -100,36 +93,13 @@ mod video_engine_tests {
             "private fun strategyStats(",
             "private fun recordStrategy(",
             "private fun orderedStrategies()",
-            "VideoStrategy(\"api-session\", strategyPriority(\"api-session\"))",
-            "VideoStrategy(\"api-graphql\", strategyPriority(\"api-graphql\"))",
             "VideoStrategy(\"html-embeds\", strategyPriority(\"html-embeds\"))",
             "(ok + 1.0) / (ok + fail + 2.0)",
             "thenBy { it.priority }",
-            "sitePlayerCases.contains(\"session-bootstrap\")",
-            "sitePlayerCases.contains(\"graphql-persisted\")",
-            "sitePlayerCases.contains(\"iframe-player\")",
         ] {
             assert!(
                 VIDEO_ENGINE_KT.contains(marker),
                 "falta el pipeline de estrategias en VIDEO_ENGINE_KT: {}",
-                marker
-            );
-        }
-    }
-
-    #[test]
-    fn api_mode_really_limits_the_resolvers() {
-        for marker in [
-            "private fun apiMode(): String",
-            "private fun apiModeLabel(mode: String): String",
-            "\"session\" -> all.filter { it.id == \"api-session\" }",
-            "\"graphql\" -> all.filter { it.id == \"api-graphql\" }",
-            "\"html\" -> all.filter { it.id == \"html-embeds\" }",
-            "los ajustes de la extensión",
-        ] {
-            assert!(
-                VIDEO_ENGINE_KT.contains(marker),
-                "la preferencia de API debe cambiar la ruta real, no sólo ordenar: {}",
                 marker
             );
         }
@@ -143,14 +113,10 @@ mod video_engine_tests {
             "audioLangs = (first.audioLangs + child.audioLangs).distinct()",
             "if (idx <= 0) return \"\"",
             "if (audio.isBlank()) \"\" else \"[$audio] \"",
-            "episodes?|movies?",
-            "ctx.html.replace(\"\\\\\\\"\", \"\\\"\")",
-            "siteRegion.takeIf { it.isNotBlank() }",
-            "siteLocale.takeIf { it.isNotBlank() }",
         ] {
             assert!(
                 VIDEO_ENGINE_KT.contains(marker),
-                "falta detección honesta de idiomas/región/contentId: {}",
+                "falta detección honesta de idiomas: {}",
                 marker
             );
         }
@@ -189,61 +155,42 @@ mod video_engine_tests {
     }
 
     #[test]
-    fn generated_extension_exposes_api_mode_and_detected_region() {
+    fn generated_extension_has_no_vendor_api_preferences() {
         let kt = generate_kotlin_source(
-            &pluto_fixture(), "Pluto TV", "PlutoTv", "pluto", "es", "es",
+            &generic_fixture(), "Demo", "Demo", "demo", "es", "es",
             "eu.kanade.tachiyomi.animeextension",
         );
         for marker in [
             "key = \"api_mode\"",
-            "entryValues = arrayOf(\"auto\", \"session\", \"graphql\", \"html\")",
-            "private val siteRegion = \"MX\"",
-            "private val siteLocale = \"es-419\"",
-            "private val siteAppVersion = \"10.12.1096\"",
-            "title = \"API preferida\"",
-            "Métodos disponibles encontrados de reproducción",
-            "summary = \"Sesión web",
+            "siteAppVersion",
+            "siteRegion",
+            "siteLocale",
+            "sitePlayerCases",
+            "Sesión web",
+            "GraphQL",
         ] {
             assert!(
-                kt.contains(marker),
-                "el Kotlin generado debe exponer el modo API y la región detectada: {}",
+                !kt.contains(marker),
+                "el Kotlin generado no debe incluir una API de proveedor: {}",
                 marker
             );
         }
-    }
-
-    #[test]
-    fn session_strategy_builds_the_full_stitcher_master() {
-        for marker in [
-            "private data class PlutoSession",
-            "https://boot.pluto.tv/v4/start",
-            "addQueryParameter(\"appVersion\", siteAppVersion)",
-            "plutoJsonField(body, \"sessionToken\")",
-            "plutoJsonField(body, \"stitcherParams\")",
-            "includeExtendedEvents=true&masterJWTPassthrough=true",
-            "Video(ctx.url, label, master, browserHeaders)",
-            "private fun plutoSessionRegion(token: String): String?",
-            "private fun apiSessionVideos(ctx: VideoContext): List<Video>?",
-            "private fun plutoGraphqlVideos(ctx: VideoContext): List<Video>?",
-            "Jsoup.parse(html, ctx.url)",
-        ] {
-            assert!(
-                VIDEO_ENGINE_KT.contains(marker),
-                "falta la estrategia de sesión en VIDEO_ENGINE_KT: {}",
-                marker
-            );
-        }
+        assert!(
+            kt.contains("Métodos disponibles encontrados de reproducción"),
+            "debe conservarse el aviso genérico de métodos detectados"
+        );
+        assert!(kt.contains("Jsoup.parse(html, ctx.url)"));
     }
 
     #[test]
     fn sub_dub_ui_is_only_generated_when_a_real_master_verifies_tracks() {
-        let unverified = pluto_fixture();
+        let unverified = generic_fixture();
         let kt = generate_kotlin_source(
-            &unverified, "Pluto TV", "PlutoTv", "pluto", "es", "es",
+            &unverified, "Demo", "Demo", "demo", "es", "es",
             "eu.kanade.tachiyomi.animeextension",
         );
         let filters = generate_kotlin_filters(
-            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension",
+            "Demo", "demo", "es", "es", "eu.kanade.tachiyomi.animeextension",
             &unverified,
         );
         assert!(!kt.contains("key = \"preferred_audio\""), "sin verificación no se ofrece SUB/DUB");
@@ -251,15 +198,15 @@ mod video_engine_tests {
         assert!(!filters.contains("AudioFilter"), "sin verificación no se genera AudioFilter");
         assert!(kt.contains("val finalQuery = cleanQuery"), "la búsqueda no debe inventar 'latino'");
 
-        let mut verified = pluto_fixture();
+        let mut verified = generic_fixture();
         verified.capabilities.master_verified = true;
         verified.capabilities.sub_verified = true;
         let kt = generate_kotlin_source(
-            &verified, "Pluto TV", "PlutoTv", "pluto", "es", "es",
+            &verified, "Demo", "Demo", "demo", "es", "es",
             "eu.kanade.tachiyomi.animeextension",
         );
         let filters = generate_kotlin_filters(
-            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension",
+            "Demo", "demo", "es", "es", "eu.kanade.tachiyomi.animeextension",
             &verified,
         );
         assert!(kt.contains("key = \"preferred_audio\""), "con SUB verificado sí se ofrece el selector");
@@ -270,21 +217,21 @@ mod video_engine_tests {
 
     #[test]
     fn detected_filters_search_action_and_jsonld_catalog_reach_generated_kotlin() {
-        let mut fixture = pluto_fixture();
+        let mut fixture = generic_fixture();
         fixture.detected_language = "en".to_string();
         fixture.catalog_source = "jsonld".to_string();
         fixture.search_path = Some("/catalog".to_string());
         fixture.search_param = Some("name".to_string());
         fixture.search_action = Some(SiteSearchAction {
-            url_template: "https://pluto.tv/catalog?name={search_term_string}".to_string(),
+            url_template: "https://catalog.example/catalog?name={search_term_string}".to_string(),
             query_param: Some("name".to_string()),
         });
         fixture.catalog_records = vec![CatalogRecord {
             title: "Título original".to_string(),
             alternate_title: Some("English title".to_string()),
             language: Some("uz".to_string()),
-            url: "https://pluto.tv/cinema/one".to_string(),
-            image: Some("https://pluto.tv/poster.jpg".to_string()),
+            url: "https://catalog.example/cinema/one".to_string(),
+            image: Some("https://catalog.example/poster.jpg".to_string()),
         }];
         fixture.filter_params = vec![
             SiteFilterParam { name: "Género".to_string(), param: "genreIds".to_string(), value: "1".to_string(), kind: "check".to_string() },
@@ -292,11 +239,11 @@ mod video_engine_tests {
         ];
 
         let kt = generate_kotlin_source(
-            &fixture, "Pluto TV", "PlutoTv", "pluto", "es", "es",
+            &fixture, "Demo", "Demo", "demo", "es", "es",
             "eu.kanade.tachiyomi.animeextension",
         );
         let filters = generate_kotlin_filters(
-            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
+            "Demo", "demo", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
         );
 
         for marker in [
@@ -305,7 +252,7 @@ mod video_engine_tests {
             "withJsonLdFallback(page, lastSearchQuery)",
             "lastSearchQuery = finalQuery",
             "val value = f.toQueryPart()",
-            "is PlutoTvFilters.QueryPartFilter",
+            "is DemoFilters.QueryPartFilter",
             "else -> Unit",
             "pickTitle(element, \"h2\")",
             "data-title-es",
@@ -326,7 +273,7 @@ mod video_engine_tests {
 
     #[test]
     fn spanish_extension_translates_filter_labels_values_and_headers() {
-        let mut fixture = pluto_fixture();
+        let mut fixture = generic_fixture();
         fixture.search_path = None;
         fixture.search_param = None;
         fixture.filter_params = vec![
@@ -335,7 +282,7 @@ mod video_engine_tests {
         ];
 
         let filters = generate_kotlin_filters(
-            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
+            "Demo", "demo", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
         );
         for marker in [
             "Header(\"La búsqueda por texto ignora el filtro\")",
@@ -350,7 +297,7 @@ mod video_engine_tests {
 
     #[test]
     fn path_filters_replace_catalog_route_and_keep_pagination() {
-        let mut fixture = pluto_fixture();
+        let mut fixture = generic_fixture();
         fixture.path_filters = vec![SitePathFilter {
             name: "Category (Movies)".to_string(),
             segment: "category".to_string(),
@@ -368,10 +315,10 @@ mod video_engine_tests {
         }];
 
         let filters = generate_kotlin_filters(
-            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
+            "Demo", "demo", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
         );
         let kt = generate_kotlin_source(
-            &fixture, "Pluto TV", "PlutoTv", "pluto", "es", "es",
+            &fixture, "Demo", "Demo", "demo", "es", "es",
             "eu.kanade.tachiyomi.animeextension",
         );
 
@@ -383,11 +330,11 @@ mod video_engine_tests {
             assert!(filters.contains(marker), "falta en los filtros generados: {marker}\n{}", filters);
         }
         for marker in [
-            "val pathOverride = filters.filterIsInstance<PlutoTvFilters.PathFilter>()",
+            "val pathOverride = filters.filterIsInstance<DemoFilters.PathFilter>()",
             "preferences.edit().putString(\"selected_path_filter\", pathOverride).apply()",
             "Uri.parse(baseUrl.trimEnd('/') + pathOverride).buildUpon().apply {",
             "originalUrl.getQueryParameter(name)?.let { appendQueryParameter(name, it) }",
-            "is PlutoTvFilters.PathFilter -> Unit",
+            "is DemoFilters.PathFilter -> Unit",
             "GET(pageUrl(catalogPath(listingPath), page), headers)",
         ] {
             assert!(kt.contains(marker), "falta en el Kotlin generado: {marker}");
@@ -396,7 +343,7 @@ mod video_engine_tests {
 
     #[test]
     fn all_language_uses_english_labels_and_text_filters_for_unknown_values() {
-        let mut fixture = pluto_fixture();
+        let mut fixture = generic_fixture();
         // Este test comprueba el idioma: se declara un endpoint para que se
         // use la cabecera normal y no el aviso de "sin búsqueda".
         fixture.search_path = Some("/search".to_string());
@@ -407,7 +354,7 @@ mod video_engine_tests {
             SiteFilterParam { name: "Genre".to_string(), param: "genreIds".to_string(), value: String::new(), kind: "text".to_string() },
         ];
         let filters = generate_kotlin_filters(
-            "PlutoTv", "pluto", "all", "all", "eu.kanade.tachiyomi.animeextension", &fixture,
+            "Demo", "demo", "all", "all", "eu.kanade.tachiyomi.animeextension", &fixture,
         );
         assert!(filters.contains("Header(\"Search & Catalog Filters\")"));
         assert!(!filters.contains("Filtros de búsqueda"));
@@ -419,13 +366,13 @@ mod video_engine_tests {
 
     #[test]
     fn distinct_params_with_the_same_label_stay_as_separate_filters() {
-        let mut fixture = pluto_fixture();
+        let mut fixture = generic_fixture();
         fixture.filter_params = vec![
             SiteFilterParam { name: "Sort By".to_string(), param: "sort".to_string(), value: String::new(), kind: "text".to_string() },
             SiteFilterParam { name: "Sort By".to_string(), param: "sortBy".to_string(), value: "publish_date".to_string(), kind: "select".to_string() },
         ];
         let filters = generate_kotlin_filters(
-            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
+            "Demo", "demo", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
         );
         for marker in [
             "TextFilter(\"Orden\", \"sort\")",
@@ -438,7 +385,7 @@ mod video_engine_tests {
     #[test]
     fn analysis_decides_package_language_and_selection_only_translates_texts() {
         use crate::engine::generator::ExtensionGenerator;
-        let mut fixture = pluto_fixture();
+        let mut fixture = generic_fixture();
         fixture.detected_language = "uz".to_string();
         fixture.site_locales = vec!["uz".to_string(), "ru".to_string(), "en".to_string()];
 
@@ -454,7 +401,7 @@ mod video_engine_tests {
         let source = bundle
             .files
             .iter()
-            .find(|(path, _)| path.ends_with("/PlutoTv.kt"))
+            .find(|(path, _)| path.ends_with("/Demo.kt"))
             .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
             .expect("falta la fuente Kotlin generada");
         assert!(source.contains("override val lang = \"uz\""), "{source}");
@@ -464,17 +411,17 @@ mod video_engine_tests {
         let filters = bundle
             .files
             .iter()
-            .find(|(path, _)| path.ends_with("/PlutoTvFilters.kt"))
+            .find(|(path, _)| path.ends_with("/DemoFilters.kt"))
             .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
             .expect("faltan los filtros Kotlin generados");
         assert!(filters.contains("La búsqueda por texto ignora el filtro"), "{filters}");
 
         let es = generate_kotlin_filters(
-            "PlutoTv", "pluto", "es", "uz", "eu.kanade.tachiyomi.animeextension", &fixture,
+            "Demo", "demo", "es", "uz", "eu.kanade.tachiyomi.animeextension", &fixture,
         );
         assert!(es.contains("La búsqueda por texto ignora el filtro"));
         let fallback = generate_kotlin_filters(
-            "PlutoTv", "pluto", "all", "uz", "eu.kanade.tachiyomi.animeextension", &fixture,
+            "Demo", "demo", "all", "uz", "eu.kanade.tachiyomi.animeextension", &fixture,
         );
         assert!(fallback.contains("Text search ignores the filter"));
 
@@ -507,7 +454,7 @@ mod video_engine_tests {
     #[test]
     fn verified_rest_lists_feed_filters_exclusion_and_catalog() {
         use crate::engine::analyzer::{ApiListResult, ApiOption};
-        let mut fixture = pluto_fixture();
+        let mut fixture = generic_fixture();
         fixture.url = "https://catalog.example".to_string();
         fixture.catalog_records = vec![CatalogRecord {
             title: "Título original".to_string(),
@@ -551,7 +498,7 @@ mod video_engine_tests {
         ];
 
         let filters = generate_kotlin_filters(
-            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
+            "Demo", "demo", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
         );
         assert!(filters.contains("CheckBoxFilterList(\"Género\", \"genreIds\", arrayOf(Pair(\"Comedy\", \"4\")"), "{}", filters);
         assert!(filters.contains("ExcludeFilter(\"Género: Comedy\", \"4\")"), "{}", filters);
@@ -559,7 +506,7 @@ mod video_engine_tests {
         assert!(!filters.contains("Ecchi"), "no se permiten géneros inventados");
 
         let kt = generate_kotlin_source(
-            &fixture, "Catalog", "PlutoTv", "pluto", "es", "es",
+            &fixture, "Catalog", "Demo", "demo", "es", "es",
             "eu.kanade.tachiyomi.animeextension",
         );
         assert!(kt.contains("LdRecord(title = \"New One\""), "{}", kt);
@@ -572,7 +519,7 @@ mod video_engine_tests {
     #[test]
     fn verified_filter_lists_generate_filters_without_html_params() {
         use crate::engine::analyzer::{ApiListResult, ApiOption};
-        let mut fixture = pluto_fixture();
+        let mut fixture = generic_fixture();
         // SPA sin `<select>` y sin parámetros en bundles: sólo listas REST
         // verificadas con un GET público.
         fixture.filter_params = Vec::new();
@@ -623,7 +570,7 @@ mod video_engine_tests {
 
     #[test]
     fn blacklist_is_a_generic_inverted_filter_input() {
-        let mut fixture = pluto_fixture();
+        let mut fixture = generic_fixture();
         // Sin listas verificadas ni parámetros: el input de lista negra debe
         // existir igualmente, porque el ajuste de lista negra siempre existe.
         fixture.api_lists = Vec::new();
@@ -676,7 +623,7 @@ mod video_engine_tests {
 
     #[test]
     fn catalog_cards_expose_detected_genre_tags() {
-        let mut fixture = pluto_fixture();
+        let mut fixture = generic_fixture();
         fixture.genre_selector = "a[href*='/genero/']".to_string();
 
         let kt = generate_kotlin_source(

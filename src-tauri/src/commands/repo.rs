@@ -290,8 +290,8 @@ mod scaffold_tests {
 
     #[test]
     fn detects_auto_init_readme_only() {
-        let placeholder = "# nekoyomi-ext-pluto\nRepositorio de extensiones Nekoyomi generado automáticamente por AEXT\n\n";
-        assert!(is_auto_init_readme(placeholder, "nekoyomi-ext-pluto"));
+        let placeholder = "# nekoyomi-ext-generated\nRepositorio de extensiones Nekoyomi generado automáticamente por AEXT\n\n";
+        assert!(is_auto_init_readme(placeholder, "nekoyomi-ext-generated"));
         assert!(is_auto_init_readme("# MiRepo\n", "mirepo"));
         assert!(!is_auto_init_readme(
             "# MiRepo\nDocumentación del proyecto\n",

@@ -44,18 +44,6 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
         .map(|f| format!("\"{}\"", f))
         .collect::<Vec<_>>()
         .join(", ");
-    // boot/start admite cualquier versión, pero usar la que el sitio declara
-    // hace que la sesión generada sea indistinguible de la del reproductor web.
-    let site_app_version = analysis.capabilities.app_version
-        .as_deref()
-        .filter(|v| !v.is_empty())
-        .unwrap_or("10.12.1096");
-    let site_player_cases = analysis.capabilities.player_cases.iter()
-        .map(|c| format!("\"{}\"", c))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let site_region = analysis.capabilities.region.as_deref().unwrap_or("");
-    let site_locale = analysis.capabilities.locale.as_deref().unwrap_or("");
     let kt_str = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace(['\n', '\r', '\t'], " ");
     let detected_language = if analysis.detected_language.trim().is_empty() {
         pkg_lang.to_string()
@@ -147,8 +135,6 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
         "        val finalQuery = cleanQuery\n".to_string()
     };
 
-    let pref_api_title = i18n.pref_api_title;
-    let pref_api_entries = i18n.pref_api_entries.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", ");
     let methods = if analysis.capabilities.playback_methods.is_empty() {
         SiteAnalyzer::playback_methods(&analysis.capabilities)
     } else {
@@ -174,10 +160,6 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
         concat!(anime_source_kt_fmt!()),
         video_engine = VIDEO_ENGINE_KT,
         site_cap_formats = site_cap_formats,
-        site_app_version = site_app_version,
-        site_player_cases = site_player_cases,
-        site_region = site_region,
-        site_locale = site_locale,
         detected_language = kt_str(&detected_language),
         ld_records_block = ld_records_block,
         filter_block = filter_block,
@@ -185,8 +167,6 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
         blacklist_capture = blacklist_capture,
         search_audio_block = search_audio_block,
         audio_pref_block = audio_pref_block,
-        pref_api_title = pref_api_title,
-        pref_api_entries = pref_api_entries,
         methods_title = methods_title,
         methods_summary = methods_summary,
         methods_entries = methods_entries,

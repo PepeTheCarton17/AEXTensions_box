@@ -209,14 +209,13 @@ pub struct SiteCapabilities {
     /// Endpoints API/GraphQL encontrados en HTML/JS del sitio.
     #[serde(default)]
     pub api_endpoints: Vec<String>,
-    /// Versión de app que el sitio declara (p. ej. `10.12.1096`). La estrategia
-    /// de sesión la necesita para reproducir el arranque del reproductor web.
+    /// Versión de app que el sitio declara, cuando aparece en su estado.
+    /// Se muestra como dato detectado, no como capacidades verificadas.
     #[serde(default)]
     pub app_version: Option<String>,
-    /// Región y locale declarados por el sitio en su estado hidratado (p. ej.
-    /// `MX` / `es-419`). Pluto condiciona catálogo, audio y subtítulos a la IP:
-    /// se muestra como dato verificado, nunca como selector falso, porque
-    /// `boot/start` ignora `country`, `region`, `deviceLat` y `deviceLon`.
+    /// Región y locale declarados por el sitio en su estado hidratado. Se
+    /// muestran como dato detectado: la región real depende de la IP del
+    /// dispositivo, no de un selector de la extensión.
     #[serde(default)]
     pub region: Option<String>,
     #[serde(default)]

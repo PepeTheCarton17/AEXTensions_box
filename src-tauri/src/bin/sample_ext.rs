@@ -38,25 +38,18 @@ fn anime_fixture(name: &str, host: &str, episode_selector: &str, catalog: bool) 
         episode_selector: episode_selector.to_string(),
         sample_items: Vec::new(),
         warnings: Vec::new(),
-        // Un fixture con capacidades y otro sin ellas: el caso vacío es el
-        // que rompió Pluto3 (`setOf()` sin tipo inferible).
+        // Un fixture con capacidades y otro sin ellas: el caso vacío detecta
+        // regressions al generar `setOf()` sin tipo inferible.
         capabilities: SiteCapabilities {
             stream_formats: if catalog { vec!["hls".to_string()] } else { Vec::new() },
             qualities: if catalog { vec!["720p".to_string()] } else { Vec::new() },
-            // Un fixture con sesión bootstrap para que el CI compile también
-            // el `siteAppVersion` inyectado en la estrategia de arranque.
-            app_version: catalog.then(|| "10.12.1096".to_string()),
             player_cases: if catalog {
-                vec![
-                    "session-bootstrap".to_string(),
-                    "hls-master".to_string(),
-                    "ads-hls".to_string(),
-                ]
+                vec!["hls-master".to_string(), "ads-hls".to_string()]
             } else {
                 Vec::new()
             },
             api_endpoints: if catalog {
-                vec!["https://boot.pluto.tv/v4/start".to_string()]
+                vec!["https://media.example.com/hls/master.m3u8".to_string()]
             } else {
                 Vec::new()
             },
@@ -66,7 +59,7 @@ fn anime_fixture(name: &str, host: &str, episode_selector: &str, catalog: bool) 
             sub_verified: catalog,
             dub_verified: false,
             playback_methods: if catalog {
-                vec!["Sesión web".to_string(), "HLS".to_string()]
+                vec!["HLS".to_string()]
             } else {
                 Vec::new()
             },

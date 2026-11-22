@@ -23,9 +23,9 @@ mod manifest_tests {
     #[test]
     fn anime_manifest_declares_extension_marker() {
         let manifest = generate_android_manifest(
-            "eu.kanade.tachiyomi.animeextension.es.pluto",
-            "Pluto",
-            "Pluto",
+            "eu.kanade.tachiyomi.animeextension.es.demo",
+            "Demo",
+            "Demo",
             "anime",
         );
 
@@ -33,7 +33,7 @@ mod manifest_tests {
         assert!(manifest.contains(r#"android:name="tachiyomi.animeextension""#));
         assert!(manifest.contains(r#"android:value="true""#));
         assert!(manifest.contains(
-            r#"android:value="eu.kanade.tachiyomi.animeextension.es.pluto.Pluto""#
+            r#"android:value="eu.kanade.tachiyomi.animeextension.es.demo.Demo""#
         ));
     }
 

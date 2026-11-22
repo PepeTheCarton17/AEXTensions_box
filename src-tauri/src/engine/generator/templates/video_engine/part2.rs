@@ -20,63 +20,21 @@ macro_rules! video_engine_part2 {
             .apply()
     }
 
-    private fun strategyPriority(id: String): Int {
-        // El caso detectado fija el orden inicial; las estadísticas reales lo
-        // corrigen después. Así no empezamos probando una ruta imposible.
-        if (sitePlayerCases.contains("session-bootstrap")) {
-            return when (id) {
-                "api-session" -> 0
-                "api-graphql" -> 1
-                else -> 2
-            }
-        }
-        if (sitePlayerCases.contains("graphql-persisted")) {
-            return when (id) {
-                "api-graphql" -> 0
-                "api-session" -> 1
-                else -> 2
-            }
-        }
-        if (sitePlayerCases.contains("iframe-player") || sitePlayerCases.contains("dash-mpd")) {
-            return when (id) {
-                "html-embeds" -> 0
-                "api-session" -> 1
-                else -> 2
-            }
-        }
-        return when (id) {
-            "api-session" -> 0
-            "api-graphql" -> 1
-            else -> 2
-        }
-    }
-
-    /** El usuario puede forzar la ruta real; `auto` es la recomendación. */
-    private fun apiMode(): String = preferences.getString("api_mode", "auto")
-        ?.takeIf { it in setOf("auto", "session", "graphql", "html") } ?: "auto"
-
-    private fun apiModeLabel(mode: String): String = when (mode) {
-        "session" -> "sesión web"
-        "graphql" -> "GraphQL interno"
-        "html" -> "scraping HTML"
-        else -> "Automático"
+    /**
+     * Orden inicial de los resolutores. AEXT no decide por dominio: el
+     * catálogo real que devuelva cada motor decide después, con aciertos y
+     * fallos contados en preferencias.
+     */
+    private fun strategyPriority(id: String): Int = when (id) {
+        "html-embeds" -> 0
+        else -> 1
     }
 
     private fun orderedStrategies(): List<VideoStrategy> {
         val all = listOf(
-            VideoStrategy("api-session", strategyPriority("api-session")) { ctx -> apiSessionVideos(ctx) },
-            VideoStrategy("api-graphql", strategyPriority("api-graphql")) { ctx -> plutoGraphqlVideos(ctx) },
             VideoStrategy("html-embeds", strategyPriority("html-embeds")) { ctx -> htmlEmbedVideos(ctx) },
         )
-        // Un modo explícito NO es una preferencia decorativa: limita de verdad
-        // qué resolutores se ejecutan, para poder diagnosticar fallos por API.
-        val selected = when (apiMode()) {
-            "session" -> all.filter { it.id == "api-session" }
-            "graphql" -> all.filter { it.id == "api-graphql" }
-            "html" -> all.filter { it.id == "html-embeds" }
-            else -> all
-        }
-        return selected.sortedWith(
+        return all.sortedWith(
             compareByDescending<VideoStrategy> { s ->
                 val (ok, fail) = strategyStats(s.id)
                 (ok + 1.0) / (ok + fail + 2.0)
@@ -112,7 +70,7 @@ macro_rules! video_engine_part2 {
         val ctx = VideoContext(finalUrl, html)
         val errors = mutableListOf<String>()
         val strategies = orderedStrategies()
-        Log.d("AEXT", "videoListParse $finalUrl · modo ${apiMode()} · métodos ${strategies.map { it.id }} · HTML ${html.length} bytes")
+        Log.d("AEXT", "videoListParse $finalUrl · métodos ${strategies.map { it.id }} · HTML ${html.length} bytes")
 
         for (strategy in strategies) {
             val candidates = try {
@@ -147,13 +105,8 @@ macro_rules! video_engine_part2 {
             Log.d("AEXT", "${strategy.id}: ${verified.size} streams verificados")
             return verified
         }
-        val mode = apiMode()
         val detail = if (errors.isEmpty()) "ningún método aplicable a esta página" else errors.take(4).joinToString(" | ")
-        val message = if (mode == "auto") {
-            "AEXT no pudo resolver ningún stream ($detail)"
-        } else {
-            "AEXT no pudo resolver ningún stream con el modo ${apiModeLabel(mode)} ($detail). Cambia la API preferida a Automático en los ajustes de la extensión."
-        }
+        val message = "AEXT no pudo resolver ningún stream ($detail)"
         Log.e("AEXT", message)
         throw Exception(message)
     }
@@ -212,6 +165,16 @@ macro_rules! video_engine_part2 {
             if (!seen.add(key)) continue
 
             val server = declared.ifBlank { serverFromUrl(embedUrl) }
+            if (isBlacklisted(blacklist, server, embedUrl)) continue
+
+            val audio = audioMap[embedUrl.substringBefore("?")] ?: detectAudio(html, embedUrl)
+            runCatching {
+                videos.addAll(resolveVideos(server, embedUrl, audio, headers))
+            }
+        }
+
+        return sortVideos(videos)
+    }
 "## };
 }
 pub(crate) use video_engine_part2;
