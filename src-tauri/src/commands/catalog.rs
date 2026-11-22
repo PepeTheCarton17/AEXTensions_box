@@ -1,4 +1,5 @@
 use crate::commands::parsers::parse_github_url;
+use crate::commands::site_duplicates::find_existing_for_site;
 use crate::models::ExtensionItem;
 use crate::state::AppState;
 use std::collections::HashSet;
@@ -56,6 +57,7 @@ pub(crate) async fn sync_published_variants(state: &AppState) -> usize {
         .unwrap_or_default();
     let mut adopted = 0usize;
     let mut repaired = 0usize;
+    let mut skipped_duplicates = 0usize;
 
     for repo_url in repos {
         let Some((owner, repo_name)) = parse_github_url(&repo_url) else {
@@ -175,6 +177,13 @@ pub(crate) async fn sync_published_variants(state: &AppState) -> usize {
                 }
                 continue;
             }
+            // El índice puede seguir publicando variantes antiguas de un sitio
+            // que ya tiene ficha local. Adoptarlas recrearía el duplicado que
+            // estamos corrigiendo, así que se ignoran hasta que desaparezcan.
+            if find_existing_for_site(&list[..], base_url, None).is_some() {
+                skipped_duplicates += 1;
+                continue;
+            }
             list.push(ExtensionItem {
                 id: pkg_id.to_string(),
                 pkg_id: pkg_id.to_string(),
@@ -208,14 +217,14 @@ pub(crate) async fn sync_published_variants(state: &AppState) -> usize {
         }
     }
 
-    if adopted > 0 || repaired > 0 {
+    if adopted > 0 || repaired > 0 || skipped_duplicates > 0 {
         state.persist_extensions().await;
         state
             .add_log(
                 "INFO",
                 &format!(
-                    "Sincronización del índice: {} variante(s) adoptadas, {} ficha(s) completadas",
-                    adopted, repaired
+                    "Sincronización del índice: {} variante(s) adoptadas, {} ficha(s) completadas, {} duplicada(s) ignorada(s)",
+                    adopted, repaired, skipped_duplicates
                 ),
             )
             .await;

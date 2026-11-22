@@ -2,6 +2,7 @@ use crate::commands::actions::verify_github_actions;
 use crate::commands::constants::LOCAL_API_BASE;
 use crate::commands::files::{local_extension_dir, prepare_bundle_for_local, write_bundle_to_dir, write_icons_to_dir};
 use crate::commands::repo_upload::{upload_bundle_to_github, GithubUploadInfo};
+use crate::commands::site_duplicates::{duplicate_message, find_existing_for_site};
 use crate::engine::{ExtensionGenerator, IconEngine, SiteAnalyzer};
 use crate::github::GithubAuthManager;
 use crate::models::{ExtensionItem, GenerationMode, GenerationRequest};
@@ -42,6 +43,19 @@ pub async fn generate_extensions(
             state
                 .add_log("WARN", &format!("{}: {}", analysis.name, warning))
                 .await;
+        }
+
+        // Un sitio sólo puede tener una ficha. El idioma elegido en la UI no
+        // cambia la identidad del paquete, así que generar de nuevo el mismo
+        // sitio sólo debe actualizar la ficha existente, nunca crear variantes.
+        let duplicate = {
+            let list = state.extensions.read().await;
+            find_existing_for_site(&list[..], &analysis.url, request.ext_type.as_deref()).cloned()
+        };
+        if let Some(existing) = duplicate {
+            let message = duplicate_message(&existing);
+            state.add_log("WARN", &message).await;
+            return Err(message);
         }
 
         // 1. Generar iconos y mipmaps

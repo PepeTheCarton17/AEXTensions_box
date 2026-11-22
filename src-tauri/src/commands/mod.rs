@@ -15,6 +15,7 @@ pub mod generation;
 pub mod parsers;
 pub mod repo;
 pub mod repo_upload;
+pub mod site_duplicates;
 pub mod system;
 pub mod toolchain;
 pub mod update_one;
