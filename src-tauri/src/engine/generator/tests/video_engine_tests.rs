@@ -673,4 +673,29 @@ mod video_engine_tests {
         assert!(kt.contains(".split(\",\", \";\", \"|\")"), "{}", kt);
         assert!(kt.contains("filterNot { anime ->"), "{}", kt);
     }
+
+    #[test]
+    fn catalog_cards_expose_detected_genre_tags() {
+        let mut fixture = pluto_fixture();
+        fixture.genre_selector = "a[href*='/genero/']".to_string();
+
+        let kt = generate_kotlin_source(
+            &fixture, "Demo", "Demo", "demo", "es", "es",
+            "eu.kanade.tachiyomi.animeextension",
+        );
+        assert!(kt.contains("private fun pickGenres(element: Element, genreSelector: String)"), "{}", kt);
+        assert!(
+            kt.contains("genre = pickGenres(element, \"a[href*='/genero/']\")"),
+            "{}",
+            kt
+        );
+        // La etiqueta detectada alimenta `anime.genre`, que es lo que lee la
+        // lista negra; si no se detectó, el generador no inventa ninguna.
+        fixture.genre_selector = String::new();
+        let kt_empty = generate_kotlin_source(
+            &fixture, "Demo", "Demo", "demo", "es", "es",
+            "eu.kanade.tachiyomi.animeextension",
+        );
+        assert!(kt_empty.contains("genre = pickGenres(element, \"\")"), "{}", kt_empty);
+    }
 }

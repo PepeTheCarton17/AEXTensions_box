@@ -24,6 +24,7 @@ macro_rules! anime_source_kt_part2 {
         val link = if (element.tagName() == "a") element else element.selectFirst("a")
         setUrlWithoutDomain(link?.attr("href") ?: "")
         title = pickTitle(element, "{title_sel}")
+        genre = pickGenres(element, "{genre_selector}")
         thumbnail_url = element.selectFirst("img")
             ?.let {{ img ->
                 img.attr("abs:src")

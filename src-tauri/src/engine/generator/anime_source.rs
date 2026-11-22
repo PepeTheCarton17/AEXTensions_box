@@ -193,6 +193,9 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
         pref_server_summary = pref_server_summary,
         base_url = base_url,
         card_sel = card_sel,
+        // Selector de etiquetas detectado en las tarjetas reales. Vacío cuando
+        // el sitio no expone géneros: entonces no se inventa ninguno.
+        genre_selector = kt_str(&analysis.genre_selector),
         class_name = class_name,
         episode_sel = episode_sel,
         latest_path = latest_path,

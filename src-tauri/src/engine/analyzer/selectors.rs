@@ -130,6 +130,43 @@ impl SiteAnalyzer {
         "a".to_string()
     }
 
+    /// Géneros/tags que el propio sitio pone en cada tarjeta. No se inventan:
+    /// el candidato sólo se acepta si al menos la mitad de las tarjetas reales
+    /// devuelven texto corto (una etiqueta, no el título ni la sinopsis).
+    pub(crate) fn infer_genre_selector(doc: &Html, card_selector: &str) -> String {
+        let Ok(card_sel) = Selector::parse(card_selector) else {
+            return String::new();
+        };
+        let cards: Vec<ElementRef<'_>> = doc.select(&card_sel).collect();
+        if cards.len() < 2 {
+            return String::new();
+        }
+        // Patrones genéricos: segmentos de ruta y clases habituales de
+        // género/categoría/etiqueta. Nada de selectores de un sitio concreto.
+        let candidates = [
+            "a[href*='/genre/'], a[href*='/genres/'], a[href*='/genero/'], a[href*='/generos/'], a[href*='/tag/'], a[href*='/tags/'], a[href*='/category/'], a[href*='/categories/']",
+            ".genres a, .genre a, .tags a, .tag a, .categories a, .category a",
+            "[class*=genre] a, [class*=tag] a, [class*=category] a",
+            "[class*=genre], [class*=tag], [class*=category]",
+        ];
+        for candidate in candidates {
+            let Ok(sel) = Selector::parse(candidate) else { continue };
+            let hits = cards
+                .iter()
+                .filter(|card| {
+                    card.select(&sel).any(|e| {
+                        let text = e.text().collect::<String>().trim().to_string();
+                        !text.is_empty() && text.chars().count() <= 40
+                    })
+                })
+                .count();
+            if hits * 2 >= cards.len() {
+                return candidate.to_string();
+            }
+        }
+        String::new()
+    }
+
     pub(crate) fn detect_pagination(&self, doc: &Html, origin: &str, host: &str) -> (String, String) {
         let Ok(sel) = Selector::parse("a[href]") else {
             return (String::new(), "none".to_string());

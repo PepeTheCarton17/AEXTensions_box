@@ -99,6 +99,18 @@ class {class_name} : ParsedAnimeHttpSource(), ConfigurableAnimeSource {{
         return text.ifBlank {{ attr("alt") }}.ifBlank {{ "Sin Título" }}
     }}
 
+    /** Etiquetas reales de la tarjeta (género/categoría/tag), nunca inventadas. */
+    private fun pickGenres(element: Element, genreSelector: String): String? {{
+        if (genreSelector.isBlank()) return null
+        val values = runCatching {{
+            element.select(genreSelector)
+                .map {{ it.text().trim() }}
+                .filter {{ it.isNotEmpty() && it.length <= 60 }}
+                .distinct()
+        }}.getOrDefault(emptyList<String>())
+        return values.takeIf {{ it.isNotEmpty() }}?.joinToString(", ")
+    }}
+
     private fun pageUrl(path: String, page: Int): String {{
         val clean = if (path.isEmpty()) "/" else if (path.startsWith("/")) path else "/$path"
         val base = "$baseUrl$clean"

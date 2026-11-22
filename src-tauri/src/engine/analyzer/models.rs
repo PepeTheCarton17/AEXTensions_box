@@ -126,6 +126,11 @@ pub struct AnalysisResult {
     pub protections: Vec<String>,
     pub card_selector: String,
     pub title_selector: String,
+    /// Selector de géneros/etiquetas DENTRO de una tarjeta del catálogo. Se
+    /// detecta con patrones CSS genéricos y se verifica contra las tarjetas
+    /// reales; vacío si el sitio no expone etiquetas en el listado.
+    #[serde(default)]
+    pub genre_selector: String,
     pub next_page_selector: String,
     /// `html` cuando hay tarjetas reales; `jsonld` cuando sólo hay datos
     /// estructurados; `none` cuando no hay evidencia de catálogo.

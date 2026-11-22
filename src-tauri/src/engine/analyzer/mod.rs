@@ -376,6 +376,13 @@ impl SiteAnalyzer {
         } else {
             cms_title
         };
+        // Etiquetas reales de las tarjetas: sin esto la lista negra sólo podría
+        // ocultar por título, nunca por género/categoría del catálogo.
+        let genre_selector = if catalog.count >= 4 {
+            Self::infer_genre_selector(&doc, &card_selector)
+        } else {
+            String::new()
+        };
         let next_page_selector = if !catalog.next_page_selector.is_empty() {
             catalog.next_page_selector.clone()
         } else if catalog.page_style == "none" {
@@ -524,6 +531,7 @@ impl SiteAnalyzer {
                 protections,
                 card_selector,
                 title_selector,
+                genre_selector,
                 next_page_selector,
                 catalog_source,
                 catalog_records: ld_records,

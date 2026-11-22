@@ -710,3 +710,25 @@ let b = paramsToQuery({categoryIds:t("category_id"), profile_id:e, sortBy:"year"
         assert_eq!(result.options.len(), 2);
         assert_eq!(result.options[1].label, "Disney");
     }
+
+    #[test]
+    fn catalog_card_genre_selector_is_detected_without_site_specific_rules() {
+        let html = r#"<html><body>
+            <article class="card"><a href="/anime/1"><h3>Uno</h3></a>
+                <div class="genres">
+                    <a href="/genero/accion">Acción</a>
+                    <a href="/genero/drama">Drama</a>
+                </div>
+            </article>
+            <article class="card"><a href="/anime/2"><h3>Dos</h3></a>
+                <div class="genres"><a href="/genero/accion">Acción</a></div>
+            </article>
+        </body></html>"#;
+        let doc = Html::parse_document(html);
+        let selector = SiteAnalyzer::infer_genre_selector(&doc, "article.card");
+        assert!(selector.contains("href*='/genero/'"), "{}", selector);
+
+        // Sin tarjetas que inspeccionar no se declara ningún selector.
+        let empty = SiteAnalyzer::infer_genre_selector(&doc, "article.no-such-card");
+        assert!(empty.is_empty(), "{}", empty);
+    }
