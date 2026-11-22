@@ -443,6 +443,23 @@
     }
 
     #[test]
+    fn language_switcher_links_reveal_multilingual_sites() {
+        let html = r#"<!doctype html><html lang="ru"><head>
+<link rel="alternate" hreflang="tr" href="/tr">
+</head><body>
+<button data-url="/dk?cmd=lang&amp;st.lang=en&amp;st.cmd=main">English</button>
+<button data-url="/dk?cmd=lang&amp;st.lang=uz&amp;st.cmd=main">O'zbek tili</button>
+<a href="/locale/de/catalog">Deutsch</a>
+<a href="/catalog?lang=auto">auto</a>
+</body></html>"#;
+        let doc = Html::parse_document(html);
+        assert_eq!(
+            SiteAnalyzer::detect_site_locales(&doc),
+            vec!["ru".to_string(), "tr".to_string(), "en".to_string(), "uz".to_string(), "de".to_string()]
+        );
+    }
+
+    #[test]
     fn js_bundles_give_real_filter_params_and_values() {
         let js = r#"let nm=["year","countryIds","genreIds","audioLanguageIds","quality"],nh=[...nm,"categoryIds","CopyrightHolderIds","isFrameDub","name","sortBy","status"],nv="publish_date";
 const H=(0,a.useMemo)(()=>[{value:"publish_date",label:S("filter.publish_date")},{value:"imdb_rating",label:S("filter.imdb_rating")},{value:"kinopoisk_rating",label:S("filter.kinopoisk_rating")}],[S]),$=(0,a.useMemo)(()=>[{value:"announcement",label:S("filter.announcement")},{value:"release",label:S("filter.release")}],[S]);

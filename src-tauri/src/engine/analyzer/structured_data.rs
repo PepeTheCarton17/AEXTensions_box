@@ -1,3 +1,4 @@
+use regex::Regex;
 use scraper::{Html, Selector};
 use std::collections::HashSet;
 use url::Url;
@@ -42,11 +43,45 @@ impl SiteAnalyzer {
                 }
             }
         }
+        // Muchos sitios multilinguales no declaran sus idiomas en metadatos:
+        // sólo los exponen en el conmutador de la interfaz (hreflang o un
+        // parámetro lang/locale en los enlaces). Es evidencia real del sitio.
+        Self::collect_locale_links(doc, &mut out);
         out
+    }
+
+    fn collect_locale_links(doc: &Html, out: &mut Vec<String>) {
+        let Ok(param) = Regex::new(
+            r"(?:[?&;])(?:[A-Za-z_][\w.-]*\.)?(?:lang|language|locale|hl|ui|mui|l)[=:]([A-Za-z]{2,3}(?:[-_][A-Za-z]{2,4})?)"
+        ) else { return };
+        let Ok(path) = Regex::new(
+            r"/(?:lang|locale|language)/([A-Za-z]{2,3}(?:[-_][A-Za-z]{2,4})?)(?:[/\"'?#]|$)"
+        ) else { return };
+        let Ok(sel) = Selector::parse("[href], [data-url], [hreflang], [data-lang]") else { return };
+
+        for el in doc.select(&sel) {
+            for key in ["hreflang", "data-lang"] {
+                if let Some(value) = el.value().attr(key) {
+                    Self::push_locale(out, value);
+                }
+            }
+            for key in ["href", "data-url"] {
+                let Some(raw) = el.value().attr(key) else { continue };
+                for found in param.captures_iter(raw) {
+                    Self::push_locale(out, &found[1]);
+                }
+                for found in path.captures_iter(raw) {
+                    Self::push_locale(out, &found[1]);
+                }
+            }
+        }
     }
 
     pub(crate) fn push_locale(out: &mut Vec<String>, raw: &str) {
         if let Some(locale) = Self::normalize_locale(raw) {
+            if matches!(locale.as_str(), "all" | "auto" | "default" | "none" | "www") {
+                return;
+            }
             if !out.contains(&locale) {
                 out.push(locale);
             }
