@@ -119,6 +119,14 @@ const elements = {
   btnOpenSelectedFolder: document.getElementById('btn-open-selected-folder'),
   backupsList: document.getElementById('backups-list'),
 
+  // Tools: installable engines
+  inputEngineRepo: document.getElementById('input-engine-repo'),
+  btnInstallEngine: document.getElementById('btn-install-engine'),
+  inputEngineTestUrl: document.getElementById('input-engine-test-url'),
+  btnTestEngines: document.getElementById('btn-test-engines'),
+  enginesList: document.getElementById('engines-list'),
+  enginesTestResult: document.getElementById('engines-test-result'),
+
   // Settings / releases
   settingsCurrentVersion: document.getElementById('settings-current-version'),
   releaseAssetsBody: document.getElementById('release-assets-body'),

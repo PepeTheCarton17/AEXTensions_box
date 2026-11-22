@@ -557,6 +557,7 @@ impl SiteAnalyzer {
                 sample_items,
                 warnings,
                 capabilities,
+                engine_trials: Vec::new(),
             },
             demo_href,
         ))

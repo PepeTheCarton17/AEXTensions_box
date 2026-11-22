@@ -1,3 +1,4 @@
+use crate::engine::registry::{self, EngineDescriptor};
 use crate::models::{ExtensionItem, LogEntry, GithubAccountInfo};
 use std::collections::VecDeque;
 use std::fs;
@@ -8,6 +9,9 @@ use tokio::sync::RwLock;
 #[derive(Clone)]
 pub struct AppState {
     pub extensions: Arc<RwLock<Vec<ExtensionItem>>>,
+    /// Motores incluidos e instalados. Se guarda fuera de `extensions/`, por
+    /// lo que una actualización no puede borrarlos.
+    pub engines: Arc<RwLock<Vec<EngineDescriptor>>>,
     pub logs: Arc<RwLock<VecDeque<LogEntry>>>,
     pub gh_user: Arc<RwLock<Option<GithubAccountInfo>>>,
     pub storage_dir: PathBuf,
@@ -19,9 +23,11 @@ impl AppState {
         let _ = fs::create_dir_all(&storage_dir);
 
         let extensions = Self::load_persisted_extensions(&storage_dir);
+        let engines = registry::load(&storage_dir);
 
         Self {
             extensions: Arc::new(RwLock::new(extensions)),
+            engines: Arc::new(RwLock::new(engines)),
             logs: Arc::new(RwLock::new(VecDeque::with_capacity(500))),
             gh_user: Arc::new(RwLock::new(None)),
             storage_dir,
@@ -46,6 +52,11 @@ impl AppState {
         if let Ok(json) = serde_json::to_string_pretty(&*items) {
             let _ = fs::write(file, json);
         }
+    }
+
+    pub async fn persist_engines(&self) {
+        let engines = self.engines.read().await;
+        registry::persist(&self.storage_dir, &engines[..]);
     }
 
     pub async fn add_log(&self, level: &str, message: &str) {

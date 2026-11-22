@@ -250,6 +250,22 @@
         </div>
         <div id="backups-list" class="space-y-2"></div>
       </div>
+
+      <!-- Installable engines -->
+      <div class="bg-surface-900 border border-surface-800 rounded-2xl p-5 shadow-xl space-y-4">
+        <div>
+          <h3 class="text-sm font-semibold text-slate-100" data-i18n="tools.engines_title">Motores instalables</h3>
+          <p class="text-xs text-slate-400" data-i18n="tools.engines_desc">Cuando una portada no expone catálogo HTML, AEXT prueba motores compatibles con peticiones anónimas. Los motores se instalan desde un repositorio que publica aext-engine.json con licencia y procedencia; se conservan al actualizar extensiones.</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <input id="input-engine-repo" type="text" placeholder="owner/repo o URL de GitHub" class="flex-1 min-w-[220px] bg-surface-950 border border-surface-800 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono" data-i18n-ph="tools.engines_ph">
+          <button id="btn-install-engine" class="px-3 py-2 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-500/30 transition-all" data-i18n="tools.engines_install">Instalar motor</button>
+          <input id="input-engine-test-url" type="text" placeholder="https://sitio.example" class="flex-1 min-w-[220px] bg-surface-950 border border-surface-800 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono" data-i18n-ph="tools.engines_test_ph">
+          <button id="btn-test-engines" class="px-3 py-2 rounded-lg text-xs font-medium bg-surface-800 hover:bg-surface-700 text-slate-200 border border-surface-700 transition-all" data-i18n="tools.engines_test">Probar motores</button>
+        </div>
+        <div id="engines-list" class="space-y-2"></div>
+        <div id="engines-test-result" class="space-y-1"></div>
+      </div>
     </section>
 
     <!-- TAB 4: DIAGNÓSTICO & API -->

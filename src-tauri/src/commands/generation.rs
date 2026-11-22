@@ -32,10 +32,13 @@ pub async fn generate_extensions(
         .await;
 
     for url in &request.urls {
-        let analysis = analyzer
+        let mut analysis = analyzer
             .analyze(url)
             .await
             .map_err(|e| format!("Error analizando {}: {}", url, e))?;
+        // La generación re-analiza por su cuenta: repetir aquí las sondas
+        // evita perder el catálogo verificado por los motores al analizar.
+        crate::commands::engines::run_engine_trials(&state, &mut analysis).await;
 
         // Avisos honestos del análisis: el usuario debe saber qué no se pudo
         // detectar antes de publicar o compilar.

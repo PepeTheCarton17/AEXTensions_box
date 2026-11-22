@@ -1,3 +1,4 @@
+use crate::engine::registry::EngineTrial;
 use serde::{Deserialize, Serialize};
 
 /// Un título real encontrado en datos estructurados (schema.org ItemList).
@@ -187,6 +188,10 @@ pub struct AnalysisResult {
     /// Se obtienen del HTML de entrada y de la ficha de ejemplo sondeada.
     #[serde(default)]
     pub capabilities: SiteCapabilities,
+    /// Pruebas anónimas de motores cuando el catálogo HTML no verificó nada.
+    /// Sólo las sondas con éxito se consideran contenido real.
+    #[serde(default)]
+    pub engine_trials: Vec<EngineTrial>,
 }
 
 /// Lo que el sitio *realmente* expone para reproducción, no lo que la plantilla

@@ -150,6 +150,20 @@ function renderAnalysisCard(site) {
       }
     </div>`;
 
+  const trials = Array.isArray(site.engine_trials) ? site.engine_trials : [];
+  const engineTrialsHtml = trials.length > 0
+    ? `<div class="space-y-1 pt-2 border-t border-surface-800">
+        <span class="text-slate-500 block text-[10px]">${escapeHtml(t('analysis.engine_trials'))}</span>
+        <div class="flex flex-wrap gap-1">${trials.map((trial) => {
+          const ok = Boolean(trial.success);
+          const name = escapeHtml(trial.engine_name || trial.engine_id);
+          const detail = escapeHtml(`${trial.probe_id}: ${trial.detail}`);
+          return `<span class="px-1.5 py-0.5 rounded text-[10px] ${ok ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-slate-700/40 text-slate-400'}" title="${detail}">${ok ? '' : '✗ '}${name} · ${trial.content_count}</span>`;
+        }).join('')}</div>
+        <div class="text-[10px] text-slate-500">${escapeHtml(t('analysis.engine_trials_note'))}</div>
+      </div>`
+    : '';
+
   const siteIcon = site.favicon_url && site.favicon_url.trim()
     ? site.favicon_url
     : fallbackIcon(site.name);
@@ -193,6 +207,8 @@ function renderAnalysisCard(site) {
     ${samplesHtml}
 
     ${catalogHtml}
+
+    ${engineTrialsHtml}
 
     <div class="space-y-1 pt-1 border-t border-surface-800">
       <span class="text-slate-500 block text-[10px]">Servidores detectados:</span>

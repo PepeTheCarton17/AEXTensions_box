@@ -57,10 +57,13 @@ pub(crate) async fn prepare_update(
         .await;
 
     let analyzer = SiteAnalyzer::new();
-    let analysis = analyzer
+    let mut analysis = analyzer
         .analyze(&existing.base_url)
         .await
         .map_err(|e| format!("No se pudo re-analizar {}: {}", existing.base_url, e))?;
+    // Re-analizar también repite las sondas anónimas: el catálogo verificado
+    // por los motores debe sobrevivir a la actualización de la extensión.
+    crate::commands::engines::run_engine_trials(state, &mut analysis).await;
 
     // Los avisos del análisis son fuentes que NO se pudieron verificar. Se
     // guardan en el bundle para que el workflow los incluya en su reporte.

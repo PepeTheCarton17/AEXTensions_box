@@ -98,6 +98,11 @@ async function invokeBackend(command, args = {}) {
     case 'check_extensions_in_repo':
     case 'restore_extension_repo_state':
     case 'generate_extensions':
+    case 'list_engines':
+    case 'install_engine':
+    case 'set_engine_enabled':
+    case 'uninstall_engine':
+    case 'test_engines':
       throw new Error('Esta acción requiere la aplicación nativa de AEXT (no está disponible en el modo navegador).');
     case 'delete_extension':
     case 'delete_extension_github':

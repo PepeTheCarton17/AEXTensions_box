@@ -9,7 +9,10 @@ pub async fn analyze_url(url: String, state: State<'_, AppState>) -> Result<Anal
         .await;
     let analyzer = SiteAnalyzer::new();
     match analyzer.analyze(&url).await {
-        Ok(res) => {
+        Ok(mut res) => {
+            // Cuando el catálogo HTML no se verificó, AEXT prueba los motores
+            // disponibles con peticiones anónimas antes de mostrar el análisis.
+            crate::commands::engines::run_engine_trials(&state, &mut res).await;
             state
                 .add_log(
                     "SUCCESS",
@@ -40,7 +43,8 @@ pub async fn analyze_multiple_urls(
 
     for url in urls {
         state.add_log("INFO", &format!("Analizando: {}", url)).await;
-        if let Ok(res) = analyzer.analyze(&url).await {
+        if let Ok(mut res) = analyzer.analyze(&url).await {
+            crate::commands::engines::run_engine_trials(&state, &mut res).await;
             results.push(res);
         }
     }

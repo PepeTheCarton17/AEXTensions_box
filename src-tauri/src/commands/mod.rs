@@ -10,6 +10,7 @@ pub mod constants;
 pub mod deletion;
 pub mod deletion_permanent;
 pub mod downloads;
+pub mod engines;
 pub mod files;
 pub mod generation;
 pub mod parsers;
@@ -36,6 +37,7 @@ pub use catalog_check::{check_extensions_in_repo, restore_extension_repo_state};
 pub use deletion::{delete_extension, delete_extension_github};
 pub use deletion_permanent::delete_extension_permanently;
 pub use downloads::save_extension_zip;
+pub use engines::{install_engine, list_engines, set_engine_enabled, test_engines, uninstall_engine};
 pub use files::{
     list_extension_backups, local_extension_dir, open_extension_folder, restore_extension_backup,
 };

@@ -12,6 +12,7 @@ import { loadExtensions, renderExtensionsGrid } from './ui/catalog.js';
 import { initExtensionActions, checkRepoState } from './ui/extensions.js';
 import { renderToolchainStatus } from './ui/build.js';
 import { initStreamTester, initTools } from './ui/tools.js';
+import { initEngines, renderEngines, renderEngineTrials } from './ui/engines.js';
 import { initSettings, initLogControls } from './ui/settings.js';
 import { renderReleaseTable, refreshReleaseInfo, initReleases } from './ui/releases.js';
 import { refreshBackupExtensions, loadBackups } from './ui/shared.js';
@@ -35,6 +36,8 @@ function handleLanguageChange() {
   refreshBackupExtensions();
   if (state.selectedBackupExt) loadBackups(state.selectedBackupExt);
   renderToolchainStatus();
+  renderEngines();
+  renderEngineTrials();
 }
 
 function initTabs() {
@@ -104,6 +107,7 @@ initSuccessModal();
 initExtensionActions();
 initStreamTester();
 initTools();
+initEngines();
 
 const initialUiLang = initLanguage();
 initSettings(initialUiLang);
