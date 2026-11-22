@@ -1,4 +1,4 @@
-use super::templates::repo_index::{repo_index_py_fmt, repo_readme_md_fmt, REPO_INDEX_PY};
+use super::templates::repo_index::{repo_readme_md_fmt, REPO_INDEX_PY};
 use super::templates::workflow::WORKFLOW_YML;
 
 pub(crate) fn generate_github_workflow() -> String {

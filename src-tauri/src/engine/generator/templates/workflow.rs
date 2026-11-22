@@ -58,5 +58,4 @@ jobs:
           force_orphan: true
 "# };
 }
-pub(crate) use workflow_yml_fmt;
 pub const WORKFLOW_YML: &str = workflow_yml_fmt!();

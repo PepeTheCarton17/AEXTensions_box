@@ -8,7 +8,6 @@ macro_rules! exclusion_capture_kt_fmt {
 "# };
 }
 pub(crate) use exclusion_capture_kt_fmt;
-pub const EXCLUSION_CAPTURE_KT: &str = exclusion_capture_kt_fmt!();
 
 /// Bloque Kotlin que guarda el término escrito en el input de lista negra del
 /// panel de filtros en la MISMA preferencia que el ajuste de lista negra. Así
@@ -22,7 +21,6 @@ macro_rules! blacklist_capture_kt_fmt {
 "# };
 }
 pub(crate) use blacklist_capture_kt_fmt;
-pub const BLACKLIST_CAPTURE_KT: &str = blacklist_capture_kt_fmt!();
 
 /// Bloque Kotlin que aplica los filtros detectados a la URL.
 macro_rules! filter_block_kt_fmt {
@@ -65,7 +63,6 @@ macro_rules! filter_block_kt_fmt {
 "# };
 }
 pub(crate) use filter_block_kt_fmt;
-pub const FILTER_BLOCK_KT: &str = filter_block_kt_fmt!();
 
 /// Bloque Kotlin que aplica el filtro SUB/DUB a la búsqueda.
 macro_rules! search_audio_block_kt_fmt {
@@ -80,5 +77,4 @@ macro_rules! search_audio_block_kt_fmt {
 "# };
 }
 pub(crate) use search_audio_block_kt_fmt;
-pub const SEARCH_AUDIO_BLOCK_KT: &str = search_audio_block_kt_fmt!();
 

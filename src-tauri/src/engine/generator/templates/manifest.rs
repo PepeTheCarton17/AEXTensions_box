@@ -29,4 +29,3 @@ macro_rules! android_manifest_xml_fmt {
 "# };
 }
 pub(crate) use android_manifest_xml_fmt;
-pub const ANDROID_MANIFEST_XML: &str = android_manifest_xml_fmt!();

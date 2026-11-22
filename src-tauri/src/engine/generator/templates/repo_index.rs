@@ -286,4 +286,3 @@ El código de este repositorio se distribuye bajo licencia MIT salvo que se indi
 "# };
 }
 pub(crate) use repo_readme_md_fmt;
-pub const REPO_README_MD: &str = repo_readme_md_fmt!();

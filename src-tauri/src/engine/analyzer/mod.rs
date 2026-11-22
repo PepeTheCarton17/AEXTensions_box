@@ -1,7 +1,5 @@
-use serde::{Deserialize, Serialize};
-use scraper::{ElementRef, Html, Selector};
-use std::collections::{HashMap, HashSet};
-use regex::Regex;
+use scraper::Html;
+use std::collections::HashSet;
 use url::Url;
 
 mod api;
@@ -27,8 +25,7 @@ pub use models::{
     AnalysisResult, ApiListResult, ApiOption, CatalogRecord, SiteAnalyzer, SiteCapabilities,
     SiteFilterParam, SitePathFilter, SiteSearchAction,
 };
-pub(crate) use catalog::CatalogInfo;
-pub(crate) use models::{ApiCandidates, DetailProbe, MasterTrackProbe};
+pub(crate) use models::ApiCandidates;
 
 impl SiteAnalyzer {
     pub fn new() -> Self {

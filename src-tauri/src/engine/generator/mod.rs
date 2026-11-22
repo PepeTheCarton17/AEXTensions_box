@@ -29,7 +29,11 @@ pub use templates::gradle_wrapper::{
 };
 
 // Re-exports internos: los tests viven en `generator::tests` y las funciones
-// se reparten entre submódulos.
+// se reparten entre submódulos. Sólo existen en builds de test para no
+// disparar `unused_import` en la librería normal.
+#[cfg(test)]
 pub(crate) use anime_source::generate_kotlin_source;
+#[cfg(test)]
 pub(crate) use filters::generate_kotlin_filters;
+#[cfg(test)]
 pub(crate) use templates::video_engine::VIDEO_ENGINE_KT;

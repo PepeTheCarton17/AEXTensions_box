@@ -138,7 +138,6 @@ class {class_name} : ParsedHttpSource() {{
 "# };
 }
 pub(crate) use manga_source_kt_fmt;
-pub const MANGA_SOURCE_KT: &str = manga_source_kt_fmt!();
 
 /// Plantilla del archivo de filtros de manga.
 macro_rules! manga_filters_kt_fmt {
@@ -152,5 +151,4 @@ object {class_name}Filters {{
 "# };
 }
 pub(crate) use manga_filters_kt_fmt;
-pub const MANGA_FILTERS_KT: &str = manga_filters_kt_fmt!();
 

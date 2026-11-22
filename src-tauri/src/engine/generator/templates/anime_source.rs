@@ -15,4 +15,3 @@ macro_rules! anime_source_kt_fmt {
     };
 }
 pub(crate) use anime_source_kt_fmt;
-pub const ANIME_SOURCE_KT: &str = anime_source_kt_fmt!();

@@ -1,4 +1,3 @@
-use crate::engine::ExtensionBundle;
 use crate::github::{GithubApiClient, RepoInfo};
 
 /// Archivos que AEXT genera a nivel de repositorio. Se comprueba su

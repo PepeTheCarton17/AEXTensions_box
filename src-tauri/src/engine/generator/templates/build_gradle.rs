@@ -70,7 +70,6 @@ dependencies {{
 "# };
 }
 pub(crate) use build_gradle_kt_fmt;
-pub const BUILD_GRADLE_KT: &str = build_gradle_kt_fmt!();
 
 /// Plantilla del settings.gradle.kts.
 macro_rules! settings_gradle_kt_fmt {
@@ -97,7 +96,6 @@ include(":src:{pkg_lang}:{pkg_slug}")
 "# };
 }
 pub(crate) use settings_gradle_kt_fmt;
-pub const SETTINGS_GRADLE_KT: &str = settings_gradle_kt_fmt!();
 
 /// Build raíz: AGP 9 lleva Kotlin integrado.
 pub const ROOT_BUILD_GRADLE: &str = r#"plugins {

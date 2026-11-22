@@ -22,7 +22,6 @@ object {class_name}Filters {{
 "# };
 }
 pub(crate) use kotlin_filters_kt_fmt;
-pub const KOTLIN_FILTERS_KT: &str = kotlin_filters_kt_fmt!();
 
 /// Plantilla de la clase de filtro de audio.
 macro_rules! audio_filter_class_kt_fmt {
@@ -38,5 +37,4 @@ macro_rules! audio_filter_class_kt_fmt {
 "# };
 }
 pub(crate) use audio_filter_class_kt_fmt;
-pub const AUDIO_FILTER_CLASS_KT: &str = audio_filter_class_kt_fmt!();
 
