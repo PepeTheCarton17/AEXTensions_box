@@ -28,7 +28,7 @@ fn needed_tags(caps: &SiteCapabilities, catalog_missing: bool) -> Vec<String> {
 
 /// Devuelve los motores más probables, ordenados por coincidencia de
 /// capacidades. Sin coincidencias no se fuerza ningún motor: AEXT prefiere
-//! decir "sin motor compatible" antes que inventar uno.
+/// decir "sin motor compatible" antes que inventar uno.
 pub fn select(
     engines: &[EngineDescriptor],
     caps: &SiteCapabilities,
