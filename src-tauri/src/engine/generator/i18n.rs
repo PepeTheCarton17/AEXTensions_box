@@ -200,7 +200,13 @@ pub(crate) fn get_i18n(lang: &str) -> I18nData {
 /// etiquetas del analizador siguen siendo canónicas en inglés para poder
 /// emparejarlas con los repos de referencia; aquí se traducen para la UI.
 pub(crate) fn filter_label(lang: &str, canonical: &str) -> String {
-    let key = canonical.trim().to_lowercase().replace([' ', '-'], "_");
+    // Varias secciones pueden compartir segmento (`Category (Movies)`): se
+    // traduce sólo la etiqueta canónica y se conserva el calificador de la ruta.
+    let (base, qualifier) = match canonical.split_once(" (") {
+        Some((base, qualifier)) => (base, qualifier.strip_suffix(')').unwrap_or(qualifier)),
+        None => (canonical, ""),
+    };
+    let key = base.trim().to_lowercase().replace([' ', '-'], "_");
     let (es, pt) = match key.as_str() {
         "year" | "years" => ("Año", "Ano"),
         "country" => ("País", "País"),
@@ -225,10 +231,15 @@ pub(crate) fn filter_label(lang: &str, canonical: &str) -> String {
         "dubbed" => ("Doblado", "Dublado"),
         _ => return canonical.to_string(),
     };
-    match lang.to_lowercase().as_str() {
+    let translated = match lang.to_lowercase().as_str() {
         "es" | "es-es" | "es-419" => es.to_string(),
         "pt" | "pt-br" => pt.to_string(),
         _ => canonical.to_string(),
+    };
+    if qualifier.is_empty() {
+        translated
+    } else {
+        format!("{translated} ({qualifier})")
     }
 }
 

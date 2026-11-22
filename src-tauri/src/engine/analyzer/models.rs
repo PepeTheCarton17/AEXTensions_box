@@ -39,6 +39,26 @@ pub struct SiteFilterParam {
     pub kind: String,
 }
 
+/// Filtro declarado por el sitio como una ruta de catálogo en vez de un query
+/// param (`/latam/movies/category/action-adventure/`). La etiqueta y la ruta
+/// son texto real del HTML; AEXT no inventa categorías ni sus nombres.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SitePathFilter {
+    /// Nombre canónico en inglés (`Category`, `Genre`...), traducido al generar.
+    #[serde(default)]
+    pub name: String,
+    /// Segmento de ruta que precede al valor (`category`, `genre`...).
+    #[serde(default)]
+    pub segment: String,
+    /// Prefijo compartido por las opciones (`/latam/movies/`). Sirve para
+    /// distinguir grupos con el mismo segmento en secciones distintas.
+    #[serde(default)]
+    pub base_path: String,
+    /// Pares `{etiqueta visible, ruta absoluta del sitio}`.
+    #[serde(default)]
+    pub values: Vec<ApiOption>,
+}
+
 /// Un par `{id, name}` leído de una respuesta JSON real del sitio. Se usa para
 /// poblar filtros con valores del propio sitio (géneros, categorías, países...),
 /// nunca con listas inventadas por AEXT.
@@ -120,6 +140,9 @@ pub struct AnalysisResult {
     /// Filtros de consulta encontrados en enlaces/formularios del sitio.
     #[serde(default)]
     pub filter_params: Vec<SiteFilterParam>,
+    /// Filtros declarados como rutas (categorías del footer/nav), no query params.
+    #[serde(default)]
+    pub path_filters: Vec<SitePathFilter>,
     /// Bases de API REST declaradas en los bundles (`baseURL: "https://..."`).
     #[serde(default)]
     pub api_bases: Vec<String>,

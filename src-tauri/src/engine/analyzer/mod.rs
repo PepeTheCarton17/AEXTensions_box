@@ -10,6 +10,7 @@ mod catalog;
 mod filters;
 mod filters_form;
 mod filters_js;
+mod filters_paths;
 mod identity;
 mod models;
 mod playback;
@@ -24,7 +25,7 @@ mod tests;
 
 pub use models::{
     AnalysisResult, ApiListResult, ApiOption, CatalogRecord, SiteAnalyzer, SiteCapabilities,
-    SiteFilterParam, SiteSearchAction,
+    SiteFilterParam, SitePathFilter, SiteSearchAction,
 };
 pub(crate) use catalog::CatalogInfo;
 pub(crate) use models::{ApiCandidates, DetailProbe, MasterTrackProbe};
@@ -302,6 +303,7 @@ impl SiteAnalyzer {
         }
         let (mut ld_records, mut ld_search) = Self::detect_structured_data(&doc, &origin, &host);
         let mut filter_params = Self::detect_filter_params(&doc, &origin, &host, search_param.as_deref());
+        let mut path_filters = Self::detect_path_filters(&doc, &origin, &host);
         for f in Self::detect_payload_filters(&doc, search_param.as_deref()) {
             if !filter_params.iter().any(|old| old.param == f.param && old.value == f.value) {
                 filter_params.push(f);
@@ -316,6 +318,13 @@ impl SiteAnalyzer {
                 let root_doc = Html::parse_document(root_html);
                 let (root_records, root_action) =
                     Self::detect_structured_data(&root_doc, &origin, &host);
+                // El footer puede declarar categorías aunque la portada no
+                // tenga JSON-LD: no las condicionamos a que haya tarjetas.
+                for f in Self::detect_path_filters(&root_doc, &origin, &host) {
+                    if !path_filters.iter().any(|old| old.base_path == f.base_path && old.segment == f.segment) {
+                        path_filters.push(f);
+                    }
+                }
                 if !root_records.is_empty() {
                     ld_records = root_records;
                     ld_search = root_action;
@@ -466,6 +475,16 @@ impl SiteAnalyzer {
                 filter_params.iter().map(|f| f.param.as_str()).collect::<HashSet<_>>().into_iter().collect::<Vec<_>>().join(", ")
             ));
         }
+        if !path_filters.is_empty() {
+            warnings.push(format!(
+                "Categorías declaradas como rutas del sitio: {}. Se ofrecerán como filtros que cambian la URL del catálogo.",
+                path_filters
+                    .iter()
+                    .map(|g| format!("{} ({})", g.segment, g.base_path))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         if site_locales.len() > 1 {
             warnings.push(format!(
                 "El sitio declara varios idiomas ({}): el paquete se marcará como 'all' y los textos de la extensión serán ingleses. No se elige un idioma por query param.",
@@ -513,6 +532,7 @@ impl SiteAnalyzer {
                 catalog_records: ld_records,
                 search_action: ld_search,
                 filter_params,
+                path_filters,
                 api_bases: Vec::new(),
                 api_lists: Vec::new(),
                 detected_language,

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod video_engine_tests {
     use crate::engine::generator::{generate_kotlin_filters, generate_kotlin_source, VIDEO_ENGINE_KT};
-    use crate::engine::analyzer::{AnalysisResult, CatalogRecord, SiteCapabilities, SiteFilterParam, SiteSearchAction};
+    use crate::engine::analyzer::{AnalysisResult, ApiOption, CatalogRecord, SiteCapabilities, SiteFilterParam, SitePathFilter, SiteSearchAction};
 
     fn pluto_fixture() -> AnalysisResult {
         AnalysisResult {
@@ -346,6 +346,52 @@ mod video_engine_tests {
         }
         assert!(!filters.contains("Pair(\"All\", \"\")"), "All no debe aparecer en español");
         assert!(!filters.contains("Publish Date"), "el valor humanizado debe traducirse");
+    }
+
+    #[test]
+    fn path_filters_replace_catalog_route_and_keep_pagination() {
+        let mut fixture = pluto_fixture();
+        fixture.path_filters = vec![SitePathFilter {
+            name: "Category (Movies)".to_string(),
+            segment: "category".to_string(),
+            base_path: "/latam/movies/".to_string(),
+            values: vec![
+                ApiOption {
+                    value: "/latam/movies/category/action-adventure/".to_string(),
+                    label: "Acción y Aventura".to_string(),
+                },
+                ApiOption {
+                    value: "/latam/movies/category/comedy/".to_string(),
+                    label: "Comedia".to_string(),
+                },
+            ],
+        }];
+
+        let filters = generate_kotlin_filters(
+            "PlutoTv", "pluto", "es", "es", "eu.kanade.tachiyomi.animeextension", &fixture,
+        );
+        let kt = generate_kotlin_source(
+            &fixture, "Pluto TV", "PlutoTv", "pluto", "es", "es",
+            "eu.kanade.tachiyomi.animeextension",
+        );
+
+        for marker in [
+            "class PathFilter",
+            "fun toPath(): String = vals[state].second",
+            "PathFilter(\"Categoría (Movies)\", arrayOf(Pair(\"Todos\", \"\"), Pair(\"Acción y Aventura\", \"/latam/movies/category/action-adventure/\"), Pair(\"Comedia\", \"/latam/movies/category/comedy/\")))",
+        ] {
+            assert!(filters.contains(marker), "falta en los filtros generados: {marker}\n{}", filters);
+        }
+        for marker in [
+            "val pathOverride = filters.filterIsInstance<PlutoTvFilters.PathFilter>()",
+            "preferences.edit().putString(\"selected_path_filter\", pathOverride).apply()",
+            "Uri.parse(baseUrl.trimEnd('/') + pathOverride).buildUpon().apply {",
+            "originalUrl.getQueryParameter(name)?.let { appendQueryParameter(name, it) }",
+            "is PlutoTvFilters.PathFilter -> Unit",
+            "GET(pageUrl(catalogPath(listingPath), page), headers)",
+        ] {
+            assert!(kt.contains(marker), "falta en el Kotlin generado: {marker}");
+        }
     }
 
     #[test]

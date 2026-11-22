@@ -186,7 +186,7 @@ pub(crate) fn generate_kotlin_filters(
     // El bloque `when (f)` de búsqueda referencia todas juntas, así que se
     // definen en bloque aunque un sitio concreto no use alguna de ellas.
     let mut param_classes = String::new();
-    if !grouped.is_empty() {
+    if !grouped.is_empty() || !analysis.path_filters.is_empty() {
         param_classes.push_str(
             r#"    open class QueryPartFilter(displayName: String, val param: String, val vals: Array<Pair<String, String>>) :
         AnimeFilter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
@@ -211,6 +211,14 @@ pub(crate) fn generate_kotlin_filters(
 
 "#,
         );
+        param_classes.push_str(
+            r#"    open class PathFilter(displayName: String, val vals: Array<Pair<String, String>>) :
+        AnimeFilter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
+        fun toPath(): String = vals[state].second
+    }
+
+"#,
+        );
     }
     param_classes.push_str(&exclude_class);
     // Género, país, categoría, formato, idioma y subtítulos son listas multiselección
@@ -218,7 +226,7 @@ pub(crate) fn generate_kotlin_filters(
     const MULTISELECT_LABELS: &[&str] = &[
         "Genre", "Country", "Category", "Format", "Audio Language", "Subtitles", "Copyright Holder",
     ];
-    let param_items = grouped
+    let mut param_items = grouped
         .iter()
         .map(|(param, group)| {
             let pairs = group
@@ -254,6 +262,22 @@ pub(crate) fn generate_kotlin_filters(
             }
         })
         .collect::<String>();
+    // Los filtros de ruta no añaden query params: cada opción es una ruta real
+    // del sitio y se usa para sustituir el path de la petición.
+    for group in &analysis.path_filters {
+        let all = format!("Pair(\"{}\", \"\")", kt(i18n.filter_all));
+        let values = std::iter::once(all)
+            .chain(group.values.iter().map(|value| {
+                format!("Pair(\"{}\", \"{}\")", kt(&value.label), kt(&value.value))
+            }))
+            .collect::<Vec<_>>()
+            .join(", ");
+        param_items.push_str(&format!(
+            "        PathFilter(\"{}\", arrayOf({})),\n",
+            kt(&filter_label(lang, &group.name)),
+            values
+        ));
+    }
 
     format!(
         concat!(kotlin_filters_kt_fmt!()),

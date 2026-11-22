@@ -12,9 +12,24 @@ pub const EXCLUSION_CAPTURE_KT: &str = exclusion_capture_kt_fmt!();
 
 /// Bloque Kotlin que aplica los filtros detectados a la URL.
 macro_rules! filter_block_kt_fmt {
-    () => { r#"        val urlBuilder = Uri.parse(url).buildUpon()
+    () => { r#"        // Un filtro de ruta sustituye el path del catálogo; los query params
+        // originales (p. ej. la paginación) se conservan sobre la nueva ruta.
+        val pathOverride = filters.filterIsInstance<{class_name}Filters.PathFilter>()
+            .firstOrNull()?.toPath().orEmpty()
+        preferences.edit().putString("selected_path_filter", pathOverride).apply()
+        val originalUrl = Uri.parse(url)
+        val urlBuilder = if (pathOverride.isNotBlank()) {{
+            Uri.parse(baseUrl.trimEnd('/') + pathOverride).buildUpon().apply {{
+                originalUrl.queryParameterNames.forEach {{ name ->
+                    originalUrl.getQueryParameter(name)?.let {{ appendQueryParameter(name, it) }}
+                }}
+            }}
+        }} else {{
+            originalUrl.buildUpon()
+        }}
         for (f in filters) {{
             when (f) {{
+                is {class_name}Filters.PathFilter -> Unit
                 is {class_name}Filters.QueryPartFilter -> {{
                     val value = f.toQueryPart()
                     if (value.isNotBlank()) urlBuilder.appendQueryParameter(f.param, value)

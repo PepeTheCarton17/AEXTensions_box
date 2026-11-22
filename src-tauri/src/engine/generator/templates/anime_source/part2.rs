@@ -8,8 +8,13 @@ macro_rules! anime_source_kt_part2 {
         .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         .add("Referer", "$baseUrl/")
 
+    // Un filtro de ruta es navegación de catálogo: popular/latest no reciben
+    // el AnimeFilterList, así que leen la ruta elegida de las preferencias.
+    private fun catalogPath(fallback: String): String =
+        preferences.getString("selected_path_filter", "").orEmpty().ifBlank {{ fallback }}
+
     // ============================== POPULAR ANIME ==============================
-    override fun popularAnimeRequest(page: Int): Request = GET(pageUrl(listingPath, page), headers)
+    override fun popularAnimeRequest(page: Int): Request = GET(pageUrl(catalogPath(listingPath), page), headers)
 
     override fun popularAnimeSelector(): String = "{card_sel}"
 
@@ -51,7 +56,7 @@ macro_rules! anime_source_kt_part2 {
     }}
 
     // ============================== LATEST UPDATES ==============================
-    override fun latestUpdatesRequest(page: Int): Request = GET(pageUrl(latestPath, page), headers)
+    override fun latestUpdatesRequest(page: Int): Request = GET(pageUrl(catalogPath(latestPath), page), headers)
 
     override fun latestUpdatesSelector(): String = "{card_sel}"
 

@@ -396,6 +396,35 @@
     }
 
     #[test]
+    fn category_links_in_footer_are_real_path_filters() {
+        let html = r#"<!doctype html><html><body>
+<footer>
+  <a href="/latam/movies/">Películas</a>
+  <a href="/latam/movies/category/action-adventure/">Acción y Aventura</a>
+  <a href="/latam/movies/category/comedy/">Comedia</a>
+  <a href="/latam/shows/category/comedy/">Comedia</a>
+  <a href="/latam/shows/category/drama/">Drama</a>
+  <a href="/latam/shows/category/crime/">Crimen</a>
+  <a href="/search?q=action">Buscar</a>
+  <a href="/latam/kids/category/only-one/">Única</a>
+</footer>
+</body></html>"#;
+        let doc = Html::parse_document(html);
+        let filters = SiteAnalyzer::detect_path_filters(&doc, "https://site.example", "site.example");
+
+        assert_eq!(filters.len(), 2, "sólo secciones con varias categorías: {:?}", filters);
+        let movies = filters.iter().find(|f| f.base_path == "/latam/movies/").expect("películas");
+        assert_eq!(movies.name, "Category (Movies)");
+        assert_eq!(movies.segment, "category");
+        assert_eq!(movies.values.len(), 2);
+        assert_eq!(movies.values[0].label, "Acción y Aventura");
+        assert_eq!(movies.values[0].value, "/latam/movies/category/action-adventure/");
+        let shows = filters.iter().find(|f| f.base_path == "/latam/shows/").expect("series");
+        assert_eq!(shows.name, "Category (Shows)");
+        assert!(filters.iter().all(|f| f.values.iter().all(|v| !v.value.contains('?'))));
+    }
+
+    #[test]
     fn spa_payload_gives_locales_and_explicit_filters() {
         let html = r#"<!doctype html><html lang="uz"><head>
 <script id="__NEXT_DATA__" type="application/json">{"locale":"uz","locales":["uz","ru","en"],"defaultLocale":"uz","props":{"filters":{"filterParams":[{"param":"sortBy","values":["publish_date","imdb_rating"]},{"param":"status","values":["announcement","release"]}]}},"messages":{"filter":{"publish_date":"Saralash","sort_by":"Saralash turi"}}}</script>

@@ -97,7 +97,8 @@ pub(crate) fn generate_kotlin_source(analysis: &AnalysisResult, display_name: &s
     };
     let has_site_filters = analysis.filter_params.iter().any(|f| {
         !f.param.is_empty() && (f.kind == "text" || !f.value.is_empty())
-    }) || !api_filter_groups(analysis).is_empty();
+    }) || !api_filter_groups(analysis).is_empty()
+        || !analysis.path_filters.is_empty();
     // La exclusión es un filtro real: sus valores vienen de las listas `{id,name}`
     // que el sitio publica en su API. Se guarda en preferencias para que also
     // afecte a popular/latest, que no reciben el AnimeFilterList.
