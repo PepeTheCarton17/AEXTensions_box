@@ -8,10 +8,11 @@ pub fn normalize_site_url(url: &str) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
-    let without_scheme = trimmed
+    let lower = trimmed.to_ascii_lowercase();
+    let without_scheme = lower
         .split_once("://")
         .map(|(_, rest)| rest)
-        .unwrap_or(trimmed);
+        .unwrap_or(lower.as_str());
     let without_extras = without_scheme
         .split(|c| c == '?' || c == '#')
         .next()
@@ -19,7 +20,7 @@ pub fn normalize_site_url(url: &str) -> String {
     without_extras
         .trim_start_matches("www.")
         .trim_end_matches('/')
-        .to_ascii_lowercase()
+        .to_string()
 }
 
 /// Devuelve la ficha existente para el mismo sitio, si la hay. Se prefiere una
