@@ -73,7 +73,8 @@ macro_rules! video_engine_part1 {
             val detail = when {
                 !response.isSuccessful -> if (response.code == 403) "HTTP 403 (token/región rechazados)" else "HTTP ${response.code}"
                 contentType.startsWith("text/html", ignoreCase = true) -> "HTML en vez de stream"
-                body.contains("BOT_SESSION_BLOCKED", ignoreCase = true) -> "sesión bloqueada por el sitio"
+                body.contains("session blocked", ignoreCase = true)
+                    || body.contains("bot session", ignoreCase = true) -> "sesión bloqueada por el sitio"
                 isPlaylist(url) && !body.contains("#EXTM3U") -> "playlist no válida"
                 isPlaylist(url) && !body.contains("#EXT-X-STREAM-INF") && !body.contains("#EXTINF") ->
                     "playlist vacía (${body.length} bytes)"
@@ -204,7 +205,7 @@ macro_rules! video_engine_part1 {
     }
 
     // ============================== ESTRATEGIAS DE RESOLUCIÓN ==============================
-    // Un sitio puede exponer el stream por sesión API, por GraphQL o como
+    // Un sitio puede exponer el stream detrás de una API privada o como
     // embebido en HTML. AEXT no asume una sola ruta: prueba varias en orden y
     // aprende cuál funciona: guarda aciertos/fallos por estrategia y ordena
     // las siguientes reproducciones por probabilidad de éxito (suavizado de

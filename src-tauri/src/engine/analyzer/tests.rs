@@ -269,7 +269,7 @@
         let html = r#"<html><head>
           <meta name="globalAppVersion" content="10.12.1096">
         </head><body><script>
-          const boot = "https://player.example.com/v4/start";
+          const boot = "https://boot.example.com/v4/start";
           const stitcher = "https://cdn.example.com/v2/stitch/hls/x/master.m3u8";
         </script></body></html>"#;
 
@@ -287,7 +287,7 @@
           const ext = {"tnPersistedDocumentHash":"abc"};
           fetch("https://site.example/api/tn/app-shell/graphql/");
           const license = "com.widevine.alpha";
-          const filler = "ad_filler";
+          const filler = "https://cdn.example.com/_ad/segment.ts";
           const mpd = "https://cdn.example.com/stream.mpd";
         </script></body></html>"#;
 
