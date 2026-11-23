@@ -4,6 +4,7 @@
 //! prueba y de dónde viene. AEXT no conoce dominios ni nombres de proveedores;
 //! sólo lee manifiestos y ejecuta las sondas que éstos declaran.
 
+use super::runtime::EngineRuntime;
 use serde::{Deserialize, Serialize};
 
 fn default_version() -> u32 {
@@ -107,6 +108,10 @@ pub struct EngineDescriptor {
     /// Archivos declarados en el repo, copiados bajo `<storage>/engines/<id>/`.
     #[serde(default)]
     pub files: Vec<String>,
+    /// Contrato Kotlin que este motor aporta al bundle generado. `None` si el
+    /// motor sólo participa en sondas y catálogo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<EngineRuntime>,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }

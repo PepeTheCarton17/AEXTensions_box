@@ -66,6 +66,9 @@ fn validate(manifest: &EngineManifest) -> Result<(), String> {
     }
 
     validate_files(&engine.files)?;
+    if let Some(runtime) = &engine.runtime {
+        runtime.validate(&engine.files, &engine.kind)?;
+    }
     for probe in &engine.probes {
         let method = probe.method.to_uppercase();
         if method != "GET" && method != "POST" {
@@ -180,5 +183,50 @@ mod tests {
             "\"provenance\": \"\"",
         );
         assert!(parse(&raw).is_err());
+    }
+
+    fn runtime_manifest(runtime: &str, files: &str) -> String {
+        format!(
+            r#"{{
+              "version": 1,
+              "id": "engine-demo",
+              "name": "Demo",
+              "kind": "playback",
+              "capabilities": ["direct-http"],
+              "source": "repo",
+              "license": "MIT",
+              "provenance": "https://github.com/owner/repo",
+              "probes": [{{
+                "id": "probe",
+                "url_template": "{{endpoint}}",
+                "expect": "json_list"
+              }}],
+              "files": {files},
+              "runtime": {runtime}
+            }}"#
+        )
+    }
+
+    fn valid_runtime() -> &'static str {
+        r#"{
+          "api": "aext-stream-resolver/1",
+          "package": "com.example.engine",
+          "entry_class": "DemoResolver"
+        }"#
+    }
+
+    #[test]
+    fn accepts_a_declared_runtime() {
+        let raw = runtime_manifest(valid_runtime(), r#"["src/DemoResolver.kt"]"#);
+        let engine = parse(&raw).expect("runtime válido");
+        let runtime = engine.runtime.expect("runtime declarado");
+        assert_eq!(runtime.entry_class, "DemoResolver");
+    }
+
+    #[test]
+    fn rejects_runtime_with_unknown_api_or_missing_kotlin_file() {
+        let bad_api = valid_runtime().replace("aext-stream-resolver/1", "aext-stream-resolver/2");
+        assert!(parse(&runtime_manifest(&bad_api, r#"["src/DemoResolver.kt"]"#)).is_err());
+        assert!(parse(&runtime_manifest(valid_runtime(), r#"["README.md"]"#)).is_err());
     }
 }
