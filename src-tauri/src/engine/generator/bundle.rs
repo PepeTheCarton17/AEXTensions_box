@@ -205,8 +205,12 @@ impl ExtensionGenerator {
 
         // 1b. Contrato, registro y código de los motores activos. Son datos
         // declarados por repositorios externos; AEXT no decide su contenido.
-        for (path, content) in super::engine_runtime::bundle_files(&module_path, engines) {
-            files.insert(path, content);
+        // El contrato de streams sólo existe en módulos de anime: un módulo
+        // manga no tiene `Video` ni las dependencias del reproductor.
+        if ext_type == "anime" {
+            for (path, content) in super::engine_runtime::bundle_files(&module_path, engines) {
+                files.insert(path, content);
+            }
         }
 
         // 2. Archivo Kotlin de Filtros
