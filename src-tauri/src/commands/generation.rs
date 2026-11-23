@@ -3,6 +3,7 @@ use crate::commands::constants::LOCAL_API_BASE;
 use crate::commands::files::{local_extension_dir, prepare_bundle_for_local, write_bundle_to_dir, write_icons_to_dir};
 use crate::commands::repo_upload::{upload_bundle_to_github, GithubUploadInfo};
 use crate::commands::site_duplicates::{duplicate_message, find_existing_for_site};
+use crate::engine::registry::collect_assets;
 use crate::engine::{ExtensionGenerator, IconEngine, SiteAnalyzer};
 use crate::github::GithubAuthManager;
 use crate::models::{ExtensionItem, GenerationMode, GenerationRequest};
@@ -79,11 +80,21 @@ pub async fn generate_extensions(
                 &format!("Generando código Kotlin y manifiesto para {}", analysis.name),
             )
             .await;
-        let mut bundle = ExtensionGenerator::generate(
+        let engine_assets = {
+            let engines = state.engines.read().await;
+            collect_assets(&state.storage_dir, &engines[..])
+        };
+        if !engine_assets.is_empty() {
+            state
+                .add_log("INFO", &format!("Motores de runtime incluidos: {}", engine_assets.len()))
+                .await;
+        }
+        let mut bundle = ExtensionGenerator::generate_with_engines(
             &analysis,
             request.custom_name.as_deref(),
             request.lang.as_deref(),
             request.ext_type.as_deref(),
+            &engine_assets,
         );
 
         // 3. Manejar según el modo (Local vs GitHub)

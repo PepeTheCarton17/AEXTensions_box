@@ -1,4 +1,5 @@
 use crate::engine::analyzer::AnalysisResult;
+use crate::engine::registry::EngineAssets;
 use std::collections::HashMap;
 
 use super::anime_source::generate_kotlin_source;
@@ -47,6 +48,20 @@ impl ExtensionGenerator {
         )
     }
 
+    /// Igual que `generate`, pero incluye los archivos Kotlin de los motores
+    /// instalados que el usuario tiene activos en este momento.
+    pub fn generate_with_engines(
+        analysis: &AnalysisResult,
+        custom_name: Option<&str>,
+        labels_lang: Option<&str>,
+        custom_ext_type: Option<&str>,
+        engines: &[EngineAssets],
+    ) -> ExtensionBundle {
+        Self::generate_with_version_and_engines(
+            analysis, custom_name, labels_lang, custom_ext_type, 1, "16.1", None, engines,
+        )
+    }
+
     /// `labels_lang` es la elección del usuario y sólo afecta a los textos
     /// visibles (filtros y preferencias). `package_lang` fija la identidad del
     /// paquete al actualizar; si es `None`, la decide el análisis del sitio.
@@ -58,6 +73,28 @@ impl ExtensionGenerator {
         version_code: i32,
         version_name: &str,
         package_lang: Option<&str>,
+    ) -> ExtensionBundle {
+        Self::generate_with_version_and_engines(
+            analysis,
+            custom_name,
+            labels_lang,
+            custom_ext_type,
+            version_code,
+            version_name,
+            package_lang,
+            &[],
+        )
+    }
+
+    pub fn generate_with_version_and_engines(
+        analysis: &AnalysisResult,
+        custom_name: Option<&str>,
+        labels_lang: Option<&str>,
+        custom_ext_type: Option<&str>,
+        version_code: i32,
+        version_name: &str,
+        package_lang: Option<&str>,
+        engines: &[EngineAssets],
     ) -> ExtensionBundle {
         let raw_name = custom_name
             .map(|s| s.trim())
@@ -165,6 +202,12 @@ impl ExtensionGenerator {
             )
         };
         files.insert(kt_path, kt_content.into_bytes());
+
+        // 1b. Contrato, registro y código de los motores activos. Son datos
+        // declarados por repositorios externos; AEXT no decide su contenido.
+        for (path, content) in super::engine_runtime::bundle_files(&module_path, engines) {
+            files.insert(path, content);
+        }
 
         // 2. Archivo Kotlin de Filtros
         let filters_path = format!(

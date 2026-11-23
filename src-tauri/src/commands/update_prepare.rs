@@ -9,6 +9,7 @@ use crate::commands::files::{
 use crate::commands::parsers::parse_github_url;
 use crate::commands::update_types::{PreparedUpdate, RepoTarget};
 use crate::engine::generator::generate_repo_readme;
+use crate::engine::registry::collect_assets;
 use crate::engine::{ExtensionGenerator, IconEngine, SiteAnalyzer};
 use crate::github::{GithubApiClient, GithubAuthManager, RepoInfo};
 use crate::models::ExtensionItem;
@@ -86,7 +87,11 @@ pub(crate) async fn prepare_update(
     // El idioma elegido sólo traduce textos. La identidad del paquete se
     // mantiene: una actualización nunca debe crear otro módulo con otro lang.
     let labels_lang = resolve_update_lang(requested_lang, existing.lang.as_str());
-    let bundle = ExtensionGenerator::generate_with_version(
+    let engine_assets = {
+        let engines = state.engines.read().await;
+        collect_assets(&state.storage_dir, &engines[..])
+    };
+    let bundle = ExtensionGenerator::generate_with_version_and_engines(
         &analysis,
         Some(existing.name.as_str()),
         Some(labels_lang),
@@ -94,6 +99,7 @@ pub(crate) async fn prepare_update(
         next_code,
         &next_version,
         Some(existing.lang.as_str()),
+        &engine_assets,
     );
 
     let mut updated = existing.clone();

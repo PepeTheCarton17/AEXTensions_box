@@ -8,6 +8,7 @@ mod anime_source;
 mod api_helpers;
 mod build;
 mod bundle;
+mod engine_runtime;
 mod filters;
 mod i18n;
 mod manga;

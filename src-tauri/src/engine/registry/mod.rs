@@ -1,6 +1,7 @@
 //! Registro genérico de motores: descriptores, manifiestos, instalación,
 //! enrutado por capacidad y sondas anónimas.
 
+mod assets;
 mod builtin;
 mod install;
 mod manifest;
@@ -10,6 +11,7 @@ mod router;
 mod runtime;
 mod store;
 
+pub use assets::{collect as collect_assets, EngineAssets};
 pub use install::{fetch, save_files, RepoRef};
 pub use manifest::parse;
 pub use model::{EngineDescriptor, EngineKind, EngineProbe, EngineSource, EngineTrial};

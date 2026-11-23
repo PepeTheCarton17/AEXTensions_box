@@ -666,4 +666,36 @@ mod video_engine_tests {
         );
         assert!(kt_empty.contains("genre = pickGenres(element, \"\")"), "{}", kt_empty);
     }
+
+    #[test]
+    fn installed_engine_sources_reach_the_generated_bundle() {
+        use crate::engine::generator::ExtensionGenerator;
+        use crate::engine::registry::EngineAssets;
+
+        let fixture = generic_fixture();
+        let assets = vec![EngineAssets {
+            id: "engine-demo".to_string(),
+            package: "com.example.engine".to_string(),
+            entry_class: "DemoResolver".to_string(),
+            files: vec![(
+                "src/DemoResolver.kt".to_string(),
+                b"package com.example.engine".to_vec(),
+            )],
+        }];
+        let bundle = ExtensionGenerator::generate_with_engines(
+            &fixture, None, None, None, &assets,
+        );
+        let paths: Vec<&str> = bundle.files.keys().map(|path| path.as_str()).collect();
+        assert!(paths.iter().any(|path| path.ends_with("AextEngineContract.kt")));
+        assert!(paths.iter().any(|path| path.ends_with("AextEngineRegistry.kt")));
+        assert!(paths.iter().any(|path| path.ends_with("engine_demo_DemoResolver.kt")));
+
+        let registry = bundle
+            .files
+            .iter()
+            .find(|(path, _)| path.ends_with("AextEngineRegistry.kt"))
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .expect("falta el registro generado");
+        assert!(registry.contains("import com.example.engine.DemoResolver as AextResolver0"));
+    }
 }
