@@ -190,8 +190,9 @@ jobs:
       - name: Rust tests (analyzer and generator)
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-      # Genera cinco proyectos con las plantillas reales (anime verificado,
-      # anime genérico, catálogo JSON-LD, SPA multilingüe y manga). Si una plantilla no compila,
+      # Genera seis proyectos con las plantillas reales (anime verificado,
+      # anime genérico, catálogo JSON-LD, SPA multilingüe, manga y un motor
+      # instalado). Si una plantilla no compila,
       # este job falla antes de publicar una versión de AEXT que produciría
       # extensiones rotas.
       - name: Generate sample extensions
@@ -208,7 +209,7 @@ jobs:
         run: |
           find "$RUNNER_TEMP/samples" -name "*.apk" -print
           count=$(find "$RUNNER_TEMP/samples" -name "*.apk" | wc -l)
-          test "$count" -eq 5
+          test "$count" -eq 6
           for apk in $(find "$RUNNER_TEMP/samples" -name "*.apk"); do
             "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$apk" | head -n 3
           done

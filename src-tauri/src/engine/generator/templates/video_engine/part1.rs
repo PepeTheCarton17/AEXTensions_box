@@ -211,7 +211,8 @@ macro_rules! video_engine_part1 {
     // las siguientes reproducciones por probabilidad de éxito (suavizado de
     // Laplace). Así, si el sitio cambia de API, la estrategia que empieza a
     // fallar baja de puesto automáticamente sin regenerar la extensión.
-    private data class VideoContext(val url: String, val html: String)
+    // El contexto es `AextVideoContext`, generado como archivo público del
+    // módulo para que los resolutores instalados puedan recibirlo.
 
 "## };
 }

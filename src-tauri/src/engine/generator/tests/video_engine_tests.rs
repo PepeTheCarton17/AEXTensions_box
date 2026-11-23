@@ -68,7 +68,7 @@ mod video_engine_tests {
             "private fun verifyCandidates(",
             "private val browserHeaders",
             "con cabeceras de navegador",
-            "val ctx = VideoContext(finalUrl, html)",
+            "val ctx = AextVideoContext(finalUrl, html, emptyList(), emptyList(), client, browserHeaders)",
             "val strategies = orderedStrategies()",
             "for (strategy in strategies)",
             "verifyCandidates(candidates)",
@@ -88,7 +88,9 @@ mod video_engine_tests {
     #[test]
     fn strategies_are_ranked_and_learn_from_real_results() {
         for marker in [
-            "private data class VideoContext",
+            "AextVideoContext(finalUrl, html, emptyList(), emptyList(), client, browserHeaders)",
+            "AextEngineRegistry().streamResolvers",
+            "id.startsWith(\"engine:\")",
             "private class VideoStrategy",
             "private fun strategyStats(",
             "private fun recordStrategy(",

@@ -4,7 +4,7 @@ macro_rules! video_engine_part2 {
     () => { r##"    private class VideoStrategy(
         val id: String,
         val priority: Int,
-        val resolve: (VideoContext) -> List<Video>?,
+        val resolve: (AextVideoContext) -> List<Video>?,
     )
 
     private fun strategyStats(id: String): Pair<Int, Int> {
@@ -25,15 +25,24 @@ macro_rules! video_engine_part2 {
      * catálogo real que devuelva cada motor decide después, con aciertos y
      * fallos contados en preferencias.
      */
-    private fun strategyPriority(id: String): Int = when (id) {
-        "html-embeds" -> 0
+    private fun strategyPriority(id: String): Int = when {
+        id.startsWith("engine:") -> 0
+        id == "html-embeds" -> 1
         else -> 1
     }
 
     private fun orderedStrategies(): List<VideoStrategy> {
-        val all = listOf(
+        val all = mutableListOf(
             VideoStrategy("html-embeds", strategyPriority("html-embeds")) { ctx -> htmlEmbedVideos(ctx) },
         )
+        // Los motores instalados se añaden por su id declarado. Si ningún
+        // resolver aplica, devuelve null y el pipeline sigue con el HTML.
+        for (resolver in AextEngineRegistry().streamResolvers) {
+            val id = "engine:" + resolver.id
+            all.add(VideoStrategy(id, strategyPriority(id)) { ctx ->
+                if (resolver.canResolve(ctx)) resolver.resolve(ctx) else null
+            })
+        }
         return all.sortedWith(
             compareByDescending<VideoStrategy> { s ->
                 val (ok, fail) = strategyStats(s.id)
@@ -67,7 +76,7 @@ macro_rules! video_engine_part2 {
         // El cuerpo se lee una sola vez: el HTML se reutiliza en todas las
         // estrategias y `asJsoup()` también lo consumiría.
         val html = response.body?.string().orEmpty()
-        val ctx = VideoContext(finalUrl, html)
+        val ctx = AextVideoContext(finalUrl, html, emptyList(), emptyList(), client, browserHeaders)
         val errors = mutableListOf<String>()
         val strategies = orderedStrategies()
         Log.d("AEXT", "videoListParse $finalUrl · métodos ${strategies.map { it.id }} · HTML ${html.length} bytes")
@@ -111,7 +120,7 @@ macro_rules! video_engine_part2 {
         throw Exception(message)
     }
 
-    private fun htmlEmbedVideos(ctx: VideoContext): List<Video> {
+    private fun htmlEmbedVideos(ctx: AextVideoContext): List<Video> {
         val html = ctx.html
         val document = Jsoup.parse(html, ctx.url)
         val videos = mutableListOf<Video>()

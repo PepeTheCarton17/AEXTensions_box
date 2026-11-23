@@ -3,13 +3,15 @@
 //!
 //! Uso: `cargo run --bin sample_ext -- <directorio-de-salida>`
 //!
-//! Escribe cinco proyectos independientes (anime con selector de episodios,
-//! anime genérico, catálogo JSON-LD, SPA multilingüe y manga) con sus iconos, para que el CI pueda ejecutar
+//! Escribe seis proyectos independientes (anime con selector de episodios,
+//! anime genérico, catálogo JSON-LD, SPA multilingüe, manga y un motor
+//! instalado) con sus iconos, para que el CI pueda ejecutar
 //! `gradle assembleRelease` sobre ellos. Sin este paso, un error de compilación
 //! en las plantillas solo se descubría al usar la extensión en Nekoyomi.
 
 use aext_lib::engine::analyzer::{AnalysisResult, CatalogRecord, SiteCapabilities, SiteFilterParam, SiteSearchAction};
 use aext_lib::engine::generator::ExtensionGenerator;
+use aext_lib::engine::registry::EngineAssets;
 use image::{Rgba, RgbaImage};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -210,7 +212,17 @@ fn write_project(
     lang: &str,
     ext_type: &str,
 ) -> Result<PathBuf, String> {
-    let bundle = ExtensionGenerator::generate_with_version(
+    write_project_with_engines(root, analysis, lang, ext_type, &[])
+}
+
+fn write_project_with_engines(
+    root: &Path,
+    analysis: &AnalysisResult,
+    lang: &str,
+    ext_type: &str,
+    engines: &[EngineAssets],
+) -> Result<PathBuf, String> {
+    let bundle = ExtensionGenerator::generate_with_version_and_engines(
         analysis,
         None,
         Some(lang),
@@ -218,6 +230,7 @@ fn write_project(
         1,
         "16.1",
         Some(lang),
+        engines,
     );
 
     let mut files: HashMap<String, Vec<u8>> = bundle.files.clone();
@@ -291,4 +304,27 @@ fn main() {
         }
         println!("generado {}", root.display());
     }
+
+    // Un motor declarado por un repo externo: comprueba que su `.kt` y el
+    // contrato compilan dentro del módulo generado, sin WebView.
+    let dir = "motor-instalado";
+    let root = out.join(dir);
+    std::fs::create_dir_all(&root).expect("crear proyecto");
+    let engines = vec![EngineAssets {
+        id: "demo-engine".to_string(),
+        package: "aext.demo".to_string(),
+        entry_class: "DemoResolver".to_string(),
+        files: vec![(
+            "src/DemoResolver.kt".to_string(),
+            include_str!("../engine/generator/tests/fixtures/demo_resolver.kt")
+                .as_bytes()
+                .to_vec(),
+        )],
+    }];
+    let analysis = anime_fixture("Motor Instalado", "engine.example", "", false);
+    if let Err(error) = write_project_with_engines(&root, &analysis, "es", "anime", &engines) {
+        eprintln!("error generando {dir}: {error}");
+        std::process::exit(1);
+    }
+    println!("generado {}", root.display());
 }
