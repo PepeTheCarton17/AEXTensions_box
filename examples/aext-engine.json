@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "id": "stream-engine-example",
+  "name": "Example Stream Engine",
+  "kind": "playback",
+  "capabilities": ["direct-http", "json-catalog"],
+  "source": "repo",
+  "license": "MIT",
+  "provenance": "https://github.com/owner/repo",
+  "files": ["runtime/src/ExampleResolver.kt"],
+  "runtime": {
+    "api": "aext-stream-resolver/1",
+    "package": "example.engine",
+    "entry_class": "ExampleResolver"
+  },
+  "probes": [
+    {
+      "id": "catalog",
+      "method": "GET",
+      "url_template": "{endpoint}",
+      "expect": "json_list",
+      "min_items": 1
+    }
+  ]
+}

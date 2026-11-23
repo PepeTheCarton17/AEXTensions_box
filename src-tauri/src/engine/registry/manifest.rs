@@ -229,4 +229,11 @@ mod tests {
         assert!(parse(&runtime_manifest(&bad_api, r#"["src/DemoResolver.kt"]"#)).is_err());
         assert!(parse(&runtime_manifest(valid_runtime(), r#"["README.md"]"#)).is_err());
     }
+
+    #[test]
+    fn bundled_example_manifest_is_valid() {
+        let raw = include_str!("../../../../examples/aext-engine.json");
+        let engine = parse(raw).expect("el manifiesto de ejemplo debe ser válido");
+        assert!(engine.runtime.is_some());
+    }
 }
